@@ -45,14 +45,14 @@ def consult_vulnerability_analyst(query: str) -> str:
     """Get vulnerability analysis from security specialist."""
     vuln_agent = gather_vulnerabilities()
     result = vuln_agent(query)
-    return result.content
+    return result.message['content'][0]['text']
 
 @tool  
 def consult_patch_manager(query: str) -> str:
     """Get patch deployment plan from infrastructure specialist."""
     patch_agent = patching_operations()
     result = patch_agent(query)
-    return result.content
+    return result.message['content'][0]['text']
 
 @app.entrypoint
 async def agent_invocation(payload, context):
