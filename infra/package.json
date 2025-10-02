@@ -1,0 +1,20 @@
+{
+  "name": "patch-automation-foundations",
+  "version": "1.0.0",
+  "description": "AWS CDK foundations for Intelligent Patch Automation demo",
+  "scripts": {
+    "build": "tsc",
+    "cdk": "cdk",
+    "deploy": "cdk deploy --all --require-approval never",
+    "destroy": "cdk destroy --all --force"
+  },
+  "devDependencies": {
+    "@types/node": "18.14.6",
+    "aws-cdk": "2.87.0",
+    "typescript": "~4.9.5"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.87.0",
+    "constructs": "^10.0.0"
+  }
+}
