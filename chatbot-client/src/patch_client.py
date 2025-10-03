@@ -35,23 +35,48 @@ class PatchAutomationClient:
             print(f"\n[DEBUG] Payload:\n{json.dumps(payload, indent=2)}")
             print(f"[DEBUG] Invoking agent...")
         
-        print("🤔 Thinking...", end="", flush=True)
-        
+        # Use streaming to show real-time progress
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 ["agentcore", "invoke", json.dumps(payload)],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                check=True,
-                timeout=300  # 5 minute timeout
+                bufsize=1
             )
             
-            print("\r" + " " * 15 + "\r", end="", flush=True)
+            # Show progress as agent works
+            output_lines = []
+            last_status = ""
+            
+            print("🤔 Starting...", end="", flush=True)
+            
+            for line in iter(process.stdout.readline, ''):
+                if not line:
+                    break
+                    
+                output_lines.append(line)
+                
+                # Parse streaming events to show progress
+                status = self._parse_progress(line)
+                if status and status != last_status:
+                    # Clear previous status and show new one
+                    print("\r" + " " * 80 + "\r", end="", flush=True)
+                    print(f"{status}", end="", flush=True)
+                    last_status = status
+            
+            # Wait for process to complete
+            process.wait(timeout=300)
+            
+            # Clear status line
+            print("\r" + " " * 80 + "\r", end="", flush=True)
+            
+            raw_output = ''.join(output_lines)
             
             if self.debug:
-                print(f"[DEBUG] Response received ({len(result.stdout)} chars)")
+                print(f"[DEBUG] Response received ({len(raw_output)} chars)")
             
-            response = self._extract_clean_response(result.stdout)
+            response = self._extract_clean_response(raw_output)
             
             # Store in history
             self.conversation_history.append({
@@ -63,11 +88,11 @@ class PatchAutomationClient:
             return response
             
         except subprocess.TimeoutExpired:
-            print("\r" + " " * 15 + "\r", end="", flush=True)
+            print("\r" + " " * 80 + "\r", end="", flush=True)
             return "⏱️  Agent timeout (5 min). Try a simpler query or check agent status."
         
         except subprocess.CalledProcessError as e:
-            print("\r" + " " * 15 + "\r", end="", flush=True)
+            print("\r" + " " * 80 + "\r", end="", flush=True)
             error = e.stderr.strip() if e.stderr else "Unknown error"
             
             if self.debug:
@@ -82,55 +107,91 @@ class PatchAutomationClient:
                 return f"❌ Agent error: {error[:200]}"
         
         except FileNotFoundError:
-            print("\r" + " " * 15 + "\r", end="", flush=True)
+            print("\r" + " " * 80 + "\r", end="", flush=True)
             return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
         
         except Exception as e:
-            print("\r" + " " * 15 + "\r", end="", flush=True)
+            print("\r" + " " * 80 + "\r", end="", flush=True)
             if self.debug:
                 print(f"\n[DEBUG] Unexpected error: {e}")
             return f"❌ Unexpected error: {str(e)[:200]}"
     
+    def _parse_progress(self, line: str) -> Optional[str]:
+        """Parse streaming output to show what agent is doing"""
+        try:
+            # Skip debug/internal JSON lines
+            if line.strip().startswith('{') and any(x in line for x in ['"init_event_loop"', '"start_event_loop"', '"event":', '"data":', "'agent':"]):
+                return None
+            
+            # Look for agent consultations
+            if 'consult_vulnerability_analyst' in line:
+                return "🔍 Consulting Vulnerability Analyst..."
+            elif 'consult_patch_manager' in line:
+                return "🛠️  Consulting Patch Manager..."
+            
+            # Look for tool usage (generic)
+            if '"tool":' in line or '"name":' in line:
+                return "⚙️  Using tools..."
+            
+            # Look for response generation
+            if '"type": "text"' in line and len(line) > 100:
+                return "✍️  Generating response..."
+            
+            # Look for completion
+            if '"stop_reason":' in line or '"finish_reason":' in line:
+                return "✅ Complete"
+            
+        except Exception:
+            pass
+        
+        return None
+    
     def _extract_clean_response(self, raw_output: str) -> str:
         """Extract clean response from streaming output"""
         try:
-            # Look for <answer> tags first (agent's final response)
-            if '<answer>' in raw_output and '</answer>' in raw_output:
-                start = raw_output.find('<answer>') + 8
-                end = raw_output.find('</answer>')
-                return raw_output[start:end].strip()
-            
-            # Parse JSON streaming output
+            # Collect all text deltas from streaming output
+            collected_text = []
             lines = raw_output.split('\n')
+            
             for line in lines:
-                if '"message":' in line and '"content":' in line:
+                if not line.strip():
+                    continue
+                
+                # Look for contentBlockDelta events with text
+                if '"contentBlockDelta"' in line and '"text"' in line:
                     try:
+                        # Extract text from JSON event
                         import re
-                        json_match = re.search(r'\{.*\}', line)
-                        if json_match:
-                            data = json.loads(json_match.group())
-                            if 'message' in data and 'content' in data['message']:
-                                content = data['message']['content']
-                                if isinstance(content, list) and len(content) > 0:
-                                    text = content[0].get('text', '')
-                                    # Check for answer tags in JSON content
-                                    if '<answer>' in text and '</answer>' in text:
-                                        start = text.find('<answer>') + 8
-                                        end = text.find('</answer>')
-                                        return text[start:end].strip()
-                                    return text
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        continue
+                        text_match = re.search(r'"text":\s*"([^"]*(?:\\.[^"]*)*)"', line)
+                        if text_match:
+                            text = text_match.group(1)
+                            # Unescape JSON
+                            text = text.replace('\\n', '\n').replace('\\"', '"')
+                            collected_text.append(text)
+                    except Exception:
+                        pass
+            
+            # Join all collected text
+            if collected_text:
+                full_response = ''.join(collected_text).strip()
+                
+                # Check for answer tags
+                if '<answer>' in full_response and '</answer>' in full_response:
+                    start = full_response.find('<answer>') + 8
+                    end = full_response.find('</answer>')
+                    return full_response[start:end].strip()
+                
+                return full_response
             
             # Fallback: return truncated raw output
             if self.debug:
-                print(f"\n[DEBUG] Could not parse response, returning raw output")
-            return raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
+                print(f"\n[DEBUG] Could not parse response")
+            return "No response received. Try again or check agent status."
             
         except Exception as e:
             if self.debug:
                 print(f"\n[DEBUG] Extraction error: {e}")
-            return raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
+            return "Error parsing response. Enable debug mode for details."
     
     def export_conversation(self, filename: Optional[str] = None) -> str:
         """Export conversation to JSON file"""
