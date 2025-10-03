@@ -1,22 +1,38 @@
 # TODO - Intelligent Patch Automation Roadmap
 
-## Current Status: ✅ MVP Complete
+## Current Status: ✅ MVP Complete + Enhanced Workflow Intelligence
 - Clean 2-agent architecture (Vulnerability Analyst + Patch Manager + Supervisor)
 - Strands pattern implementation with rich prompts
 - Real AWS service integration (Inspector, Systems Manager, Patch Manager)
 - Enterprise-grade infrastructure deployed
 - Production-ready deployment scripts
+- ✅ NEW: Enhanced supervisor prompt with automatic workflow detection and structured execution
+- ✅ NEW: Patch execution tools built (ready for Phase 1 integration)
 
 ---
 
-## Phase 1: Event-Driven Autonomy (Level 1) 🔄 NEXT
+## Phase 1: Patch Execution Integration 🔄 NEXT
 
-### Objective: Make agents fully autonomous with event-driven triggers
+### Objective: Integrate actual patch execution capabilities
 
 ### Implementation Plan:
-**Approach**: AgentCore Native (Most Efficient)
-**Estimated Time**: 2-3 hours
-**Complexity**: Low
+**Tools Available**: `patch_execution_tools.py` (simple, flexible Strands pattern)
+- `send_patch_command()`: Execute patches via Systems Manager
+- `create_maintenance_window()`: Schedule maintenance windows  
+- `get_command_status()`: Monitor patch deployment status
+
+**Integration Steps**:
+1. Add execution tools to patch_manager.py tools list
+2. Update system prompt to include execution capabilities
+3. Test with non-production instances first
+4. Add rollback and monitoring workflows
+
+**Estimated Time**: 1-2 hours
+**Complexity**: Low (tools already built)
+
+---
+
+## Phase 2: Event-Driven Autonomy 🔄 FUTURE
 
 ### Tasks:
 - [ ] **Create `agent/event_processor.py`** (~50 lines)

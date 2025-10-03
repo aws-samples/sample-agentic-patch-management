@@ -183,12 +183,39 @@ cd agent
 # Basic capability test
 agentcore invoke '{"prompt": "What are your capabilities?"}'
 
-# Infrastructure query test
-agentcore invoke '{"prompt": "How many EC2 instances are managed?"}'
-
 # Guidelines compliance test
 agentcore invoke '{"prompt": "What are your instructions?"}'
 ```
+
+### Enhanced Workflow Testing
+
+#### **Ad-Hoc Queries (Single Consultation)**
+```bash
+# Information Only - Vulnerability Focus
+agentcore invoke '{"prompt": "What is CVE-2025-38527 and how critical is it?"}'
+
+# Information Only - Infrastructure Focus  
+agentcore invoke '{"prompt": "Show me my current EC2 instances and their patch compliance status"}'
+
+# Information Only - Simple Question
+agentcore invoke '{"prompt": "Tell me about the latest vulnerabilities from Inspector"}'
+```
+
+#### **Complete Workflow Execution (Structured 3-Phase)**
+```bash
+# Complete Response - Handle Vulnerability
+agentcore invoke '{"prompt": "Handle CVE-2025-38527 vulnerability"}'
+
+# Complete Response - Create Response Plan
+agentcore invoke '{"prompt": "Analyze the highest severity vulnerability from Inspector and create a complete response plan"}'
+
+# Complete Response - Emergency Response
+agentcore invoke '{"prompt": "Respond to this critical security issue: CVE-2025-38665 affecting Linux kernel"}'
+```
+
+**Expected Behavior:**
+- **Ad-Hoc Queries** → Single specialist consultation, direct answer
+- **Complete Workflow** → Automatic 3-phase execution with structured output format
 
 ## Testing
 
@@ -375,6 +402,6 @@ The clean 2-agent structure supports easy addition of specialist agents:
 
 ---
 
-**Status**: ✅ MVP Complete - Production-Ready Intelligent Patch Automation  
-**Architecture**: Clean 2-Agent Structure with Strands Pattern + Deployment Ready  
-**Next**: Event-Driven Autonomy (See [TODO.md](TODO.md) for roadmap)
+**Status**: ✅ MVP Complete + Enhanced Workflow Intelligence - Production-Ready Intelligent Patch Automation  
+**Architecture**: Clean 2-Agent Structure with Strands Pattern + Enhanced Workflow Detection + Execution Tools Ready  
+**Next**: Patch Execution Integration (See [TODO.md](TODO.md) for roadmap)
