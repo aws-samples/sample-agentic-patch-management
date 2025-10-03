@@ -1,9 +1,12 @@
 """Patch Manager - Complete Infrastructure and Deployment Operations"""
 
 import logging
+import globals
 from strands import Agent, tool
 from strands.models import BedrockModel
 from strands_tools import use_aws
+from bedrock_agentcore.memory import MemoryClient
+from memory_hooks import AgentCoreMemoryHook
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -60,7 +63,24 @@ Always provide structured responses with:
 Always provide clear reasoning for your approach and maintain enterprise-grade change management practices."""
 
 def patching_operations():
-    """Create patch manager agent."""
+    """Create patch manager agent with AgentCore memory integration."""
+    
+    # Create memory hook if session context is available
+    hooks = []
+    if globals.MEMORY_ID and globals.SESSION_ID:
+        try:
+            memory_client = MemoryClient()
+            patch_memory_hook = AgentCoreMemoryHook(
+                memory_client=memory_client,
+                memory_id=globals.MEMORY_ID,
+                actor_id="patch_manager",
+                session_id=globals.SESSION_ID
+            )
+            hooks = [patch_memory_hook]
+            logger.info("Patch manager created with memory integration")
+        except Exception as e:
+            logger.warning(f"Failed to create memory hook for patch manager: {e}")
+    
     agent = Agent(
         name="patch-manager",
         model=BedrockModel(
@@ -71,7 +91,8 @@ def patching_operations():
             max_tokens=8000
         ),
         system_prompt=SYSTEM_PROMPT,
-        tools=[use_aws]
+        tools=[use_aws],
+        hooks=hooks  # Add memory hooks if available
     )
     
     return agent

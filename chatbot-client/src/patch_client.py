@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+Patch Automation Chat Client
+
+Minimal, intelligent chat interface that trusts the agent's decision-making.
+Let the LLM handle workflow detection, tool selection, and response formatting.
+"""
+
+import json
+import uuid
+import sys
+import os
+import subprocess
+from datetime import datetime
+from typing import Optional
+
+class PatchAutomationClient:
+    """Minimal chat client - trust the agent's intelligence"""
+    
+    def __init__(self, debug: bool = False):
+        """Initialize client"""
+        self.debug = debug
+        self.conversation_history = []
+        self.session_id = f"patch_{uuid.uuid4().hex[:12]}"
+        
+        if self.debug:
+            print(f"🔧 Debug Mode: ON")
+            print(f"🔧 Session: {self.session_id}\n")
+    
+    def chat(self, message: str) -> str:
+        """Send message to agent - it decides what to do"""
+        payload = {"prompt": message, "session_id": self.session_id}
+        
+        if self.debug:
+            print(f"\n[DEBUG] Payload:\n{json.dumps(payload, indent=2)}")
+            print(f"[DEBUG] Invoking agent...")
+        
+        print("🤔 Thinking...", end="", flush=True)
+        
+        try:
+            result = subprocess.run(
+                ["agentcore", "invoke", json.dumps(payload)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=300  # 5 minute timeout
+            )
+            
+            print("\r" + " " * 15 + "\r", end="", flush=True)
+            
+            if self.debug:
+                print(f"[DEBUG] Response received ({len(result.stdout)} chars)")
+            
+            response = self._extract_clean_response(result.stdout)
+            
+            # Store in history
+            self.conversation_history.append({
+                "timestamp": datetime.now().isoformat(),
+                "user": message,
+                "agent": response
+            })
+            
+            return response
+            
+        except subprocess.TimeoutExpired:
+            print("\r" + " " * 15 + "\r", end="", flush=True)
+            return "⏱️  Agent timeout (5 min). Try a simpler query or check agent status."
+        
+        except subprocess.CalledProcessError as e:
+            print("\r" + " " * 15 + "\r", end="", flush=True)
+            error = e.stderr.strip() if e.stderr else "Unknown error"
+            
+            if self.debug:
+                print(f"\n[DEBUG] Error: {error}")
+            
+            # Friendly error messages
+            if "not found" in error.lower():
+                return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
+            elif "not deployed" in error.lower():
+                return "❌ Agent not deployed. Run: ./deploy.sh agent"
+            else:
+                return f"❌ Agent error: {error[:200]}"
+        
+        except FileNotFoundError:
+            print("\r" + " " * 15 + "\r", end="", flush=True)
+            return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
+        
+        except Exception as e:
+            print("\r" + " " * 15 + "\r", end="", flush=True)
+            if self.debug:
+                print(f"\n[DEBUG] Unexpected error: {e}")
+            return f"❌ Unexpected error: {str(e)[:200]}"
+    
+    def _extract_clean_response(self, raw_output: str) -> str:
+        """Extract clean response from streaming output"""
+        try:
+            # Look for <answer> tags first (agent's final response)
+            if '<answer>' in raw_output and '</answer>' in raw_output:
+                start = raw_output.find('<answer>') + 8
+                end = raw_output.find('</answer>')
+                return raw_output[start:end].strip()
+            
+            # Parse JSON streaming output
+            lines = raw_output.split('\n')
+            for line in lines:
+                if '"message":' in line and '"content":' in line:
+                    try:
+                        import re
+                        json_match = re.search(r'\{.*\}', line)
+                        if json_match:
+                            data = json.loads(json_match.group())
+                            if 'message' in data and 'content' in data['message']:
+                                content = data['message']['content']
+                                if isinstance(content, list) and len(content) > 0:
+                                    text = content[0].get('text', '')
+                                    # Check for answer tags in JSON content
+                                    if '<answer>' in text and '</answer>' in text:
+                                        start = text.find('<answer>') + 8
+                                        end = text.find('</answer>')
+                                        return text[start:end].strip()
+                                    return text
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+            
+            # Fallback: return truncated raw output
+            if self.debug:
+                print(f"\n[DEBUG] Could not parse response, returning raw output")
+            return raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
+            
+        except Exception as e:
+            if self.debug:
+                print(f"\n[DEBUG] Extraction error: {e}")
+            return raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
+    
+    def export_conversation(self, filename: Optional[str] = None) -> str:
+        """Export conversation to JSON file"""
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"conversation_{timestamp}.json"
+        
+        export_data = {
+            "session_id": self.session_id,
+            "exported_at": datetime.now().isoformat(),
+            "message_count": len(self.conversation_history),
+            "conversations": self.conversation_history
+        }
+        
+        with open(filename, 'w') as f:
+            json.dump(export_data, f, indent=2)
+        
+        return filename
+    
+    def _show_welcome(self):
+        """Display welcome message with examples"""
+        print("╔" + "═" * 68 + "╗")
+        print("║" + " " * 15 + "🤖 Patch Automation Agent" + " " * 28 + "║")
+        print("╚" + "═" * 68 + "╝")
+        print()
+        print("💡 Ask me anything about vulnerabilities, patching, or compliance:")
+        print()
+        print("   • What vulnerabilities do we have?")
+        print("   • Handle the critical CVE from Inspector")
+        print("   • Show patch compliance status for production")
+        print("   • Create an emergency response plan for CVE-2025-38527")
+        print()
+        print("📝 Commands: 'export' to save, 'quit' to exit")
+        print("─" * 70)
+        print()
+    
+    def chat_loop(self):
+        """Interactive chat with rich UX"""
+        self._show_welcome()
+        
+        message_count = 0
+        
+        while True:
+            try:
+                # Get user input
+                user_input = input("You: ").strip()
+                
+                # Handle empty input
+                if not user_input:
+                    continue
+                
+                # Handle commands
+                if user_input.lower() in ['quit', 'exit', 'q']:
+                    print()
+                    print("─" * 70)
+                    print(f"👋 Session ended. {message_count} messages exchanged.")
+                    if message_count > 0:
+                        export = input("💾 Export conversation? (y/n): ").strip().lower()
+                        if export == 'y':
+                            filename = self.export_conversation()
+                            print(f"✅ Saved to {filename}")
+                    print("─" * 70)
+                    break
+                
+                if user_input.lower() == 'export':
+                    filename = self.export_conversation()
+                    print(f"✅ Saved to {filename}\n")
+                    continue
+                
+                if user_input.lower() == 'debug':
+                    self.debug = not self.debug
+                    print(f"🔧 Debug mode: {'ON' if self.debug else 'OFF'}\n")
+                    continue
+                
+                if user_input.lower() in ['help', '?']:
+                    self._show_welcome()
+                    continue
+                
+                # Send to agent
+                response = self.chat(user_input)
+                print(f"\n🤖 Agent:\n{response}\n")
+                
+                message_count += 1
+                
+            except KeyboardInterrupt:
+                print("\n")
+                print("─" * 70)
+                print("👋 Interrupted. Goodbye!")
+                print("─" * 70)
+                break
+            except Exception as e:
+                print(f"\n❌ Error: {e}\n")
+
+
+def main():
+    """Main entry point"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Patch Automation Chat Client - Trust the agent's intelligence",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                                    # Interactive chat
+  %(prog)s -m "What vulnerabilities exist?"   # Single message
+  %(prog)s -m "Handle CVE-2025-38527" -d      # Debug mode
+  %(prog)s -m "Show compliance" -e report.json # Export to file
+        """
+    )
+    
+    parser.add_argument("-m", "--message", help="Send single message")
+    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("-e", "--export", metavar="FILE", help="Export conversation to file")
+    
+    args = parser.parse_args()
+    
+    # Create client
+    client = PatchAutomationClient(debug=args.debug)
+    
+    if args.message:
+        # Single message mode
+        print("🤖 Patch Automation Agent\n")
+        response = client.chat(args.message)
+        print(f"{response}\n")
+        
+        if args.export:
+            filename = client.export_conversation(args.export)
+            print(f"💾 Saved to {filename}")
+    else:
+        # Interactive chat mode
+        client.chat_loop()
+
+
+if __name__ == "__main__":
+    main()
+

@@ -1,4 +1,5 @@
 bedrock-agentcore-starter-toolkit
+bedrock-agentcore
 strands-agents>=1.4.0
 strands-agents-tools>=0.2.3
 boto3

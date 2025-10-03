@@ -2,12 +2,14 @@
 
 import os
 import logging
+import globals
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from bedrock_agentcore.memory import MemoryClient
 from strands import Agent, tool
 from strands.models import BedrockModel
 from vulnerability_agent import gather_vulnerabilities
 from patch_manager import patching_operations
+from memory_hooks import AgentCoreMemoryHook
 
 # Configure minimal logging
 logging.getLogger("strands").setLevel(logging.WARNING)
@@ -84,16 +86,42 @@ def consult_patch_manager(query: str) -> str:
 
 @app.entrypoint
 async def agent_invocation(payload, context):
-    """Handler for agent invocation with patch automation coordination."""
+    """Handler for agent invocation with AgentCore memory integration."""
     logger.info("Starting Intelligent Patch Automation Supervisor")
     
-    # Extract session information
-    session_id = payload.get("session_id", "default-session")
+    # Use AgentCore provided session context
+    session_id = context.session_id
+    if not session_id:
+        raise Exception("AgentCore session_id is not set")
     
-    # Initialize memory client
+    logger.debug(f"Session ID: {session_id}")
+    
+    # Initialize AgentCore memory client
     memory_client = MemoryClient()
     
-    # Create agent with aws_query tool
+    # Get memory_id from AgentCore context or use configured value
+    try:
+        memory_id = getattr(context, 'memory_id', None) or "intelligent_patch_automation_praveen_mem-UytY1TCHdS"
+        logger.info(f"Using memory_id: {memory_id}")
+        
+    except Exception as e:
+        logger.error(f"Memory configuration error: {e}")
+        memory_id = "intelligent_patch_automation_praveen_mem-UytY1TCHdS"
+    
+    # Set global context for child agents
+    globals.MEMORY_ID = memory_id
+    globals.SESSION_ID = session_id
+    logger.info("Session context set for cross-agent memory sharing")
+    
+    # Create memory hook for supervisor agent
+    supervisor_memory_hook = AgentCoreMemoryHook(
+        memory_client=memory_client,
+        memory_id=memory_id,
+        actor_id="supervisor_agent",
+        session_id=session_id
+    )
+    
+    # Create agent with AgentCore memory integration
     agent = Agent(
         name="patch-automation-supervisor",
         model=BedrockModel(
@@ -104,7 +132,8 @@ async def agent_invocation(payload, context):
             max_tokens=4000
         ),
         system_prompt=SYSTEM_PROMPT,
-        tools=[consult_vulnerability_analyst, consult_patch_manager]
+        tools=[consult_vulnerability_analyst, consult_patch_manager],
+        hooks=[supervisor_memory_hook]  # Add memory hooks
     )
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
