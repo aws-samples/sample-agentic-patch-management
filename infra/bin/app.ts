@@ -39,6 +39,7 @@ const demoInstancesStack = new DemoInstancesStack(app, 'PatchAutomationInstances
 // AgentCore permissions for patch automation
 const agentCorePermissionsStack = new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
   env,
+  agentCoreRoleArn: 'arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-a154b39750',
   description: 'IAM permissions for AgentCore patch automation runtime'
 });
 

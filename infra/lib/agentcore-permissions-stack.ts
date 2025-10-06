@@ -2,8 +2,12 @@ import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
+export interface AgentCorePermissionsStackProps extends cdk.StackProps {
+  agentCoreRoleArn?: string;
+}
+
 export class AgentCorePermissionsStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props?: AgentCorePermissionsStackProps) {
     super(scope, id, props);
 
     // Create comprehensive IAM policy for AgentCore runtime
@@ -33,14 +37,16 @@ export class AgentCorePermissionsStack extends cdk.Stack {
             'ssm:DescribeInstanceInformation',
             'ssm:ListComplianceItems',
             'ssm:SendCommand',
-            'ssm:DescribeMaintenanceWindows',
-            'ssm:CreatePatchBaseline',
             'ssm:GetCommandInvocation',
+            'ssm:ListCommandInvocations',
             'ssm:DescribeInstancePatches',
+            'ssm:DescribeInstancePatchStates',
+            'ssm:DescribeMaintenanceWindows',
             'ssm:DescribePatchBaselines',
             'ssm:GetPatchBaseline',
-            'ssm:ListCommandInvocations',
-            'ssm:DescribeInstancePatchStates'
+            'ssm:CreatePatchBaseline',
+            'ssm:UpdatePatchBaseline',
+            'ssm:DeletePatchBaseline'
           ],
           resources: ['*']
         }),
@@ -50,7 +56,6 @@ export class AgentCorePermissionsStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: [
             'inspector2:ListFindings',
-            'inspector2:GetFindingDetails',
             'inspector2:BatchGetFreeTrialInfo',
             'inspector2:DescribeOrganizationConfiguration',
             'inspector2:GetConfiguration'
@@ -86,6 +91,12 @@ export class AgentCorePermissionsStack extends cdk.Stack {
         })
       ]
     });
+
+    // Attach policy to existing AgentCore role if ARN provided
+    if (props?.agentCoreRoleArn) {
+      const agentCoreRole = iam.Role.fromRoleArn(this, 'AgentCoreRole', props.agentCoreRoleArn);
+      agentCorePolicy.attachToRole(agentCoreRole);
+    }
 
     // Output the policy ARN for reference
     new cdk.CfnOutput(this, 'AgentCorePolicyArn', {

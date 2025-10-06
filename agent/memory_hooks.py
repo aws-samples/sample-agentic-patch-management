@@ -30,6 +30,7 @@ class AgentCoreMemoryHook(HookProvider):
         self.memory_id = memory_id
         self.actor_id = actor_id
         self.session_id = session_id
+        logger.info(f"Memory hook initialized for {actor_id} with memory_id: {memory_id}")
     
     def on_agent_initialized(self, event: AgentInitializedEvent):
         """Load recent conversation history when agent starts."""
@@ -41,30 +42,43 @@ class AgentCoreMemoryHook(HookProvider):
                 memory_id=self.memory_id,
                 actor_id=self.actor_id,
                 session_id=self.session_id,
-                k=20,  # Last 20 turns for context
+                k=10,  # Last 10 turns for context
                 branch_name="main"
             )
             
-            if recent_turns and recent_turns.get('turns'):
-                logger.info(f"Loaded {len(recent_turns['turns'])} conversation turns")
+            if recent_turns and isinstance(recent_turns, list):
+                logger.info(f"Loaded {len(recent_turns)} conversation turns")
                 
-                # Add conversation history to agent's message history
-                for turn in recent_turns['turns']:
-                    if turn.get('messages'):
-                        for message in turn['messages']:
-                            content = message.get('content', '')
-                            role = message.get('role', 'user')
+                # Process each turn - each turn is a list of messages
+                for turn in recent_turns:
+                    if isinstance(turn, list):
+                        for message in turn:
+                            if isinstance(message, dict):
+                                # Extract content and role from AgentCore format
+                                content_obj = message.get('content', {})
+                                if isinstance(content_obj, dict):
+                                    content = content_obj.get('text', '')
+                                else:
+                                    content = str(content_obj)
+                                
+                                role = message.get('role', 'user').lower()
+                                
+                                if content.strip():
+                                    # Add to agent's conversation history
+                                    event.agent.messages.append({
+                                        "role": role,
+                                        "content": [{"text": content, "type": "text"}]
+                                    })
+                                    logger.info(f"Added message: role={role}, content={content[:50]}...")
                             
-                            # Add to agent's conversation history
-                            event.agent.messages.append({
-                                "role": role,
-                                "content": [{"text": content, "type": "text"}]
-                            })
+                logger.info(f"Total agent messages after loading: {len(event.agent.messages)}")
             else:
                 logger.info("No previous conversation history found")
                 
         except Exception as e:
-            logger.error(f"Failed to load conversation history for {self.actor_id}: {e}")
+            logger.warning(f"Failed to load conversation history for {self.actor_id}: {e}")
+            import traceback
+            logger.warning(f"Traceback: {traceback.format_exc()}")
     
     def on_message_added(self, event: MessageAddedEvent):
         """Store conversation turns in AgentCore memory."""
@@ -78,7 +92,10 @@ class AgentCoreMemoryHook(HookProvider):
             content = latest_message.get("content", [{}])[0].get("text", "")
             role = latest_message.get("role", "assistant")
             
-            logger.info(f"Storing message in memory for {self.actor_id}")
+            if not content.strip():
+                return
+                
+            logger.info(f"Storing message in memory for {self.actor_id}: {content[:50]}...")
             
             # Store in AgentCore memory
             self.memory_client.create_event(
@@ -91,9 +108,10 @@ class AgentCoreMemoryHook(HookProvider):
             logger.info(f"Successfully stored message for {self.actor_id}")
             
         except Exception as e:
-            logger.error(f"Failed to store message for {self.actor_id}: {e}")
+            logger.warning(f"Failed to store message for {self.actor_id}: {e}")
     
     def register_hooks(self, registry: HookRegistry) -> None:
         """Register the memory hooks with the hook registry."""
+        logger.info(f"Registering memory hooks for {self.actor_id}")
         registry.add_callback(MessageAddedEvent, self.on_message_added)
         registry.add_callback(AgentInitializedEvent, self.on_agent_initialized)
