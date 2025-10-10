@@ -1,0 +1,481 @@
+"""Specific tools for patch automation - replaces generic use_aws"""
+
+import boto3
+import logging
+from strands import tool
+from typing import Optional, List, Dict
+
+logger = logging.getLogger(__name__)
+
+# Initialize AWS clients
+inspector_client = boto3.client('inspector2', region_name='us-east-1')
+ssm_client = boto3.client('ssm', region_name='us-east-1')
+ec2_client = boto3.client('ec2', region_name='us-east-1')
+config_client = boto3.client('config', region_name='us-east-1')
+
+
+@tool
+def get_vulnerability_findings(cve_id: Optional[str] = None, 
+                               severity: Optional[str] = None, 
+                               limit: int = 50) -> dict:
+    """Get vulnerability findings from AWS Inspector."""
+    try:
+        filters = {}
+        if cve_id:
+            filters['cveId'] = [{'comparison': 'EQUALS', 'value': cve_id}]
+        if severity:
+            filters['severity'] = [{'comparison': 'EQUALS', 'value': severity}]
+        
+        response = inspector_client.list_findings(
+            filterCriteria=filters,
+            maxResults=limit
+        )
+        
+        # list_findings returns full finding objects, not just ARNs
+        findings_data = response.get('findings', [])
+        if not findings_data:
+            return {"findings": [], "total_count": 0}
+        
+        findings = []
+        for finding in findings_data:
+            vuln_details = finding.get('packageVulnerabilityDetails', {})
+            findings.append({
+                'cve_id': vuln_details.get('vulnerabilityId'),
+                'severity': finding.get('severity'),
+                'cvss_score': vuln_details.get('cvss', [{}])[0].get('baseScore'),
+                'title': finding.get('title'),
+                'description': finding.get('description'),
+                'affected_resources': [r.get('id') for r in finding.get('resources', [])],
+                'status': finding.get('status'),
+                'fix_available': finding.get('fixAvailable')
+            })
+        
+        return {
+            "findings": findings,
+            "total_count": len(findings)
+        }
+    except Exception as e:
+        logger.error(f"Error getting vulnerability findings: {e}")
+        return {"error": str(e), "findings": [], "total_count": 0}
+
+
+@tool
+def get_instance_inventory(instance_ids: Optional[List[str]] = None,
+                          package_name: Optional[str] = None,
+                          environment: Optional[str] = None,
+                          limit: Optional[int] = None) -> dict:
+    """Get software inventory from AWS Systems Manager."""
+    try:
+        # Get instances by environment tag if specified
+        if environment and not instance_ids:
+            ec2_response = ec2_client.describe_instances(
+                Filters=[
+                    {'Name': 'tag:Environment', 'Values': [environment]},
+                    {'Name': 'instance-state-name', 'Values': ['running']}
+                ]
+            )
+            instance_ids = []
+            for reservation in ec2_response['Reservations']:
+                for instance in reservation['Instances']:
+                    instance_ids.append(instance['InstanceId'])
+        
+        # If no filters, get all running instances
+        if not instance_ids:
+            ec2_response = ec2_client.describe_instances(
+                Filters=[{'Name': 'instance-state-name', 'Values': ['running']}]
+            )
+            instance_ids = []
+            for reservation in ec2_response['Reservations']:
+                for instance in reservation['Instances']:
+                    instance_ids.append(instance['InstanceId'])
+        
+        # Apply limit if specified
+        if limit and len(instance_ids) > limit:
+            instance_ids = instance_ids[:limit]
+        
+        if not instance_ids:
+            return {"instances": [], "total_count": 0}
+        
+        # Get inventory for instances
+        instances = []
+        
+        for instance_id in instance_ids:
+            try:
+                # Get SSM instance information
+                ssm_info = ssm_client.describe_instance_information(
+                    Filters=[{
+                        'Key': 'InstanceIds',
+                        'Values': [instance_id]
+                    }]
+                )
+                
+                if not ssm_info.get('InstanceInformationList'):
+                    continue
+                
+                # Get instance tags
+                ec2_response = ec2_client.describe_instances(InstanceIds=[instance_id])
+                tags = ec2_response['Reservations'][0]['Instances'][0].get('Tags', [])
+                env_tag = next((t['Value'] for t in tags if t['Key'] == 'Environment'), 'unknown')
+                
+                # Get inventory if package_name specified
+                packages = []
+                if package_name:
+                    try:
+                        inv_response = ssm_client.list_inventory_entries(
+                            InstanceId=instance_id,
+                            TypeName='AWS:Application'
+                        )
+                        for entry in inv_response.get('Entries', []):
+                            if package_name.lower() in entry.get('Name', '').lower():
+                                packages.append({
+                                    'name': entry.get('Name'),
+                                    'version': entry.get('Version')
+                                })
+                    except:
+                        pass
+                
+                instances.append({
+                    'instance_id': instance_id,
+                    'environment': env_tag,
+                    'packages': packages
+                })
+            except Exception as e:
+                logger.warning(f"Error getting inventory for {instance_id}: {e}")
+                continue
+        
+        return {"instances": instances, "total_count": len(instances)}
+    except Exception as e:
+        logger.error(f"Error getting instance inventory: {e}")
+        return {"error": str(e), "instances": [], "total_count": 0}
+
+
+@tool
+def execute_patch_operation(instance_ids: List[str], 
+                           operation: str = "Install",
+                           cve_ids: Optional[List[str]] = None) -> dict:
+    """Execute patch operation via AWS Systems Manager."""
+    try:
+        params = {
+            'Operation': [operation],
+            'RebootOption': ['NoReboot']
+        }
+        
+        if cve_ids:
+            logger.warning("CVE-specific filtering requires custom patch baseline")
+        
+        response = ssm_client.send_command(
+            DocumentName='AWS-RunPatchBaseline',
+            InstanceIds=instance_ids,
+            Parameters=params
+        )
+        
+        return {
+            'command_id': response['Command']['CommandId'],
+            'status': response['Command']['Status'],
+            'instance_count': len(instance_ids)
+        }
+    except Exception as e:
+        logger.error(f"Error executing patch operation: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
+    """Get status of SSM command execution."""
+    try:
+        results = []
+        for instance_id in instance_ids:
+            try:
+                response = ssm_client.get_command_invocation(
+                    CommandId=command_id,
+                    InstanceId=instance_id
+                )
+                results.append({
+                    'instance_id': instance_id,
+                    'status': response['Status'],
+                    'output': response.get('StandardOutputContent', '')[:500]
+                })
+            except Exception as e:
+                results.append({
+                    'instance_id': instance_id,
+                    'status': 'Unknown',
+                    'output': str(e)
+                })
+        
+        # Calculate summary
+        summary = {
+            'success': len([r for r in results if r['status'] == 'Success']),
+            'failed': len([r for r in results if r['status'] == 'Failed']),
+            'in_progress': len([r for r in results if r['status'] == 'InProgress'])
+        }
+        
+        # Overall status
+        if summary['in_progress'] > 0:
+            overall_status = 'InProgress'
+        elif summary['failed'] > 0:
+            overall_status = 'Failed'
+        else:
+            overall_status = 'Success'
+        
+        return {
+            'command_id': command_id,
+            'status': overall_status,
+            'results': results,
+            'summary': summary
+        }
+    except Exception as e:
+        logger.error(f"Error getting command status: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def get_maintenance_windows(environment: Optional[str] = None) -> dict:
+    """Get maintenance windows from AWS Systems Manager."""
+    try:
+        response = ssm_client.describe_maintenance_windows()
+        windows = response.get('WindowIdentities', [])
+        
+        if environment:
+            windows = [w for w in windows if environment.lower() in w.get('Name', '').lower()]
+        
+        formatted_windows = []
+        for window in windows:
+            formatted_windows.append({
+                'window_id': window.get('WindowId'),
+                'name': window.get('Name'),
+                'enabled': window.get('Enabled'),
+                'schedule': window.get('Schedule'),
+                'next_execution': window.get('NextExecutionTime')
+            })
+        
+        return {"windows": formatted_windows, "total_count": len(formatted_windows)}
+    except Exception as e:
+        logger.error(f"Error getting maintenance windows: {e}")
+        return {"error": str(e), "windows": [], "total_count": 0}
+
+
+@tool
+def create_maintenance_window(name: str, schedule: str, duration: int,
+                              target_environment: str) -> dict:
+    """Create maintenance window in AWS Systems Manager."""
+    try:
+        response = ssm_client.create_maintenance_window(
+            Name=name,
+            Schedule=schedule,
+            Duration=duration,
+            Cutoff=1,
+            AllowUnassociatedTargets=False
+        )
+        
+        window_id = response['WindowId']
+        
+        # Register targets
+        ssm_client.register_target_with_maintenance_window(
+            WindowId=window_id,
+            ResourceType='INSTANCE',
+            Targets=[{
+                'Key': 'tag:Environment',
+                'Values': [target_environment]
+            }]
+        )
+        
+        return {
+            'window_id': window_id,
+            'name': name,
+            'schedule': schedule
+        }
+    except Exception as e:
+        logger.error(f"Error creating maintenance window: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def check_instance_health(instance_ids: List[str]) -> dict:
+    """Check instance health after patching operations."""
+    try:
+        health_results = []
+        
+        for instance_id in instance_ids:
+            try:
+                # Check SSM connectivity
+                ssm_info = ssm_client.describe_instance_information(
+                    Filters=[{'Key': 'InstanceIds', 'Values': [instance_id]}]
+                )
+                
+                if not ssm_info.get('InstanceInformationList'):
+                    health_results.append({
+                        'instance_id': instance_id,
+                        'ssm_status': 'UNREACHABLE',
+                        'health_score': 0,
+                        'issues': ['SSM agent not responding']
+                    })
+                    continue
+                
+                instance_info = ssm_info['InstanceInformationList'][0]
+                ping_status = instance_info.get('PingStatus', 'Unknown')
+                
+                # Health scoring
+                health_score = 100 if ping_status == 'Online' else 0
+                issues = [] if ping_status == 'Online' else [f'SSM ping status: {ping_status}']
+                
+                health_results.append({
+                    'instance_id': instance_id,
+                    'ssm_status': ping_status,
+                    'health_score': health_score,
+                    'issues': issues,
+                    'last_ping': str(instance_info.get('LastPingDateTime', 'N/A'))
+                })
+                
+            except Exception as e:
+                health_results.append({
+                    'instance_id': instance_id,
+                    'ssm_status': 'ERROR',
+                    'health_score': 0,
+                    'issues': [str(e)]
+                })
+        
+        # Calculate overall health
+        avg_health = sum(r['health_score'] for r in health_results) / len(health_results) if health_results else 0
+        unhealthy_count = sum(1 for r in health_results if r['health_score'] < 100)
+        
+        return {
+            'results': health_results,
+            'overall_health': avg_health,
+            'total_instances': len(instance_ids),
+            'unhealthy_instances': unhealthy_count,
+            'recommendation': 'HEALTHY' if avg_health >= 80 else 'INVESTIGATE' if avg_health >= 50 else 'ROLLBACK_RECOMMENDED'
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking instance health: {e}")
+        return {"error": str(e)}
+
+
+@tool
+def rollback_patches(instance_ids: List[str]) -> dict:
+    """Rollback patches using yum history undo."""
+    try:
+        # Use yum history to rollback the last transaction
+        rollback_script = """
+#!/bin/bash
+# Get the last yum transaction ID
+LAST_TRANSACTION=$(yum history list | grep -A1 "ID" | tail -1 | awk '{print $1}')
+
+if [ -z "$LAST_TRANSACTION" ]; then
+    echo "ERROR: No yum history found"
+    exit 1
+fi
+
+echo "Rolling back transaction ID: $LAST_TRANSACTION"
+yum history undo $LAST_TRANSACTION -y
+
+if [ $? -eq 0 ]; then
+    echo "SUCCESS: Rollback completed"
+    exit 0
+else
+    echo "ERROR: Rollback failed"
+    exit 1
+fi
+"""
+        
+        response = ssm_client.send_command(
+            DocumentName='AWS-RunShellScript',
+            InstanceIds=instance_ids,
+            Parameters={
+                'commands': [rollback_script]
+            },
+            Comment='Automated patch rollback'
+        )
+        
+        return {
+            'status': 'ROLLBACK_INITIATED',
+            'command_id': response['Command']['CommandId'],
+            'instance_count': len(instance_ids),
+            'instance_ids': instance_ids,
+            'message': 'Rollback command sent. Use get_command_status to verify completion.'
+        }
+        
+    except Exception as e:
+        logger.error(f"Error initiating rollback: {e}")
+        return {"error": str(e), "instance_ids": instance_ids}
+
+
+@tool
+def get_resource_dependencies(resource_id: str) -> dict:
+    """Get resource relationships and dependencies (uses EC2 metadata as fallback)."""
+    try:
+        # Try AWS Config first
+        try:
+            response = config_client.describe_configuration_recorders()
+            if response.get('ConfigurationRecorders'):
+                # Config is enabled, use it
+                config_response = config_client.get_resource_config_history(
+                    resourceId=resource_id,
+                    resourceType='AWS::EC2::Instance',
+                    limit=1
+                )
+                
+                for item in config_response.get('configurationItems', []):
+                    return {
+                        'resource_id': resource_id,
+                        'resource_type': 'AWS::EC2::Instance',
+                        'dependencies': item.get('relationships', []),
+                        'source': 'AWS Config'
+                    }
+        except:
+            pass
+        
+        # Fallback to EC2 metadata
+        ec2_response = ec2_client.describe_instances(InstanceIds=[resource_id])
+        if not ec2_response['Reservations']:
+            return {"error": f"Instance {resource_id} not found"}
+        
+        instance = ec2_response['Reservations'][0]['Instances'][0]
+        
+        # Extract dependencies from EC2 metadata
+        dependencies = []
+        
+        # VPC dependency
+        if instance.get('VpcId'):
+            dependencies.append({
+                'type': 'AWS::EC2::VPC',
+                'id': instance['VpcId'],
+                'relationship': 'is_contained_in'
+            })
+        
+        # Subnet dependency
+        if instance.get('SubnetId'):
+            dependencies.append({
+                'type': 'AWS::EC2::Subnet',
+                'id': instance['SubnetId'],
+                'relationship': 'is_contained_in'
+            })
+        
+        # Security groups
+        for sg in instance.get('SecurityGroups', []):
+            dependencies.append({
+                'type': 'AWS::EC2::SecurityGroup',
+                'id': sg['GroupId'],
+                'name': sg['GroupName'],
+                'relationship': 'is_associated_with'
+            })
+        
+        # IAM instance profile
+        if instance.get('IamInstanceProfile'):
+            dependencies.append({
+                'type': 'AWS::IAM::InstanceProfile',
+                'arn': instance['IamInstanceProfile']['Arn'],
+                'relationship': 'is_associated_with'
+            })
+        
+        return {
+            'resource_id': resource_id,
+            'resource_type': 'AWS::EC2::Instance',
+            'dependencies': dependencies,
+            'source': 'EC2 Metadata (Config not enabled)',
+            'total_dependencies': len(dependencies)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting resource dependencies: {e}")
+        return {"error": str(e), "resource_id": resource_id}
