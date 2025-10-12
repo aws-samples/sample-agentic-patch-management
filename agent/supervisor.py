@@ -58,6 +58,8 @@ INFORMATION QUERIES (single consultation):
 - "What are the critical/high severity vulnerabilities?" → consult_vulnerability_analyst only
 - "Show me infrastructure details" → consult_patch_manager only
 - "Tell me about this vulnerability" → consult_vulnerability_analyst only
+- "Check health of [environment]" → consult_patch_manager only
+- "Rollback [environment]" → consult_patch_manager only
 
 COMPLETE RESPONSE WORKFLOWS (structured multi-phase execution):
 - "Handle this vulnerability" → Delegate to patch_manager for phased execution

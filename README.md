@@ -74,12 +74,21 @@ Organizations face mounting challenges from:
 1. **Threat Assessment**: Vulnerability Analyst analyzes CVE from Inspector findings
 2. **Infrastructure Impact**: Patch Manager discovers affected systems across environments  
 3. **Strategic Response**: Supervisor coordinates emergency deployment with executive approval
-4. **Execution**: Staggered deployment (dev → staging → production) with rollback readiness
+4. **Execution**: Staggered deployment (dev → staging → production) with health verification
+5. **Rollback (if needed)**: Health check failures trigger rollback recommendation, requires user approval
 
 ### Standard Vulnerability Response (CVSS <7.0)
 1. **Risk Evaluation**: Analyst provides measured assessment of threat level
 2. **Maintenance Integration**: Manager optimizes deployment within existing windows
 3. **Coordinated Deployment**: Supervisor ensures proper approvals and timing
+
+### Rollback Workflow (Human-Validated)
+1. **Health Check**: Agent verifies instance health after patching (SSM connectivity)
+2. **Issue Detection**: Agent identifies unhealthy instances (health score < 80%)
+3. **Recommendation**: Agent recommends rollback with clear reasoning
+4. **User Decision**: Human approves or rejects rollback recommendation
+5. **Execution**: If approved, agent executes `yum history undo` via SSM
+6. **Verification**: Agent confirms rollback completion and halts phased rollout
 
 ## Key Features
 
@@ -96,7 +105,11 @@ Organizations face mounting challenges from:
 
 ### 🔄 Operational Excellence
 - **Maintenance Window Optimization**: Reuse existing schedules before creating new ones
-- **Rollback Readiness**: Automated failure detection and recovery procedures
+- **Human-Validated Rollback**: Health-check driven rollback with user approval
+  - Automated health verification after patching (SSM connectivity checks)
+  - Agent recommends rollback when issues detected (health score < 80%)
+  - User confirms rollback decision before execution
+  - SSM-based package restoration via `yum history undo`
 - **Staggered Deployments**: Risk mitigation through phased rollouts
 - **Real-time Monitoring**: Continuous deployment status tracking
 
@@ -241,6 +254,17 @@ agentcore invoke '{"prompt": "Check patch compliance status"}'
 
 # Test multi-agent coordination
 agentcore invoke '{"prompt": "Create a patch deployment plan for critical vulnerabilities"}'
+
+# Test rollback workflow (integrated)
+agentcore invoke '{"prompt": "Patch CVE-2025-38527 in staging and verify health"}'
+# Agent will: patch → check health → recommend rollback if issues detected
+
+# Test rollback workflow (manual steps)
+agentcore invoke '{"prompt": "Patch CVE-2025-38527 in staging"}'
+# After patching completes, check health:
+agentcore invoke '{"prompt": "Check health of staging instances"}'
+# If issues detected, user can request rollback:
+agentcore invoke '{"prompt": "Rollback staging patches"}'
 ```
 
 ### Monitoring and Debugging
@@ -336,7 +360,7 @@ aws logs filter-log-events \
 ## Target Scenarios
 
 ### ✅ Scenario 1: Automated Vulnerability-Driven Patch Response (Current)
-A new critical vulnerability is published affecting production systems. The agent retrieves information from AWS Inspector, pinpoints impacted systems, classifies urgency, and executes tailored remediation with proper approvals and rollback procedures.
+A new critical vulnerability is published affecting production systems. The agent retrieves information from AWS Inspector, pinpoints impacted systems, classifies urgency, and executes tailored remediation with proper approvals and human-validated rollback procedures.
 
 ### 🔄 Future Scenarios (Planned)
 - **Scenario 2**: Continuous Compliance Monitoring and Graceful Remediation
@@ -372,6 +396,7 @@ The clean 2-agent structure supports easy addition of specialist agents:
 - **AWS Service Integration**: Demonstrates smart use of native AWS capabilities
 - **Production-Ready Patterns**: Provides implementable enterprise architecture
 - **Operational Excellence**: Balances security urgency with stability requirements
+- **Human-in-the-Loop**: Critical decisions (rollback, prod deployment) require human approval
 
 ### Technical Differentiation
 - **Agentic Workflows**: Multi-agent coordination for complex operations
