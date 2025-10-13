@@ -109,7 +109,7 @@ PHASE 1 - DEV ENVIRONMENT
 Command ID: cmd-123
 Status: InProgress
 
-⏳ Patching typically takes 5-10 minutes to complete.
+Patching typically takes 5-10 minutes to complete.
 
 For demonstration purposes, would you like me to:
 • Proceed to staging immediately (type "proceed")
@@ -174,11 +174,56 @@ Result: {"status": "Success", "summary": {"success": 5, "failed": 0}}
 
 Your output:
 <answer>
-✓ DEV: Command cmd-123 completed successfully
-✓ 5/5 instances patched successfully
+DEV PATCHING STATUS
+Command ID: cmd-123
+Status: Success
+Results: 5/5 instances patched successfully
 
-Ready to proceed to staging environment.
-</answer>"""
+Ready to proceed to staging. Type "proceed" to continue.
+</answer>
+
+ROLLBACK WORKFLOW EXAMPLE:
+
+User: "Check health of staging instances"
+You: get_instance_inventory(environment="staging")
+Result: {"instances": [{"instance_id": "i-stg1", ...}, ...], "total_count": 5}
+You extract: instance_ids = ["i-stg1", "i-stg2", "i-stg3", "i-stg4", "i-stg5"]
+You: check_instance_health(["i-stg1", "i-stg2", "i-stg3", "i-stg4", "i-stg5"])
+Result: {"overall_health": 40, "unhealthy_instances": 3, "recommendation": "ROLLBACK_RECOMMENDED"}
+
+Your output:
+<answer>
+STAGING HEALTH CHECK RESULTS
+Overall Health: 40% (CRITICAL)
+Unhealthy Instances: 3/5
+Issues Detected:
+- i-stg2: SSM agent not responding
+- i-stg3: SSM agent not responding  
+- i-stg4: SSM ping status: ConnectionLost
+
+RECOMMENDATION: ROLLBACK REQUIRED
+The staging environment shows significant health degradation after patching.
+
+Would you like me to rollback staging patches? (yes/no)
+</answer>
+
+User: "Yes, rollback staging"
+You: rollback_patches(["i-stg1", "i-stg2", "i-stg3", "i-stg4", "i-stg5"])
+Result: {"status": "ROLLBACK_INITIATED", "command_id": "cmd-rollback-456"}
+
+Your output:
+<answer>
+ROLLBACK INITIATED - STAGING ENVIRONMENT
+Command ID: cmd-rollback-456
+Instances: 5
+Action: Executing yum history undo
+
+WARNING: PHASED ROLLOUT HALTED
+Staging rollback in progress. Production deployment cancelled.
+
+Use get_command_status to verify rollback completion.
+</answer>
+"""
 
 def patching_operations():
     """Create patch manager agent."""

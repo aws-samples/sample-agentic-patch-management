@@ -358,8 +358,8 @@ def rollback_patches(instance_ids: List[str]) -> dict:
         # Use yum history to rollback the last transaction
         rollback_script = """
 #!/bin/bash
-# Get the last yum transaction ID
-LAST_TRANSACTION=$(yum history list | grep -A1 "ID" | tail -1 | awk '{print $1}')
+# Get the last yum transaction ID (skip header and separator lines)
+LAST_TRANSACTION=$(yum history list | grep -E '^[[:space:]]*[0-9]+' | head -1 | awk '{print $1}')
 
 if [ -z "$LAST_TRANSACTION" ]; then
     echo "ERROR: No yum history found"
@@ -370,10 +370,10 @@ echo "Rolling back transaction ID: $LAST_TRANSACTION"
 yum history undo $LAST_TRANSACTION -y
 
 if [ $? -eq 0 ]; then
-    echo "SUCCESS: Rollback completed"
+    echo "SUCCESS: Rollback completed for transaction $LAST_TRANSACTION"
     exit 0
 else
-    echo "ERROR: Rollback failed"
+    echo "ERROR: Rollback failed for transaction $LAST_TRANSACTION"
     exit 1
 fi
 """
