@@ -131,7 +131,7 @@ def get_instance_inventory(instance_ids: Optional[List[str]] = None,
                                     'name': entry.get('Name'),
                                     'version': entry.get('Version')
                                 })
-                    except:
+                    except Exception:
                         pass
                 
                 instances.append({
@@ -422,8 +422,8 @@ def get_resource_dependencies(resource_id: str) -> dict:
                         'dependencies': item.get('relationships', []),
                         'source': 'AWS Config'
                     }
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Config API unavailable for {resource_id}, using EC2 fallback: {e}")
         
         # Fallback to EC2 metadata
         ec2_response = ec2_client.describe_instances(InstanceIds=[resource_id])

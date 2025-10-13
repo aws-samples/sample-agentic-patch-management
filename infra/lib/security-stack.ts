@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as config from 'aws-cdk-lib/aws-config';
 import { Construct } from 'constructs';
 
 interface SecurityStackProps extends cdk.StackProps {
@@ -196,6 +198,58 @@ export class SecurityStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AgentCoreExecutionRoleArn', {
       value: agentCoreExecutionRole.roleArn,
       description: 'IAM Role ARN for AgentCore execution'
+    });
+
+    // AWS Config for resource dependency tracking
+    const configBucket = new s3.Bucket(this, 'ConfigBucket', {
+      bucketName: `aws-config-cop407-${cdk.Stack.of(this).account}`,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [{
+        expiration: cdk.Duration.days(90),
+        noncurrentVersionExpiration: cdk.Duration.days(30)
+      }]
+    });
+
+    const configRole = new iam.Role(this, 'ConfigRole', {
+      roleName: 'AWSConfigRole-cop407',
+      assumedBy: new iam.ServicePrincipal('config.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWS_ConfigRole')
+      ]
+    });
+
+    configBucket.grantWrite(configRole);
+
+    const deliveryChannel = new config.CfnDeliveryChannel(this, 'ConfigDeliveryChannel', {
+      s3BucketName: configBucket.bucketName
+    });
+
+    const configRecorder = new config.CfnConfigurationRecorder(this, 'ConfigRecorder', {
+      roleArn: configRole.roleArn,
+      recordingGroup: {
+        allSupported: false,
+        includeGlobalResourceTypes: false,
+        resourceTypes: [
+          'AWS::EC2::Instance',
+          'AWS::EC2::SecurityGroup',
+          'AWS::EC2::VPC',
+          'AWS::EC2::Subnet',
+          'AWS::IAM::Role'
+        ]
+      }
+    });
+
+    new cdk.CfnOutput(this, 'ConfigBucketName', {
+      value: configBucket.bucketName,
+      description: 'S3 bucket for AWS Config snapshots'
+    });
+
+    new cdk.CfnOutput(this, 'ConfigRoleArn', {
+      value: configRole.roleArn,
+      description: 'IAM Role ARN for AWS Config'
     });
   }
 }
