@@ -120,13 +120,17 @@ Organizations face mounting challenges from:
 │   ├── vulnerability_agent.py      # Security analysis specialist
 │   ├── patch_manager.py           # Infrastructure and deployment operations
 │   ├── supervisor.py              # Multi-agent coordination
+│   ├── tools.py                   # AWS integration tools (9 tools)
+│   ├── memory_hooks.py            # AgentCore memory integration
 │   ├── requirements.txt           # Python dependencies
 │   ├── .bedrock_agentcore.yaml    # AgentCore configuration
 │   └── __init__.py                # Package initialization
 ├── infra/                         # Infrastructure as Code (AWS CDK)
 │   ├── lib/
 │   │   ├── agentcore-permissions-stack.ts  # IAM permissions for AgentCore
-│   │   └── patch-automation-stack.ts       # Main infrastructure stack
+│   │   ├── networking-stack.ts             # VPC and network configuration
+│   │   ├── security-stack.ts               # Security groups and IAM roles
+│   │   └── scenario1-demo-stack.ts         # Demo instances for Scenario 1
 │   ├── bin/
 │   │   └── app.ts                 # CDK app entry point
 │   ├── package.json               # Node.js dependencies
@@ -269,8 +273,8 @@ agentcore invoke '{"prompt": "Rollback staging patches"}'
 
 ### Monitoring and Debugging
 ```bash
-# View agent logs
-aws logs tail /aws/bedrock-agentcore/runtimes/intelligent_patch_automation-TzHdGwD6sO-DEFAULT \
+# View agent logs (replace <agent-runtime-name> with your actual runtime name)
+aws logs tail /aws/bedrock-agentcore/runtimes/<agent-runtime-name>-DEFAULT \
   --follow --region us-east-1
 
 # Check agent status
