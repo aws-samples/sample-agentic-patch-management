@@ -3,8 +3,7 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { NetworkingStack } from '../lib/networking-stack';
 import { SecurityStack } from '../lib/security-stack';
-import { DemoInstancesStack } from '../lib/demo-instances-stack';
-import { Scenario1DemoStack } from '../lib/scenario1-demo-stack';
+import { VulnerabilityDrivenPatchingStack } from '../lib/vulnerability-driven-patching-stack';
 import { AgentCorePermissionsStack } from '../lib/agentcore-permissions-stack';
 
 const app = new cdk.App();
@@ -35,24 +34,15 @@ const agentCorePermissionsStack = new AgentCorePermissionsStack(app, 'PatchAutom
   description: 'IAM permissions for AgentCore patch automation runtime'
 });
 
-// Scenario 1 Demo Stack (idempotent - can destroy/recreate for demos)
-const scenario1Stack = new Scenario1DemoStack(app, 'PatchAutomationScenario1', {
+// Vulnerability-Driven Patching Stack (idempotent - can destroy/recreate for demos)
+const vulnerabilityPatchingStack = new VulnerabilityDrivenPatchingStack(app, 'PatchAutomationVulnerabilityDriven', {
   env,
   vpc: networkingStack.vpc,
   securityGroup: securityStack.instanceSecurityGroup,
   instanceRole: securityStack.instanceRole,
-  description: 'Scenario 1: CVE-to-Action Intelligence - 15 instances for phased rollout demo'
+  description: 'Vulnerability-driven patch automation: 15 instances for phased rollout (dev/staging/prod)'
 });
-
-// Legacy demo instances stack (commented out - use Scenario1 instead)
-// const demoInstancesStack = new DemoInstancesStack(app, 'PatchAutomationInstances', {
-//   env,
-//   vpc: networkingStack.vpc,
-//   securityGroup: securityStack.instanceSecurityGroup,
-//   instanceRole: securityStack.instanceRole,
-//   description: 'Demo EC2 instances for patch automation demonstration (legacy)'
-// });
 
 // Add dependencies
 securityStack.addDependency(networkingStack);
-scenario1Stack.addDependency(securityStack);
+vulnerabilityPatchingStack.addDependency(securityStack);
