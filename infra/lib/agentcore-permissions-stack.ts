@@ -42,13 +42,32 @@ export class AgentCorePermissionsStack extends cdk.Stack {
             'ssm:DescribeInstancePatches',
             'ssm:DescribeInstancePatchStates',
             'ssm:DescribeMaintenanceWindows',
+            'ssm:GetMaintenanceWindow',
+            'ssm:DescribeMaintenanceWindowTargets',
+            'ssm:RegisterTaskWithMaintenanceWindow',
+            'ssm:DescribeMaintenanceWindowTasks',
             'ssm:DescribePatchBaselines',
             'ssm:GetPatchBaseline',
             'ssm:CreatePatchBaseline',
             'ssm:UpdatePatchBaseline',
-            'ssm:DeletePatchBaseline'
+            'ssm:DeletePatchBaseline',
+            'ssm:ListInventoryEntries'
           ],
           resources: ['*']
+        }),
+        
+        // S3 Permissions for Compliance Reports
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            's3:PutObject',
+            's3:GetObject',
+            's3:ListBucket'
+          ],
+          resources: [
+            `arn:aws:s3:::patch-compliance-reports-${this.account}`,
+            `arn:aws:s3:::patch-compliance-reports-${this.account}/*`
+          ]
         }),
         
         // Inspector Permissions

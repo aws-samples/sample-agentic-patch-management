@@ -251,5 +251,29 @@ export class SecurityStack extends cdk.Stack {
       value: configRole.roleArn,
       description: 'IAM Role ARN for AWS Config'
     });
+
+    // S3 bucket for compliance reports
+    const complianceReportsBucket = new s3.Bucket(this, 'ComplianceReportsBucket', {
+      bucketName: `patch-compliance-reports-${cdk.Stack.of(this).account}`,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [{
+        expiration: cdk.Duration.days(365)
+      }]
+    });
+
+    // Grant AgentCore write access to compliance reports bucket
+    complianceReportsBucket.grantWrite(
+      iam.Role.fromRoleArn(this, 'AgentCoreRoleForReports',
+        'arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-a154b39750'
+      )
+    );
+
+    new cdk.CfnOutput(this, 'ComplianceReportsBucketName', {
+      value: complianceReportsBucket.bucketName,
+      description: 'S3 bucket for patch compliance reports'
+    });
   }
 }

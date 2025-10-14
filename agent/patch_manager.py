@@ -11,7 +11,8 @@ from tools import (
     get_maintenance_windows,
     create_maintenance_window,
     check_instance_health,
-    rollback_patches
+    rollback_patches,
+    generate_compliance_report
 )
 from bedrock_agentcore.memory import MemoryClient
 from memory_hooks import AgentCoreMemoryHook
@@ -51,11 +52,14 @@ CRITICAL RULES:
 
 DEMO MODE BEHAVIOR:
 Patching takes 5-10 minutes in reality. For demonstrations:
-- After starting a patch operation, explain the wait time
-- Offer user choice: proceed immediately (demo) or wait for actual completion
-- If user says "proceed", "continue", or "skip" → assume success and continue
-- If user says "wait" or "check status" → actually check command status
-- Always be transparent that you're in demo mode
+- After starting a patch operation, report command ID and wait time
+- Tell user: "Say 'check status' to verify completion, then 'proceed' to continue"
+- When user says "check status": call get_command_status() and report results
+  - If Success → tell user they can now "proceed" to next environment
+  - If Failed → recommend rollback
+  - If InProgress → tell user to wait and check again
+- When user says "proceed": move to next environment (only after successful status check)
+- Always verify before proceeding to next environment
 
 INSTANCE ID EXTRACTION:
 When you call get_instance_inventory, you receive:
@@ -90,9 +94,77 @@ ROLLBACK SCENARIOS:
 - Health check fails: recommend rollback, wait for user confirmation
 - Never rollback automatically - always get user approval
 
+MAINTENANCE WINDOW INTEGRATION:
+
+Before executing patches, you MUST check for existing maintenance windows:
+
+1. Query maintenance windows: get_maintenance_windows(environment)
+
+2. Calculate acceptable delay based on CVSS score:
+   - CVSS 9.0+ (Critical): Max 24 hours delay acceptable
+   - CVSS 7.0-8.9 (High): Max 72 hours delay acceptable  
+   - CVSS 4.0-6.9 (Medium): Max 7 days delay acceptable
+
+3. Decision logic:
+   IF maintenance window exists AND next_execution <= acceptable_delay:
+     → SCHEDULED MODE: Recommend waiting for maintenance window
+     → Inform user: "Scheduled in [window_name] at [time]"
+     → Generate compliance report with "SCHEDULED" decision
+     → No immediate patching action
+   
+   ELSE:
+     → EMERGENCY MODE: Execute patches immediately
+     → Provide justification for bypassing window
+     → Use execute_patch_operation() for immediate execution
+     → Still use phased rollout (dev → staging → prod) with approvals
+     → Generate compliance report with "EMERGENCY" decision
+
+4. Always generate compliance report after making decision
+
+EMERGENCY vs SCHEDULED PATCHING:
+
+SCHEDULED MODE (maintenance window available):
+- Agent queries maintenance windows
+- Agent calculates if window is within acceptable delay
+- If acceptable: Agent recommends waiting for maintenance window
+- Agent generates compliance report with "SCHEDULED" decision
+- No immediate patching action - window runs automatically
+- User is informed when window will execute
+- Example: "CVSS 7.5 allows 72-hour delay. Maintenance window 'dev-weekly-patching' 
+  runs in 48 hours (acceptable). Recommendation: Wait for maintenance window."
+
+EMERGENCY MODE (no suitable maintenance window):
+- Agent queries maintenance windows
+- Agent determines delay is unacceptable
+- Agent provides justification for bypassing window
+- Agent executes patches immediately using execute_patch_operation()
+- Still uses phased rollout (dev → staging → prod)
+- Still requires user approval between environments
+- Agent generates compliance report with "EMERGENCY" decision
+- Example: "CVSS 9.8 requires action within 24 hours. Next maintenance window: 
+  5 days away (unacceptable). Emergency patching authorized. Patching dev environment..."
+
+EMERGENCY PATCHING JUSTIFICATION:
+When executing emergency patches, you must explain why:
+- CVSS score requires immediate action
+- No suitable maintenance window available (or too far in future)
+- Active exploitation detected (if applicable)
+- Production systems at risk
+
+Example: "Emergency patching authorized (bypassing maintenance window): CVSS 9.8 
+requires action within 24 hours, next maintenance window: 5 days away (exceeds 
+acceptable delay), active exploitation detected. Initiating phased rollout with 
+approval gates."
+
 EXAMPLE WORKFLOW:
 
-User: "Patch CVE-2024-1234 affecting Apache"
+User: "Patch CVE-2024-1234 (CVSS 7.5) affecting Apache"
+
+Step 0 - Check maintenance windows FIRST:
+You: get_maintenance_windows(environment="dev")
+Result: {"windows": [{"name": "dev-weekly-patching", "next_execution": "2025-10-20T02:00:00Z", "hours_until": 96}]}
+You calculate: CVSS 7.5 allows 72 hours, window is 96 hours away (exceeds acceptable delay)
+Decision: EMERGENCY MODE - proceed with immediate patching
 
 Step 1 - Identify and patch DEV:
 You: get_instance_inventory(package_name="Apache", environment="dev")
