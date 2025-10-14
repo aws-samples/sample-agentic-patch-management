@@ -17,8 +17,11 @@ Implement maintenance window integration with risk-based scheduling while preser
 - [ ] Add import for SSM maintenance window operations
 - [ ] Implement `get_maintenance_windows(environment: str = None)` function
 - [ ] Query SSM `describe_maintenance_windows()` API
+- [ ] For each window, get details via `get_maintenance_window()`
+- [ ] For each window, get targets via `describe_maintenance_window_targets()`
+- [ ] Calculate next execution time from cron schedule
 - [ ] Filter by environment tag if specified
-- [ ] Return: `window_id`, `name`, `schedule`, `next_execution_time`, `duration`
+- [ ] Return: `window_id`, `name`, `schedule`, `next_execution_time`, `duration`, `enabled`, `target_count`, `targets`
 - [ ] Add error handling for no windows found
 - [ ] Add `@tool` decorator
 
@@ -32,6 +35,12 @@ Implement maintenance window integration with risk-based scheduling while preser
       "schedule": "cron(0 2 ? * SUN *)",
       "next_execution": "2025-10-20T02:00:00Z",
       "duration_hours": 2,
+      "enabled": true,
+      "target_count": 5,
+      "targets": [{
+        "resource_type": "INSTANCE",
+        "filters": [{"key": "tag:Environment", "values": ["dev"]}]
+      }],
       "environment": "dev"
     }
   ],
@@ -39,32 +48,7 @@ Implement maintenance window integration with risk-based scheduling while preser
 }
 ```
 
-### Task 1.2: Add schedule_patch_in_maintenance_window() tool
-**File**: `agent/tools.py`
-
-- [ ] Implement `schedule_patch_in_maintenance_window()` function
-- [ ] Parameters: `instance_ids: list`, `window_id: str`, `cve_id: str`, `description: str`
-- [ ] Use SSM `register_task_with_maintenance_window()` API
-- [ ] Task type: `RUN_COMMAND`
-- [ ] Document: `AWS-RunPatchBaseline`
-- [ ] Target: Instance IDs
-- [ ] Return: `task_id`, `scheduled_time`, `window_name`
-- [ ] Add error handling for invalid window or instances
-- [ ] Add `@tool` decorator
-
-**Expected output format**:
-```json
-{
-  "task_id": "task-xxxxx",
-  "window_id": "mw-xxxxx",
-  "window_name": "dev-weekly-patching",
-  "scheduled_time": "2025-10-20T02:00:00Z",
-  "instance_count": 5,
-  "status": "scheduled"
-}
-```
-
-### Task 1.3: Add generate_compliance_report() tool
+### Task 1.2: Add generate_compliance_report() tool
 **File**: `agent/tools.py`
 
 - [ ] Implement `generate_compliance_report()` function
@@ -72,29 +56,45 @@ Implement maintenance window integration with risk-based scheduling while preser
 - [ ] Format report as structured JSON with timestamp
 - [ ] Include: CVE details, CVSS score, decision rationale, timeline, affected systems, results
 - [ ] Attempt to save to S3 bucket `patch-compliance-reports-{account}` (if exists)
+- [ ] S3 object key format: `{year}/{month}/{day}/{cve_id}-{environment}-{HHMMSSZ}.json`
+  - Example: `2025/10/14/CVE-2025-12345-dev-120530Z.json`
+  - Ensures unique keys (no overwrites)
+  - Organized by date for easy lifecycle management
 - [ ] If S3 fails, return report content in response
 - [ ] Return: `report_url` (if S3) or `report_content` (if local)
 - [ ] Add `@tool` decorator
 
+**S3 Key Format Details**:
+```python
+# Generate object key
+from datetime import datetime
+timestamp = datetime.utcnow()
+object_key = f"{timestamp.year}/{timestamp.month:02d}/{timestamp.day:02d}/{cve_id}-{environment}-{timestamp.strftime('%H%M%SZ')}.json"
+
+# Example result
+# 2025/10/14/CVE-2025-12345-dev-120530Z.json
+```
+
 **Expected output format**:
 ```json
 {
-  "report_id": "CVE-2025-12345-20251013",
-  "report_url": "s3://patch-compliance-reports-125140434174/CVE-2025-12345-20251013.json",
+  "report_id": "CVE-2025-12345-20251014-120530Z",
+  "report_url": "s3://patch-compliance-reports-125140434174/2025/10/14/CVE-2025-12345-dev-120530Z.json",
   "summary": {
     "cve_id": "CVE-2025-12345",
     "severity": "HIGH",
     "decision": "SCHEDULED",
+    "environment": "dev",
     "affected_instances": 5,
     "status": "scheduled"
   }
 }
 ```
 
-### Task 1.4: Import new tools in patch_manager.py
+### Task 1.3: Import new tools in patch_manager.py
 **File**: `agent/patch_manager.py`
 
-- [ ] Add imports: `get_maintenance_windows`, `schedule_patch_in_maintenance_window`, `generate_compliance_report`
+- [ ] Add imports: `get_maintenance_windows`, `generate_compliance_report`
 - [ ] Verify tools are available to agent
 
 ---
@@ -120,16 +120,21 @@ Implement maintenance window integration with risk-based scheduling while preser
 
 - [ ] Add section header: `EMERGENCY vs SCHEDULED PATCHING:`
 - [ ] Define SCHEDULED MODE behavior:
-  - Patches execute during maintenance window
-  - No immediate action
-  - User notified of scheduled time
-  - No approval needed (pre-approved via window)
+  - Agent queries maintenance windows
+  - Agent calculates if window is within acceptable delay
+  - If acceptable: Agent recommends waiting for maintenance window
+  - Agent generates compliance report with "SCHEDULED" decision
+  - No immediate patching action - window runs automatically
+  - User is informed when window will execute
 - [ ] Define EMERGENCY MODE behavior:
-  - Patches execute immediately (bypass window)
+  - Agent queries maintenance windows
+  - Agent determines delay is unacceptable
+  - Agent provides justification for bypassing window
+  - Agent executes patches immediately using execute_patch_operation()
   - Still uses phased rollout (dev → staging → prod)
   - Still requires user approval between environments
-  - Justification provided for bypassing window
-- [ ] Add example emergency flow with approval gates
+  - Agent generates compliance report with "EMERGENCY" decision
+- [ ] Add example flows for both modes
 
 ### Task 2.3: Add emergency justification template
 **File**: `agent/patch_manager.py`
@@ -163,20 +168,63 @@ Implement maintenance window integration with risk-based scheduling while preser
 
 - [ ] Create `DevMaintenanceWindow` with SSM construct
   - Name: `dev-weekly-patching`
-  - Schedule: `cron(0 2 ? * SUN *)` (Sunday 2 AM)
+  - Schedule: `cron(0 2 ? * SUN *)` (Sunday 2 AM UTC)
   - Duration: 2 hours
   - Cutoff: 0 hours
+  - AllowUnassociatedTargets: false
+- [ ] Register `DevWindowTarget` with SSM construct
+  - WindowId: devWindow.ref
+  - ResourceType: 'INSTANCE'
+  - Targets: tag:Environment = dev
+  - Name: 'dev-instances'
 - [ ] Create `StagingMaintenanceWindow` with SSM construct
   - Name: `staging-weekly-patching`
-  - Schedule: `cron(0 2 ? * TUE *)` (Tuesday 2 AM)
+  - Schedule: `cron(0 2 ? * TUE *)` (Tuesday 2 AM UTC)
   - Duration: 2 hours
   - Cutoff: 0 hours
+  - AllowUnassociatedTargets: false
+- [ ] Register `StagingWindowTarget` with SSM construct
+  - WindowId: stagingWindow.ref
+  - ResourceType: 'INSTANCE'
+  - Targets: tag:Environment = staging
+  - Name: 'staging-instances'
 - [ ] Create `ProdMaintenanceWindow` with SSM construct
   - Name: `prod-monthly-patching`
-  - Schedule: `cron(0 2 1 * ? *)` (1st of month, 2 AM)
+  - Schedule: `cron(0 2 1 * ? *)` (1st of month, 2 AM UTC)
   - Duration: 4 hours
   - Cutoff: 1 hour
+  - AllowUnassociatedTargets: false
+- [ ] Register `ProdWindowTarget` with SSM construct
+  - WindowId: prodWindow.ref
+  - ResourceType: 'INSTANCE'
+  - Targets: tag:Environment = prod
+  - Name: 'prod-instances'
 - [ ] Add CloudFormation outputs for window IDs
+
+**Example Implementation**:
+```typescript
+// Create window
+const devWindow = new ssm.CfnMaintenanceWindow(this, 'DevMaintenanceWindow', {
+  name: 'dev-weekly-patching',
+  description: 'Weekly maintenance window for dev environment',
+  schedule: 'cron(0 2 ? * SUN *)',
+  duration: 2,
+  cutoff: 0,
+  allowUnassociatedTargets: false
+});
+
+// Register targets
+new ssm.CfnMaintenanceWindowTarget(this, 'DevWindowTarget', {
+  windowId: devWindow.ref,
+  resourceType: 'INSTANCE',
+  targets: [{
+    key: 'tag:Environment',
+    values: ['dev']
+  }],
+  name: 'dev-instances',
+  description: 'All instances tagged with Environment=dev'
+});
+```
 
 ### Task 3.3: Deploy infrastructure stacks
 **Command**: `cd infra && cdk deploy --all --profile ri25-demo`
@@ -233,18 +281,7 @@ Implement maintenance window integration with risk-based scheduling while preser
 - [ ] Verify next_execution_time is calculated correctly
 - [ ] Test error handling (no windows found)
 
-### Task 5.2: Unit test schedule_patch_in_maintenance_window()
-**Command**: `cd agent && python3 -c "..."`
-
-- [ ] Get a real window ID from Task 5.1
-- [ ] Get a real instance ID from demo environment
-- [ ] Test scheduling a patch task
-- [ ] Verify task_id returned
-- [ ] Verify scheduled_time matches window schedule
-- [ ] Check SSM console to confirm task registered
-- [ ] Test error handling (invalid window ID)
-
-### Task 5.3: Unit test generate_compliance_report()
+### Task 5.2: Unit test generate_compliance_report()
 **Command**: `cd agent && python3 -c "..."`
 
 - [ ] Test with SCHEDULED decision
@@ -254,7 +291,7 @@ Implement maintenance window integration with risk-based scheduling while preser
 - [ ] Verify fallback to local return (if S3 fails)
 - [ ] Check S3 console for uploaded report
 
-### Task 5.4: Integration test - Scheduled patching flow
+### Task 5.3: Integration test - Scheduled patching flow (recommendation mode)
 **Command**: `cd agent && agentcore invoke '{"prompt": "..."}'`
 
 - [ ] Invoke with HIGH severity CVE (CVSS 7.5) in dev environment
@@ -280,7 +317,7 @@ Agent: "Patch task scheduled: task-xxxxx for Sunday 2025-10-20 02:00 AM"
 Agent: "Compliance report generated: s3://patch-compliance-reports-.../CVE-2025-12345.json"
 ```
 
-### Task 5.5: Integration test - Emergency patching flow
+### Task 5.4: Integration test - Emergency patching flow
 **Command**: `cd agent && agentcore invoke '{"prompt": "..."}'`
 
 - [ ] Invoke with CRITICAL severity CVE (CVSS 9.8) with active exploitation
@@ -315,12 +352,16 @@ Agent: "Patching staging environment..."
 Agent: "Compliance report generated with EMERGENCY justification"
 ```
 
-### Task 5.6: Integration test - Edge cases
+### Task 5.5: Integration test - Edge cases
 - [ ] Test CVE with no maintenance window defined
 - [ ] Test CVE with maintenance window too far in future
 - [ ] Test CVE with maintenance window in past (should find next occurrence)
-- [ ] Test scheduled patching with user saying "proceed" (should inform already scheduled)
+- [ ] Test scheduled mode with user saying "patch now" (should trigger emergency patching)
 - [ ] Test emergency patching with rollback scenario
+- [ ] Test with disabled maintenance window (should recommend emergency patching)
+- [ ] Test compliance report when S3 bucket doesn't exist (should return report locally)
+- [ ] Test with missing CVSS score (should prompt user or default to HIGH)
+- [ ] Test with instances missing Environment tag (should handle gracefully)
 
 ---
 
@@ -394,7 +435,7 @@ Agent: "Compliance report generated with EMERGENCY justification"
 ## Completion Checklist
 
 ### Code Changes
-- [ ] 3 new tools added to tools.py
+- [ ] 2 new tools added to tools.py (get_maintenance_windows, generate_compliance_report)
 - [ ] Tools imported in patch_manager.py
 - [ ] Patch Manager prompt updated with decision framework
 - [ ] Emergency vs scheduled modes documented in prompt
@@ -402,14 +443,15 @@ Agent: "Compliance report generated with EMERGENCY justification"
 
 ### Infrastructure Changes
 - [ ] ComplianceReportsBucket created in SecurityStack
-- [ ] 3 maintenance windows created in Scenario1Stack
+- [ ] 3 maintenance windows created in VulnerabilityDrivenPatchingStack
+- [ ] 3 maintenance window targets registered
 - [ ] S3 permissions added to AgentCorePermissionsStack
 - [ ] Maintenance window permissions added to AgentCorePermissionsStack
 - [ ] All stacks deployed successfully
 
 ### Testing Completed
-- [ ] All 3 tools unit tested
-- [ ] Scheduled patching flow tested end-to-end
+- [ ] Both tools unit tested
+- [ ] Scheduled patching flow tested end-to-end (recommendation mode)
 - [ ] Emergency patching flow tested end-to-end
 - [ ] Edge cases tested
 - [ ] Compliance reports verified in S3
@@ -418,7 +460,7 @@ Agent: "Compliance report generated with EMERGENCY justification"
 ### Documentation Updated
 - [ ] README.md updated with new workflow
 - [ ] README.md updated with testing examples
-- [ ] README.md updated with project structure
+- [ ] README.md updated with project structure (11 tools total)
 - [ ] README.md updated with key features
 - [ ] doc/updated_idea.md marked as implemented
 
