@@ -487,17 +487,8 @@ def get_resource_dependencies(resource_id: str) -> dict:
 def get_maintenance_windows(environment: str = None, instance_ids: list = None) -> dict:
     """Get maintenance window information and validate if specific instances are covered."""
     try:
-        # Query maintenance windows
-        filters = []
-        if environment:
-            filters.append({
-                'Key': 'Name',
-                'Values': [f'*{environment}*']
-            })
-        
-        response = ssm_client.describe_maintenance_windows(
-            Filters=filters if filters else []
-        )
+        # Query all maintenance windows (filter by environment later)
+        response = ssm_client.describe_maintenance_windows()
         
         # Get instance tags if instance_ids provided
         instance_tags = {}
@@ -584,6 +575,20 @@ def get_maintenance_windows(environment: str = None, instance_ids: list = None) 
                 if instance_ids:
                     coverage_percentage = int((len(instances_covered) / len(instance_ids)) * 100)
                 
+                # Determine window environment from targets
+                window_environment = 'unknown'
+                for target in target_list:
+                    for filter_item in target.get('filters', []):
+                        if filter_item.get('Key') == 'tag:Environment':
+                            values = filter_item.get('Values', [])
+                            if values:
+                                window_environment = values[0]
+                                break
+                
+                # Skip if environment filter specified and doesn't match
+                if environment and window_environment != environment:
+                    continue
+                
                 window_info = {
                     'window_id': window_id,
                     'name': window_details.get('Name'),
@@ -594,7 +599,7 @@ def get_maintenance_windows(environment: str = None, instance_ids: list = None) 
                     'enabled': window_details.get('Enabled'),
                     'target_count': len(target_list),
                     'targets': target_list,
-                    'environment': environment if environment else 'unknown'
+                    'environment': window_environment
                 }
                 
                 # Add instance validation results if requested

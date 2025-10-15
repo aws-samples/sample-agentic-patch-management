@@ -6,11 +6,14 @@ Multi-agent system for automated vulnerability-driven patch management using Str
 
 When a critical vulnerability is discovered, this system automatically:
 1. Analyzes the CVE threat level and business impact
-2. Discovers affected EC2 instances across environments
-3. Executes phased patching (dev → staging → production) with approval gates
-4. Monitors health and recommends rollback if issues detected
+2. Checks maintenance windows and calculates risk-based scheduling
+3. Decides between scheduled patching (wait for window) or emergency patching (immediate)
+4. Discovers affected EC2 instances across environments
+5. Executes phased patching (dev → staging → production) with approval gates
+6. Monitors health and recommends rollback if issues detected
+7. Generates compliance reports with audit trail
 
-**Key differentiator**: Agents make intelligent decisions based on context, not just execute scripts.
+**Key differentiator**: Agents make intelligent, risk-based decisions using maintenance windows and CVSS scores, not just execute scripts.
 
 ## Architecture
 
@@ -53,24 +56,28 @@ agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 
 ### ✅ Core Capabilities
 - **3 Agents**: Supervisor, Vulnerability Analyst, Patch Manager
-- **9 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, health checks, rollback
+- **11 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, health checks, rollback, maintenance windows, compliance reporting
+- **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
 - **Phased Rollout**: dev → staging → prod with human approval between environments
 - **Health Monitoring**: SSM connectivity checks after patching
 - **Rollback**: User-approved rollback via `yum history undo`
+- **Compliance Reporting**: Automated audit trail generation with S3 storage
 - **AWS Config Integration**: Resource dependency tracking
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
-- **Security Stack**: Security groups, IAM roles, AWS Config
-- **Demo Stack**: 15 EC2 instances (5 dev, 5 staging, 5 prod)
-- **Permissions Stack**: AgentCore IAM policies
+- **Security Stack**: Security groups, IAM roles, AWS Config, S3 compliance reports bucket
+- **Demo Stack**: 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows
+- **Permissions Stack**: AgentCore IAM policies (EC2, SSM, Inspector, Config, S3)
 
 ### ✅ Workflows
 - **Information Queries**: "What is CVE-X?", "Show me my instances"
 - **Vulnerability Analysis**: CVE assessment with CVSS scoring
+- **Maintenance-Aware Patching**: Risk-based scheduling (scheduled vs emergency modes)
 - **Patch Execution**: Phased deployment with approval gates
 - **Health Checks**: Post-patch verification
 - **Rollback**: Restore previous package versions
+- **Compliance Reporting**: Automated audit trail with S3 storage
 
 ## Project Structure
 
@@ -79,7 +86,9 @@ agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 │   ├── supervisor.py               # Orchestration
 │   ├── vulnerability_agent.py      # Security analysis
 │   ├── patch_manager.py            # Patching operations
-│   ├── tools.py                    # 9 AWS integration tools
+│   ├── tools.py                    # 11 AWS integration tools
+│   ├── config/
+│   │   └── sla_policy.json         # Compliance framework SLA mappings
 │   └── .bedrock_agentcore.yaml     # AgentCore config
 ├── infra/                          # AWS CDK infrastructure
 │   ├── lib/
@@ -111,13 +120,19 @@ agentcore invoke '{"prompt": "Check patch compliance status"}'
 ```
 
 ### Patching Workflow
-```bash
-# Patch single environment
-agentcore invoke '{"prompt": "Patch CVE-2025-12345 in dev environment"}'
 
-# Phased rollout (requires approval between environments)
-agentcore invoke '{"prompt": "Handle CVE-2025-12345 across all environments"}'
-# Agent patches dev, waits for "proceed", then staging, then prod
+```bash
+# Scheduled patching (MEDIUM severity - waits for maintenance window)
+agentcore invoke '{"prompt": "Handle CVE-2025-12345 (CVSS 5.5) in dev environment"}'
+# Agent checks maintenance window, recommends waiting for scheduled window
+
+# Emergency patching (CRITICAL severity - immediate action)
+agentcore invoke '{"prompt": "Handle CVE-2025-99999 (CVSS 9.8) with active exploitation in prod"}'
+# Agent checks maintenance window, determines delay unacceptable, patches immediately
+
+# Phased rollout with status checks
+agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev"}'
+# Agent patches dev → user says "check status" → user says "proceed" → staging → prod
 ```
 
 ### Health Check & Rollback
@@ -137,21 +152,16 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 
 **Demo Instances**: 15 EC2 instances tagged by environment (dev/staging/prod)
 
+**Maintenance Windows**: 
+- dev-daily-patching: Daily at 1 AM UTC
+- staging-weekly-patching: Tuesday at 2 AM UTC  
+- prod-monthly-patching: 1st of month at 2 AM UTC
+
 ## Current Limitations
 
-- **No maintenance window integration** - all patching is immediate (planned enhancement)
-- **No compliance reporting** - no audit trail generation (planned enhancement)
 - **Manual approval required** - between each environment in phased rollout
 - **SSM-only health checks** - connectivity-based, not application-aware
 - **Linux-only** - yum-based rollback for Amazon Linux/RHEL
-
-## What's Next
-
-See `doc/new-patching-flow.md` for planned enhancements:
-- Maintenance window integration (scheduled vs emergency patching)
-- Risk-based scheduling (CVSS-driven acceptable delay calculation)
-- Compliance report generation (audit trail for patching decisions)
-- S3-based report storage
 
 ## Monitoring
 
@@ -182,5 +192,4 @@ aws logs filter-log-events \
 ---
 
 **Status**: ✅ Core functionality complete  
-**Architecture**: 3-agent system with phased rollout + health checks + rollback  
-**Next**: Maintenance window integration & compliance reporting
+**Architecture**: 3-agent system with maintenance-aware patching + phased rollout + health checks + rollback + compliance reporting
