@@ -56,13 +56,14 @@ agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 
 ### ✅ Core Capabilities
 - **3 Agents**: Supervisor, Vulnerability Analyst, Patch Manager
-- **11 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, health checks, rollback, maintenance windows, compliance reporting
+- **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, health checks, rollback, maintenance windows, compliance reporting, dependency analysis
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
+- **Dependency Analysis**: AWS Config-based blast radius assessment with load balancer health tracking
 - **Phased Rollout**: dev → staging → prod with human approval between environments
 - **Health Monitoring**: SSM connectivity checks after patching
 - **Rollback**: User-approved rollback via `yum history undo`
 - **Compliance Reporting**: Automated audit trail generation with S3 storage
-- **AWS Config Integration**: Resource dependency tracking
+- **AWS Config Integration**: Resource dependency tracking and relationship discovery
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
@@ -86,7 +87,8 @@ agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 │   ├── supervisor.py               # Orchestration
 │   ├── vulnerability_agent.py      # Security analysis
 │   ├── patch_manager.py            # Patching operations
-│   ├── tools.py                    # 11 AWS integration tools
+│   ├── tools.py                    # 12 AWS integration tools
+│   ├── agent_factory.py            # Common agent creation (DRY)
 │   ├── config/
 │   │   └── sla_policy.json         # Compliance framework SLA mappings
 │   └── .bedrock_agentcore.yaml     # AgentCore config

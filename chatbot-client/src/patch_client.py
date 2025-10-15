@@ -214,7 +214,7 @@ class PatchAutomationClient:
     def _show_welcome(self):
         """Display welcome message with examples"""
         print("╔" + "═" * 68 + "╗")
-        print("║" + " " * 15 + "🤖 Patch Automation Agent" + " " * 28 + "║")
+        print("║" + " " * 15 + "🤖 Intelligent Patch Automation Agent" + " " * 28 + "║")
         print("╚" + "═" * 68 + "╝")
         print()
         print("💡 Ask me anything about vulnerabilities, patching, or compliance:")

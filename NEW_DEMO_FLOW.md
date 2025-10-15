@@ -85,9 +85,16 @@
    - Agent detects: "Staging health check failed: 3/5 instances unhealthy"
 
 4. **Dependency Analysis** (NEW CAPABILITY):
-   - Agent queries AWS Config for dependencies
-   - Identifies: API Gateway → ALB → Staging instances → RDS
-   - Shows impact: "API Gateway endpoints degraded, customer-facing APIs affected"
+   - Agent calls get_resource_dependencies(instance_id) for failed instances
+   - Queries AWS Config for resource relationships
+   - Identifies: Load Balancers → Target Groups → Instances
+   - Checks ALB target group health status
+   - Extracts business context from tags (Criticality, Team, Product, Compliance)
+   - Calculates blast radius:
+     - HIGH: Production + Load Balancer affected (customer-facing)
+     - MEDIUM: Staging + Load Balancer affected (internal services)
+     - LOW: Infrastructure dependencies only
+   - Shows impact: "ALB has 3/5 unhealthy targets, internal services affected"
 
 5. **Rollback Decision**:
    - Agent: "Staging patching resulted in application failures. Recommend rollback."
@@ -149,42 +156,51 @@ def check_application_health(
 
 ---
 
-### 2. Dependency Awareness (ENHANCEMENT)
+### 2. Dependency Awareness (IMPLEMENTED)
 
 **Current State**:
-- Agent patches instances in isolation
-- No visibility into what depends on these instances
-- Can't assess blast radius of failures
+- ✅ `get_resource_dependencies()` tool implemented
+- ✅ Queries AWS Config as primary source
+- ✅ Extracts business context from tags (Criticality, Team, Product, Compliance)
+- ✅ Queries ELB API for target group health status
+- ✅ Calculates blast radius (HIGH/MEDIUM/LOW)
+- ✅ Provides rollback recommendations
 
-**Required Enhancement**:
+**Implementation**:
 ```python
 @tool
-def analyze_dependencies(
-    instance_ids: list
-) -> dict:
+def get_resource_dependencies(resource_id: str) -> dict:
     """
-    Analyze infrastructure and application dependencies.
+    Analyze resource dependencies using AWS Config.
     
-    Uses AWS Config to identify:
-    1. Load balancers targeting these instances
-    2. API Gateways routing to these instances
-    3. Databases these instances connect to
-    4. Other services depending on these instances
-    
-    Returns dependency graph and impact assessment.
+    Returns:
+    - All relationships tracked by Config
+    - Load balancer health status
+    - Business context from tags
+    - Blast radius assessment (HIGH/MEDIUM/LOW)
+    - Rollback recommendation
     """
-    # Implementation:
-    # 1. Query AWS Config: get-resource-config-history
-    # 2. Find relationships: LoadBalancer -> TargetGroup -> Instances
-    # 3. Find relationships: APIGateway -> VPCLink -> NLB -> Instances
-    # 4. Build dependency tree
-    # 5. Assess impact: "If these instances fail, X services affected"
+    # 1. Query AWS Config for instance configuration
+    # 2. Extract tags and business context
+    # 3. Find target group relationships from Config
+    # 4. Query ELB API for health status
+    # 5. Calculate blast radius based on criticality + load balancer status
+    # 6. Generate recommendation
 ```
 
+**Infrastructure**:
+- ✅ AWS Config tracks: EC2::Instance, ELBv2::LoadBalancer, ELBv2::TargetGroup
+- ✅ 3 ALBs deployed (dev, staging, prod) with target groups
+- ✅ Instances registered with target groups
+- ✅ Criticality tags on all instances (Low/Medium/High)
+
+**Note**: Config takes 10-15 minutes after deployment to discover target group → instance relationships. Once discovered, tool will return full dependency graph with load balancer health.
+
 **Why This Matters**:
-- Understand blast radius before patching
-- Prioritize rollback when customer-facing services affected
-- Make informed risk decisions
+- Uses AWS Config as single source of truth (production best practice)
+- Demonstrates proper dependency tracking
+- Provides business context for rollback decisions
+- Scalable approach (not manual tag reading)
 
 ---
 
@@ -289,12 +305,16 @@ AGENT: "⚠️ Application health check FAILED: 3/5 instances not responding"
 
 YOU: "What's the impact?"
 
-AGENT: [Queries AWS Config]
-       "Dependency analysis:"
-       "- ALB staging-alb has 3/5 unhealthy targets"
-       "- API Gateway api-prod routes to this ALB"
-       "- Customer-facing APIs degraded"
-       "Recommendation: Rollback staging immediately"
+AGENT: [Queries AWS Config via get_resource_dependencies()]
+       "Dependency analysis (via AWS Config):"
+       "- Environment: staging (Criticality: Medium)"
+       "- Team: platform, Product: api-gateway"
+       "- Compliance: SOC2"
+       "- Load Balancer: staging-patch-demo-alb"
+       "  - Target Group: staging-patch-demo-tg"
+       "  - Health: 2/5 targets healthy (DEGRADED)"
+       "- Blast Radius: MEDIUM - Internal services affected"
+       "Recommendation: ROLLBACK RECOMMENDED - Load balancer health degraded"
 
 YOU: "rollback staging"
 

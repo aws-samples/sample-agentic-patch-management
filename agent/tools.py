@@ -1,6 +1,7 @@
 """Specific tools for patch automation - replaces generic use_aws"""
 
 import boto3
+import json
 import logging
 from strands import tool
 from typing import Optional, List, Dict
