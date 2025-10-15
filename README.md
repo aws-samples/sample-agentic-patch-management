@@ -159,6 +159,7 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 
 ## Current Limitations
 
+- **Demo mode behavior** - Agent may proceed between environments without strict status verification to maintain demo flow (5-10 min patching waits). Production use requires verify_and_proceed() tool implementation.
 - **Manual approval required** - between each environment in phased rollout
 - **SSM-only health checks** - connectivity-based, not application-aware
 - **Linux-only** - yum-based rollback for Amazon Linux/RHEL
