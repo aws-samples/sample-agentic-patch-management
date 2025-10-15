@@ -237,7 +237,9 @@ export class SecurityStack extends cdk.Stack {
           'AWS::EC2::SecurityGroup',
           'AWS::EC2::VPC',
           'AWS::EC2::Subnet',
-          'AWS::IAM::Role'
+          'AWS::IAM::Role',
+          'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          'AWS::ElasticLoadBalancingV2::TargetGroup'
         ]
       }
     });

@@ -12,7 +12,8 @@ from tools import (
     create_maintenance_window,
     check_instance_health,
     rollback_patches,
-    generate_compliance_report
+    generate_compliance_report,
+    get_resource_dependencies
 )
 from bedrock_agentcore.memory import MemoryClient
 from memory_hooks import AgentCoreMemoryHook
@@ -89,6 +90,13 @@ After patching completes (or in demo mode after user proceeds):
    - Recommend rollback: "Health check failed. Recommend rollback. Proceed with rollback?"
 3. If user confirms rollback: use rollback_patches(instance_ids)
 4. After rollback, STOP phased rollout and report to user
+
+DEPENDENCY ANALYSIS:
+When health check fails, analyze blast radius:
+1. Call get_resource_dependencies(instance_id) for one of the failed instances
+2. Report what depends on these instances (LoadBalancer, TargetGroup, etc.)
+3. Assess impact: "ALB has X/Y unhealthy targets" or "No critical dependencies"
+4. Include dependency context in rollback recommendation
 
 ROLLBACK SCENARIOS:
 - User explicitly requests: "rollback staging"
@@ -250,7 +258,8 @@ def patching_operations():
             get_maintenance_windows,
             create_maintenance_window,
             check_instance_health,
-            rollback_patches
+            rollback_patches,
+            get_resource_dependencies
         ],
         hooks=hooks
     )

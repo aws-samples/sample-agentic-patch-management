@@ -404,78 +404,134 @@ fi
 
 @tool
 def get_resource_dependencies(resource_id: str) -> dict:
-    """Get resource relationships and dependencies (uses EC2 metadata as fallback)."""
+    """
+    Analyze resource dependencies using AWS Config as primary source.
+    
+    Returns comprehensive view including:
+    - All relationships tracked by Config
+    - Load balancer health status
+    - Business context from tags
+    - Blast radius assessment
+    - Rollback recommendation
+    """
     try:
-        # Try AWS Config first
-        try:
-            response = config_client.describe_configuration_recorders()
-            if response.get('ConfigurationRecorders'):
-                # Config is enabled, use it
-                config_response = config_client.get_resource_config_history(
-                    resourceId=resource_id,
-                    resourceType='AWS::EC2::Instance',
-                    limit=1
-                )
-                
-                for item in config_response.get('configurationItems', []):
-                    return {
-                        'resource_id': resource_id,
-                        'resource_type': 'AWS::EC2::Instance',
-                        'dependencies': item.get('relationships', []),
-                        'source': 'AWS Config'
-                    }
-        except Exception as e:
-            logger.debug(f"Config API unavailable for {resource_id}, using EC2 fallback: {e}")
+        # Query AWS Config for instance configuration
+        config_response = config_client.get_resource_config_history(
+            resourceId=resource_id,
+            resourceType='AWS::EC2::Instance',
+            limit=1
+        )
         
-        # Fallback to EC2 metadata
-        ec2_response = ec2_client.describe_instances(InstanceIds=[resource_id])
-        if not ec2_response['Reservations']:
-            return {"error": f"Instance {resource_id} not found"}
+        if not config_response.get('configurationItems'):
+            return {"error": f"Instance {resource_id} not found in AWS Config"}
         
-        instance = ec2_response['Reservations'][0]['Instances'][0]
+        config_item = config_response['configurationItems'][0]
+        configuration = json.loads(config_item['configuration'])
+        relationships = config_item.get('relationships', [])
         
-        # Extract dependencies from EC2 metadata
-        dependencies = []
+        # Extract tags from Config
+        tags = {tag['key']: tag['value'] for tag in configuration.get('tags', [])}
+        environment = tags.get('Environment', 'unknown')
+        criticality = tags.get('Criticality', 'Unknown')
+        team = tags.get('Team', 'unknown')
+        product = tags.get('Product', 'unknown')
+        compliance = tags.get('ComplianceFrameworks', '')
         
-        # VPC dependency
-        if instance.get('VpcId'):
-            dependencies.append({
-                'type': 'AWS::EC2::VPC',
-                'id': instance['VpcId'],
-                'relationship': 'is_contained_in'
-            })
+        # Find load balancer relationships from Config
+        load_balancers = []
+        target_group_relationships = [r for r in relationships 
+                                     if r['resourceType'] == 'AWS::ElasticLoadBalancingV2::TargetGroup']
         
-        # Subnet dependency
-        if instance.get('SubnetId'):
-            dependencies.append({
-                'type': 'AWS::EC2::Subnet',
-                'id': instance['SubnetId'],
-                'relationship': 'is_contained_in'
-            })
+        if target_group_relationships:
+            elbv2_client = boto3.client('elbv2', region_name='us-east-1')
+            
+            for tg_rel in target_group_relationships:
+                try:
+                    # Get target group details
+                    tg_arn = tg_rel['resourceId']
+                    tg_response = elbv2_client.describe_target_groups(TargetGroupArns=[tg_arn])
+                    
+                    if tg_response['TargetGroups']:
+                        tg = tg_response['TargetGroups'][0]
+                        
+                        # Get health status
+                        health = elbv2_client.describe_target_health(TargetGroupArn=tg_arn)
+                        healthy = sum(1 for t in health['TargetHealthDescriptions'] 
+                                     if t['TargetHealth']['State'] == 'healthy')
+                        total = len(health['TargetHealthDescriptions'])
+                        
+                        # Get ALB name
+                        alb_name = 'unknown'
+                        if tg.get('LoadBalancerArns'):
+                            albs = elbv2_client.describe_load_balancers(
+                                LoadBalancerArns=tg['LoadBalancerArns']
+                            )
+                            if albs['LoadBalancers']:
+                                alb_name = albs['LoadBalancers'][0]['LoadBalancerName']
+                        
+                        load_balancers.append({
+                            'name': alb_name,
+                            'target_group': tg['TargetGroupName'],
+                            'healthy_targets': healthy,
+                            'total_targets': total,
+                            'status': 'HEALTHY' if healthy == total else 'DEGRADED' if healthy > 0 else 'UNHEALTHY'
+                        })
+                except Exception as e:
+                    logger.warning(f"Could not query target group {tg_rel['resourceId']}: {e}")
         
-        # Security groups
-        for sg in instance.get('SecurityGroups', []):
-            dependencies.append({
-                'type': 'AWS::EC2::SecurityGroup',
-                'id': sg['GroupId'],
-                'name': sg['GroupName'],
-                'relationship': 'is_associated_with'
-            })
+        # Calculate blast radius
+        blast_radius = 'LOW'
+        impact_description = 'Infrastructure dependencies only'
         
-        # IAM instance profile
-        if instance.get('IamInstanceProfile'):
-            dependencies.append({
-                'type': 'AWS::IAM::InstanceProfile',
-                'arn': instance['IamInstanceProfile']['Arn'],
-                'relationship': 'is_associated_with'
-            })
+        if load_balancers:
+            if criticality == 'High' or environment == 'prod':
+                blast_radius = 'HIGH'
+                impact_description = 'Customer-facing services affected'
+            elif criticality == 'Medium' or environment == 'staging':
+                blast_radius = 'MEDIUM'
+                impact_description = 'Internal services affected'
+        
+        # Generate recommendation
+        recommendation = 'MONITOR'
+        if load_balancers:
+            degraded = [lb for lb in load_balancers if lb['status'] != 'HEALTHY']
+            if degraded:
+                recommendation = 'ROLLBACK RECOMMENDED - Load balancer health degraded'
+        
+        # Extract infrastructure relationships
+        infrastructure = {
+            'vpc': next((r['resourceId'] for r in relationships if r['resourceType'] == 'AWS::EC2::VPC'), None),
+            'subnet': next((r['resourceId'] for r in relationships if r['resourceType'] == 'AWS::EC2::Subnet'), None),
+            'security_groups': [r['resourceId'] for r in relationships if r['resourceType'] == 'AWS::EC2::SecurityGroup']
+        }
         
         return {
             'resource_id': resource_id,
-            'resource_type': 'AWS::EC2::Instance',
-            'dependencies': dependencies,
-            'source': 'EC2 Metadata (Config not enabled)',
-            'total_dependencies': len(dependencies)
+            'environment': environment,
+            'blast_radius': blast_radius,
+            'impact_description': impact_description,
+            'business_context': {
+                'criticality': criticality,
+                'team': team,
+                'product': product,
+                'compliance_frameworks': compliance.split(',') if compliance else []
+            },
+            'dependencies': {
+                'load_balancers': load_balancers,
+                'infrastructure': infrastructure,
+                'total_relationships': len(relationships)
+            },
+            'recommendation': recommendation,
+            'summary': f"{blast_radius} blast radius - {impact_description}",
+            'source': 'AWS Config',
+            'config_capture_time': config_item.get('configurationItemCaptureTime')
+        }
+        
+    except Exception as e:
+        logger.error(f"Error analyzing dependencies for {resource_id}: {e}")
+        return {
+            'error': str(e),
+            'resource_id': resource_id
         }
         
     except Exception as e:

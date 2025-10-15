@@ -1,6 +1,0 @@
-**Query History**: Save and recall previous queries
-**Output Formatting**: JSON, table, or CSV output options
-**Logging**: Comprehensive logging for debugging
-**Batch Processing**: Execute multiple queries from a file
-**Result Caching**: Cache responses for repeated queries
-**Custom Query Templates**: Allow users to save their own templates
