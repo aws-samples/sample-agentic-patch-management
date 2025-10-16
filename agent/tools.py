@@ -357,6 +357,75 @@ def check_instance_health(instance_ids: List[str]) -> dict:
 
 
 @tool
+def check_service_status(instance_ids: List[str], service_name: str = "httpd") -> dict:
+    """Check if a service is running on instances."""
+    try:
+        command = f"systemctl is-active {service_name}"
+        
+        response = ssm_client.send_command(
+            InstanceIds=instance_ids,
+            DocumentName='AWS-RunShellScript',
+            Parameters={'commands': [command]},
+            TimeoutSeconds=30
+        )
+        
+        command_id = response['Command']['CommandId']
+        
+        # Wait briefly for command to complete
+        import time
+        time.sleep(3)
+        
+        # Get results
+        service_results = []
+        for instance_id in instance_ids:
+            try:
+                output = ssm_client.get_command_invocation(
+                    CommandId=command_id,
+                    InstanceId=instance_id
+                )
+                
+                status = output.get('Status')
+                stdout = output.get('StandardOutputContent', '').strip()
+                
+                # systemctl is-active returns "active" if running
+                is_running = (status == 'Success' and stdout == 'active')
+                
+                service_results.append({
+                    'instance_id': instance_id,
+                    'service': service_name,
+                    'status': 'running' if is_running else 'stopped',
+                    'is_healthy': is_running,
+                    'details': stdout if not is_running else 'active'
+                })
+                
+            except Exception as e:
+                service_results.append({
+                    'instance_id': instance_id,
+                    'service': service_name,
+                    'status': 'unknown',
+                    'is_healthy': False,
+                    'details': str(e)
+                })
+        
+        running_count = sum(1 for r in service_results if r['is_healthy'])
+        stopped_count = len(instance_ids) - running_count
+        
+        return {
+            'service': service_name,
+            'results': service_results,
+            'running_count': running_count,
+            'stopped_count': stopped_count,
+            'total_instances': len(instance_ids),
+            'all_healthy': stopped_count == 0,
+            'recommendation': 'HEALTHY' if stopped_count == 0 else 'ROLLBACK_RECOMMENDED'
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking service status: {e}")
+        return {"error": str(e)}
+
+
+@tool
 def rollback_patches(instance_ids: List[str]) -> dict:
     """Rollback patches using yum history undo."""
     try:

@@ -11,6 +11,7 @@ from tools import (
     get_maintenance_windows,
     create_maintenance_window,
     check_instance_health,
+    check_service_status,
     rollback_patches,
     generate_compliance_report,
     get_resource_dependencies
@@ -76,27 +77,37 @@ AVAILABLE TOOLS:
 - check_instance_health(instance_ids) - Check SSM connectivity after patching
 - rollback_patches(instance_ids) - Rollback using yum history undo
 
-HEALTH CHECK AND ROLLBACK:
-After patching completes (or in demo mode after user proceeds):
-1. AUTOMATICALLY check application health (don't wait for user to ask):
-   a. First check infrastructure: use check_instance_health(instance_ids) for SSM connectivity
-   b. Then check application: use SSM Run Command to verify service status
-      - Command: systemctl is-active httpd (or nginx, depending on application)
-      - If service is not "active" on any instance, that instance is unhealthy
-   c. Report results immediately: "Infrastructure: X/Y healthy, Application (httpd): X/Y healthy"
-2. If health check shows issues (infrastructure OR application failures):
-   - Report the issues clearly with instance IDs
-   - Show how many instances are unhealthy (e.g., "3/5 instances unhealthy")
-   - Recommend rollback: "Health check failed. Recommend rollback. Proceed with rollback?"
-3. If user confirms rollback: use rollback_patches(instance_ids)
-4. After rollback, STOP phased rollout and report to user
+AUTOMATIC HEALTH CHECK WORKFLOW:
+After EVERY patch operation completes, IMMEDIATELY perform health checks:
 
-DEPENDENCY ANALYSIS:
-When health check fails, analyze blast radius:
-1. Call get_resource_dependencies(instance_id) for one of the failed instances
-2. Report what depends on these instances (LoadBalancer, TargetGroup, etc.)
-3. Assess impact: "ALB has X/Y unhealthy targets" or "No critical dependencies"
-4. Include dependency context in rollback recommendation
+1. Check infrastructure: call check_instance_health(instance_ids)
+   - Verifies SSM connectivity
+   
+2. Check application: call check_service_status(instance_ids, "httpd")
+   - Verifies httpd service is running
+   - Returns running_count and stopped_count
+   
+3. Report results immediately:
+   "✅ Infrastructure: 5/5 healthy, Application (httpd): 5/5 running"
+   OR
+   "⚠️ Infrastructure: 5/5 healthy, Application (httpd): 2/5 running - FAILURE DETECTED"
+   "httpd stopped on instances: i-xxx, i-yyy, i-zzz"
+
+4. If ANY service failures detected:
+   - STOP immediately
+   - Call get_resource_dependencies() for one failed instance to assess blast radius
+   - Report impact: "ALB has 2/5 unhealthy targets"
+   - Recommend rollback: "Health check failed. Recommend rolling back [failed instances]. Proceed with rollback?"
+   
+5. If user confirms rollback:
+   - Call rollback_patches([failed_instance_ids]) - only rollback the failed instances
+   - After rollback, verify service came back: check_service_status() again
+   - Report: "Rollback complete. httpd now running on all instances."
+   
+6. If all healthy: Offer to proceed to next environment
+
+DO NOT wait for user to ask about health. DO NOT proceed without checking.
+This is MANDATORY after every patch operation.
 
 ROLLBACK SCENARIOS:
 - User explicitly requests: "rollback staging"
@@ -258,6 +269,7 @@ def patching_operations():
             get_maintenance_windows,
             create_maintenance_window,
             check_instance_health,
+            check_service_status,
             rollback_patches,
             get_resource_dependencies
         ],
