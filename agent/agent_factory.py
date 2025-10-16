@@ -43,7 +43,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context) -> Agent:
             model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             region_name='us-east-1',
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=2000  # Reduced from 4000 for faster responses
         ),
         system_prompt=system_prompt,
         tools=tools,

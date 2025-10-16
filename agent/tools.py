@@ -21,9 +21,11 @@ config_client = boto3.client('config', region_name='us-east-1')
 def get_vulnerability_findings(cve_id: Optional[str] = None, 
                                severity: Optional[str] = None, 
                                limit: int = 50) -> dict:
-    """Get vulnerability findings from AWS Inspector."""
+    """Get vulnerability findings from AWS Inspector (ACTIVE findings only)."""
     try:
-        filters = {}
+        filters = {
+            'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
+        }
         if cve_id:
             filters['cveId'] = [{'comparison': 'EQUALS', 'value': cve_id}]
         if severity:

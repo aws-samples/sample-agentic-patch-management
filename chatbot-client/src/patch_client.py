@@ -224,7 +224,7 @@ class PatchAutomationClient:
         print("   • Show patch compliance status for production")
         print("   • Create an emergency response plan for CVE-2025-38527")
         print()
-        print("📝 Commands: 'export' to save, 'quit' to exit")
+        print("📝 Commands: 'reset' to clear memory, 'export' to save, 'quit' to exit")
         print("─" * 70)
         print()
     
@@ -264,6 +264,13 @@ class PatchAutomationClient:
                 if user_input.lower() == 'debug':
                     self.debug = not self.debug
                     print(f"🔧 Debug mode: {'ON' if self.debug else 'OFF'}\n")
+                    continue
+                
+                if user_input.lower() == 'reset':
+                    old_session = self.session_id
+                    self.session_id = f"patch_{uuid.uuid4().hex[:12]}"
+                    self.conversation_history = []
+                    print(f"🔄 Session reset: {old_session} → {self.session_id}\n")
                     continue
                 
                 if user_input.lower() in ['help', '?']:
