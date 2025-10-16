@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # COP407 Intelligent Patch Automation - Fast Deployment Script
-# Usage: ./deploy-all.sh [all|infra|agent|frontend|env]
+# Usage: ./deploy.sh [all|infra|agent|frontend|env]
 
 set -e  # Exit on any error
 
@@ -57,7 +57,7 @@ check_prereqs() {
             ;;
         "agent")
             if [ ! -d "venv" ]; then
-                print_error "Virtual environment required. Run: ./deploy-all.sh env"
+                print_error "Virtual environment required. Run: ./deploy.sh env"
                 exit 1
             fi
             ;;
@@ -198,7 +198,7 @@ echo "• Test: agentcore invoke '{\"prompt\": \"Hello\"}'"
 echo "• Logs: aws logs tail /aws/bedrock-agentcore/runtimes/intelligent_patch_automation-TzHdGwD6sO-DEFAULT --follow"
 echo ""
 echo -e "${BLUE}Fast Deployments:${NC}"
-echo "• Environment only: ./deploy-all.sh env"
-echo "• Infrastructure only: ./deploy-all.sh infra"  
-echo "• Agent only: ./deploy-all.sh agent"
-echo "• Everything: ./deploy-all.sh all"
+echo "• Environment only: ./deploy.sh env"
+echo "• Infrastructure only: ./deploy.sh infra"  
+echo "• Agent only: ./deploy.sh agent"
+echo "• Everything: ./deploy.sh all"

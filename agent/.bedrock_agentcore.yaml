@@ -1,17 +1,17 @@
-default_agent: intelligent_patch_automation
+default_agent: intelligent_patch_automation_praveen
 agents:
-  intelligent_patch_automation:
-    name: intelligent_patch_automation
+  intelligent_patch_automation_praveen:
+    name: intelligent_patch_automation_praveen
     entrypoint: supervisor.py
     platform: linux/arm64
     container_runtime: finch
     aws:
-      execution_role: arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-2ec0af52bc
+      execution_role: arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-a154b39750
       execution_role_auto_create: false
       account: '125140434174'
       region: us-east-1
-      ecr_repository: 125140434174.dkr.ecr.us-east-1.amazonaws.com/intelligent_patch_automation
-      ecr_auto_create: true
+      ecr_repository: 125140434174.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-intelligent_patch_automation_praveen
+      ecr_auto_create: false
       network_configuration:
         network_mode: PUBLIC
       protocol_configuration:
@@ -19,21 +19,20 @@ agents:
       observability:
         enabled: true
     bedrock_agentcore:
-      agent_id: intelligent_patch_automation-TzHdGwD6sO
-      agent_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:runtime/intelligent_patch_automation-TzHdGwD6sO
-      agent_session_id: 1dc8f749-2350-400b-885c-472a4e6027ac
+      agent_id: intelligent_patch_automation_praveen-90LFV03r8h
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:runtime/intelligent_patch_automation_praveen-90LFV03r8h
+      agent_session_id: test-deps-79ddb1ad-49b4-4e1c-8d58-f0ad4d9ff1ff
     codebuild:
-      project_name: bedrock-agentcore-intelligent_patch_automation-builder
-      execution_role: arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-2ec0af52bc
+      project_name: bedrock-agentcore-intelligent_patch_automation_praveen-builder
+      execution_role: arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-a154b39750
       source_bucket: bedrock-agentcore-codebuild-sources-125140434174-us-east-1
     memory:
       mode: STM_ONLY
-      memory_id: intelligent_patch_automation_mem-La8v5RAIoS
-      memory_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:memory/intelligent_patch_automation_mem-La8v5RAIoS
-      memory_name: intelligent_patch_automation_mem
+      memory_id: intelligent_patch_automation_praveen_mem-lMRdfD5RJP
+      memory_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:memory/intelligent_patch_automation_praveen_mem-lMRdfD5RJP
+      memory_name: intelligent_patch_automation_praveen_mem
       event_expiry_days: 30
       first_invoke_memory_check_done: false
     authorizer_configuration: null
     request_header_configuration: null
-    oauth_configuration:
-      workload_name: null
+    oauth_configuration: null
