@@ -16,6 +16,7 @@ from tools import (
     generate_compliance_report,
     get_resource_dependencies
 )
+from use_aws_tool import use_aws
 from bedrock_agentcore.memory import MemoryClient
 from memory_hooks import AgentCoreMemoryHook
 
@@ -29,6 +30,16 @@ YOUR ROLE:
 Execute phased rollout (dev → staging → prod) with human approval between environments.
 Monitor patch operations and verify success before proceeding.
 Provide clear status updates and completion reports.
+
+SCOPE BOUNDARIES - CRITICAL:
+You ONLY handle infrastructure operations (EC2, SSM, patching, health checks).
+If the query is about:
+- Security analysis (CVE details, CVSS scores, threat assessment) → Return: OUT_OF_SCOPE
+- AWS services outside infrastructure (Lambda, S3, CloudWatch, billing, etc.) → Return: OUT_OF_SCOPE
+- General AWS information not related to patching → Return: OUT_OF_SCOPE
+
+When out of scope, respond with:
+<answer>OUT_OF_SCOPE: [Query type] is not an infrastructure operation. This requires [security analysis/AWS service access].</answer>
 
 PHASED ROLLOUT PROCESS (Multi-Invocation):
 1. When user requests patching, start with DEV environment ONLY
@@ -271,7 +282,8 @@ def patching_operations():
             check_instance_health,
             check_service_status,
             rollback_patches,
-            get_resource_dependencies
+            get_resource_dependencies,
+            use_aws
         ],
         hooks=hooks
     )

@@ -211,6 +211,34 @@ class PatchAutomationClient:
         
         return filename
     
+    def show_history(self):
+        """Display conversation history"""
+        if not self.conversation_history:
+            print("📝 No conversation history yet\n")
+            return
+        
+        print(f"\n📜 Conversation History ({len(self.conversation_history)} messages)")
+        print("=" * 70)
+        
+        for i, msg in enumerate(self.conversation_history, 1):
+            print(f"\n[{msg['timestamp']}] Message #{i}")
+            print(f"👤 You: {msg['user']}")
+            # Truncate long responses
+            agent_msg = msg['agent']
+            if len(agent_msg) > 200:
+                agent_msg = agent_msg[:200] + "..."
+            print(f"🤖 Agent: {agent_msg}")
+        print()
+    
+    def show_info(self):
+        """Display session information"""
+        print(f"\n🔗 Session Information")
+        print("=" * 40)
+        print(f"Session ID: {self.session_id}")
+        print(f"Messages: {len(self.conversation_history)}")
+        print(f"Debug Mode: {'ON' if self.debug else 'OFF'}")
+        print()
+    
     def _show_welcome(self):
         """Display welcome message with examples"""
         print("╔" + "═" * 68 + "╗")
@@ -224,7 +252,7 @@ class PatchAutomationClient:
         print("   • Show patch compliance status for production")
         print("   • Create an emergency response plan for CVE-2025-38527")
         print()
-        print("📝 Commands: 'reset' to clear memory, 'export' to save, 'quit' to exit")
+        print("📝 Commands: 'history' | 'info' | 'reset' | 'export' | 'quit'")
         print("─" * 70)
         print()
     
@@ -271,6 +299,14 @@ class PatchAutomationClient:
                     self.session_id = f"patch_{uuid.uuid4().hex[:12]}"
                     self.conversation_history = []
                     print(f"🔄 Session reset: {old_session} → {self.session_id}\n")
+                    continue
+                
+                if user_input.lower() == 'history':
+                    self.show_history()
+                    continue
+                
+                if user_input.lower() == 'info':
+                    self.show_info()
                     continue
                 
                 if user_input.lower() in ['help', '?']:

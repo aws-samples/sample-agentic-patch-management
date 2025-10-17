@@ -3,6 +3,7 @@
 import boto3
 import json
 import logging
+import time
 from strands import tool
 from typing import Optional, List, Dict
 from datetime import datetime
@@ -22,6 +23,9 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                                severity: Optional[str] = None, 
                                limit: int = 50) -> dict:
     """Get vulnerability findings from AWS Inspector (ACTIVE findings only)."""
+    start_time = time.time()
+    logger.info(f"[PROFILE] Tool: get_vulnerability_findings START")
+    
     try:
         filters = {
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
@@ -55,12 +59,16 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                 'fix_available': finding.get('fixAvailable')
             })
         
+        elapsed = time.time() - start_time
+        logger.info(f"[PROFILE] Tool: get_vulnerability_findings COMPLETE in {elapsed:.2f}s")
+        
         return {
             "findings": findings,
             "total_count": len(findings)
         }
     except Exception as e:
-        logger.error(f"Error getting vulnerability findings: {e}")
+        elapsed = time.time() - start_time
+        logger.error(f"[PROFILE] Tool: get_vulnerability_findings ERROR in {elapsed:.2f}s: {e}")
         return {"error": str(e), "findings": [], "total_count": 0}
 
 
