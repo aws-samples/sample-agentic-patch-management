@@ -107,6 +107,58 @@ export class AgentCorePermissionsStack extends cdk.Stack {
             'logs:GetLogEvents'
           ],
           resources: ['*']
+        }),
+        
+        // Broad Read Permissions for use_aws tool (demo purposes)
+        // Allows querying Lambda, S3, RDS, and other AWS services
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'lambda:List*',
+            'lambda:Get*',
+            'lambda:Describe*',
+            's3:List*',
+            's3:Get*',
+            'rds:Describe*',
+            'dynamodb:List*',
+            'dynamodb:Describe*',
+            'ecs:List*',
+            'ecs:Describe*',
+            'eks:List*',
+            'eks:Describe*',
+            'elasticloadbalancing:Describe*',
+            'autoscaling:Describe*',
+            'cloudformation:List*',
+            'cloudformation:Describe*',
+            'cloudformation:Get*',
+            'iam:List*',
+            'iam:Get*',
+            'sns:List*',
+            'sns:Get*',
+            'sqs:List*',
+            'sqs:Get*',
+            'apigateway:GET',
+            'route53:List*',
+            'route53:Get*',
+            'elasticache:Describe*',
+            'elasticbeanstalk:Describe*',
+            'kinesis:List*',
+            'kinesis:Describe*',
+            'firehose:List*',
+            'firehose:Describe*',
+            'glue:Get*',
+            'glue:List*',
+            'athena:List*',
+            'athena:Get*',
+            'states:List*',
+            'states:Describe*',
+            'events:List*',
+            'events:Describe*',
+            'backup:List*',
+            'backup:Describe*',
+            'tag:Get*'
+          ],
+          resources: ['*']
         })
       ]
     });

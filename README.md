@@ -58,15 +58,68 @@ git clone <repository-url>
 cd reinvent25-cop407-agentic-patch-management
 ./deploy.sh
 
-# 2. Test the agent
+# 2. Use the chat client (recommended)
+./chat.sh
+
+# 3. Or invoke directly
 cd agent
 agentcore invoke '{"prompt": "How many EC2 instances do I have?"}'
-
-# 3. Run a patching workflow
-agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 ```
 
 **Prerequisites**: Python 3.9+, AWS CLI, Bedrock AgentCore CLI, AWS account with SSM-managed instances
+
+## Chat Client
+
+Minimal, intelligent chat interface that trusts the agent's decision-making. No rigid commands, just natural conversation.
+
+### Interactive Mode
+```bash
+./chat.sh                    # Start interactive chat
+./chat.sh -p ri25-demo       # Use specific AWS profile
+./chat.sh -d                 # Enable debug mode
+```
+
+### Single Message Mode
+```bash
+./chat.sh -m "What vulnerabilities do we have?"
+./chat.sh -m "Handle CVE-2025-38527" -p ri25-demo
+./chat.sh -m "Show compliance" -e report.json  # Export to file
+```
+
+### Features
+- **Real-time agent activity** - See which specialist is working (🔍 Vulnerability Analyst, 🛠️ Patch Manager, ⚙️ AWS)
+- **Streaming responses** - Watch answers appear as they're generated
+- **Auto-export** - Conversations saved on exit
+- **Natural language** - No rigid commands, just ask
+- **Proper JSON parsing** - Robust event handling with graceful fallbacks
+- **Error handling** - Friendly messages with debug mode for troubleshooting
+
+### Commands (Interactive Mode)
+- `history` - Show conversation history
+- `info` - Session information
+- `export` - Save conversation to file
+- `debug` - Toggle debug mode
+- `reset` - Start new session
+- `help` or `?` - Show examples
+- `quit` - Exit (auto-saves conversation)
+
+### What You'll See
+```
+You: What critical vulnerabilities do we have?
+
+🔍 Consulting Vulnerability Analyst...
+
+🤖 Agent: I found 3 critical vulnerabilities in your environment:
+1. CVE-2025-38527 (CVSS 9.8)...
+
+──────────────────────────────────────────────────────────────────────
+```
+
+### Troubleshooting
+- **Agent not found**: `pip install bedrock-agentcore`
+- **Agent not deployed**: `./deploy.sh agent`
+- **Timeout (5 min)**: Try simpler query or check agent status
+- **Debug details**: Use `-d` flag to see full request/response flow
 
 ## Configuration
 

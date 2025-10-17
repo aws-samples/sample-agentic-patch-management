@@ -186,7 +186,9 @@ class PatchAutomationClient:
             error = ''.join(stderr_lines).strip() or "Unknown error"
             return self._handle_error(error)
         
-        return self._extract_clean_response(''.join(output_lines))
+        # Extract response for history, but return marker to prevent double print
+        full_response = self._extract_clean_response(''.join(output_lines))
+        return f"[STREAMED] {full_response}"
     
     def _run_blocking(self, cmd: list, env: dict) -> str:
         """Run agent with spinner (non-streaming)"""
@@ -381,7 +383,7 @@ class PatchAutomationClient:
                 response = self.chat(user_input)
                 
                 # Only print response if not already streamed
-                if not response.startswith("🤖"):
+                if not response.startswith("[STREAMED]"):
                     print(f"\n🤖 Agent:\n{response}")
                 
                 print("\n" + "─" * 70 + "\n")
@@ -431,7 +433,7 @@ Examples:
         response = client.chat(args.message, stream=True)
         
         # Only print if not already streamed
-        if not response.startswith("🤖"):
+        if not response.startswith("[STREAMED]"):
             print(f"{response}")
         print()
         
