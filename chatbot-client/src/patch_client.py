@@ -13,8 +13,16 @@ import os
 import subprocess
 import time
 import threading
+import re
+import logging
 from datetime import datetime
 from typing import Optional
+
+# Compile regex once at module level
+TEXT_DELTA_PATTERN = re.compile(r'"text":\s*"([^"]*(?:\\.[^"]*)*)"')
+
+# Configure logging
+logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] %(message)s')
 
 class PatchAutomationClient:
     """Minimal chat client - trust the agent's intelligence"""
@@ -27,19 +35,39 @@ class PatchAutomationClient:
         self.session_id = f"patch_{uuid.uuid4().hex[:12]}"
         
         if self.debug:
+            logging.getLogger().setLevel(logging.DEBUG)
             print(f"🔧 Debug Mode: ON")
             print(f"🔧 Session: {self.session_id}")
             if self.profile:
                 print(f"🔧 AWS Profile: {self.profile}")
             print()
     
+    def _handle_error(self, error: str) -> str:
+        """Centralized error handling"""
+        if "not found" in error.lower():
+            return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
+        elif "not deployed" in error.lower():
+            return "❌ Agent not deployed. Run: ./deploy.sh agent"
+        else:
+            return f"❌ Agent error:\n{error}"
+    
+    def _parse_text_delta(self, line: str) -> Optional[str]:
+        """Extract text from contentBlockDelta event"""
+        try:
+            match = TEXT_DELTA_PATTERN.search(line)
+            if match:
+                text = match.group(1)
+                # Unescape JSON
+                return text.replace('\\n', '\n').replace('\\"', '"').replace('\\/', '/')
+        except Exception as e:
+            logging.debug(f"Failed to parse text delta: {e}")
+        return None
+    
     def chat(self, message: str, stream: bool = True) -> str:
         """Send message to agent - it decides what to do"""
         payload = {"prompt": message, "session_id": self.session_id}
         
-        if self.debug:
-            print(f"\n[DEBUG] Payload:\n{json.dumps(payload, indent=2)}")
-            print(f"[DEBUG] Invoking agent...")
+        logging.debug(f"Payload: {json.dumps(payload, indent=2)}")
         
         try:
             # Build command with optional profile
@@ -49,110 +77,9 @@ class PatchAutomationClient:
                 env["AWS_PROFILE"] = self.profile
             
             if stream:
-                # Streaming mode - show response as it arrives
-                process = subprocess.Popen(
-                    cmd,
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1
-                )
-                
-                output_lines = []
-                response_started = False
-                last_agent_shown = None
-                
-                for line in iter(process.stdout.readline, ''):
-                    if not line:
-                        break
-                    output_lines.append(line)
-                    
-                    # Show agent activity
-                    if '"toolUse"' in line or '"name"' in line:
-                        if 'consult_vulnerability_analyst' in line and last_agent_shown != 'vuln':
-                            print("\n🔍 Working with the Vulnerability Analyst...", flush=True)
-                            last_agent_shown = 'vuln'
-                        elif 'consult_patch_manager' in line and last_agent_shown != 'patch':
-                            print("\n🛠️  Working with the Patch Manager...", flush=True)
-                            last_agent_shown = 'patch'
-                        elif 'use_aws' in line and last_agent_shown != 'aws':
-                            print("\n⚙️  Querying AWS...", flush=True)
-                            last_agent_shown = 'aws'
-                    
-                    # Show actual response text
-                    if '"contentBlockDelta"' in line and '"text"' in line:
-                        try:
-                            import re
-                            text_match = re.search(r'"text":\s*"([^"]*(?:\\.[^"]*)*)"', line)
-                            if text_match:
-                                text = text_match.group(1)
-                                # Unescape JSON
-                                text = text.replace('\\n', '\n').replace('\\"', '"').replace('\\/', '/')
-                                if text:
-                                    if not response_started:
-                                        print("\n🤖 Agent: ", end="", flush=True)
-                                        response_started = True
-                                    print(text, end="", flush=True)
-                        except Exception:
-                            pass
-                
-                process.wait(timeout=300)
-                
-                if not response_started:
-                    print("\n🤖 Agent: (processing...)", end="", flush=True)
-                
-                print()  # Newline after streaming
-                
-                raw_output = ''.join(output_lines)
-                
-                # Check for errors
-                if process.returncode != 0:
-                    error = process.stderr.read().strip() if process.stderr else "Unknown error"
-                    if "not found" in error.lower():
-                        return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
-                    elif "not deployed" in error.lower():
-                        return "❌ Agent not deployed. Run: ./deploy.sh agent"
-                    else:
-                        return f"❌ Agent error:\n{error}"
-                
-                response = self._extract_clean_response(raw_output)
-                
+                response = self._run_streaming(cmd, env)
             else:
-                # Non-streaming mode with spinner
-                spinner_active = threading.Event()
-                spinner_active.set()
-                
-                def show_spinner():
-                    chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-                    i = 0
-                    while spinner_active.is_set():
-                        print(f"\r{chars[i % len(chars)]} Thinking...", end="", flush=True)
-                        i += 1
-                        time.sleep(0.1)
-                    print("\r" + " " * 20 + "\r", end="", flush=True)
-                
-                spinner_thread = threading.Thread(target=show_spinner, daemon=True)
-                spinner_thread.start()
-                
-                result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
-                
-                spinner_active.clear()
-                spinner_thread.join(timeout=0.5)
-                
-                if result.returncode != 0:
-                    error = result.stderr.strip() if result.stderr else "Unknown error"
-                    if "not found" in error.lower():
-                        return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
-                    elif "not deployed" in error.lower():
-                        return "❌ Agent not deployed. Run: ./deploy.sh agent"
-                    else:
-                        return f"❌ Agent error:\n{error}"
-                
-                response = self._extract_clean_response(result.stdout)
-            
-            if self.debug:
-                print(f"[DEBUG] Response received")
+                response = self._run_blocking(cmd, env)
             
             # Store in history
             self.conversation_history.append({
@@ -165,19 +92,133 @@ class PatchAutomationClient:
             
         except subprocess.TimeoutExpired:
             return "⏱️  Agent timeout (5 min). Try a simpler query or check agent status."
-        
         except FileNotFoundError:
             return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
-        
         except Exception as e:
-            if self.debug:
-                print(f"\n[DEBUG] Unexpected error: {e}")
+            logging.error(f"Unexpected error: {e}", exc_info=True)
             return f"❌ Unexpected error: {str(e)}"
+    
+    def _run_streaming(self, cmd: list, env: dict) -> str:
+        """Run agent with streaming output"""
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+        
+        # Capture stderr in background thread
+        stderr_lines = []
+        def capture_stderr():
+            for line in iter(process.stderr.readline, ''):
+                if line:
+                    stderr_lines.append(line)
+        
+        stderr_thread = threading.Thread(target=capture_stderr, daemon=True)
+        stderr_thread.start()
+        
+        output_lines = []
+        response_started = False
+        last_agent_shown = None
+        
+        for line in iter(process.stdout.readline, ''):
+            if not line:
+                break
+            output_lines.append(line)
+            
+            # Parse JSON events properly
+            try:
+                event = json.loads(line.strip())
+                
+                # Detect tool usage
+                if isinstance(event, dict):
+                    # Check for toolUse event with name field
+                    tool_name = None
+                    if 'toolUse' in event:
+                        tool_name = event.get('toolUse', {}).get('name') if isinstance(event['toolUse'], dict) else None
+                    elif event.get('type') == 'toolUse' or 'name' in event:
+                        tool_name = event.get('name')
+                    
+                    if tool_name:
+                        if tool_name == 'consult_vulnerability_analyst' and last_agent_shown != 'vuln':
+                            print("\n🔍 Consulting Vulnerability Analyst...", flush=True)
+                            last_agent_shown = 'vuln'
+                        elif tool_name == 'consult_patch_manager' and last_agent_shown != 'patch':
+                            print("\n🛠️  Consulting Patch Manager...", flush=True)
+                            last_agent_shown = 'patch'
+                        elif tool_name == 'use_aws' and last_agent_shown != 'aws':
+                            print("\n⚙️  Querying AWS...", flush=True)
+                            last_agent_shown = 'aws'
+                    
+                    # Check for contentBlockDelta with text
+                    if 'contentBlockDelta' in event:
+                        delta = event['contentBlockDelta']
+                        if isinstance(delta, dict) and 'delta' in delta:
+                            text = delta['delta'].get('text')
+                            if text:
+                                if not response_started:
+                                    print("\n🤖 Agent: ", end="", flush=True)
+                                    response_started = True
+                                print(text, end="", flush=True)
+            
+            except (json.JSONDecodeError, KeyError, TypeError):
+                # Not valid JSON or unexpected structure - try regex fallback for text
+                if '"contentBlockDelta"' in line and '"text"' in line:
+                    text = self._parse_text_delta(line)
+                    if text:
+                        if not response_started:
+                            print("\n🤖 Agent: ", end="", flush=True)
+                            response_started = True
+                        print(text, end="", flush=True)
+        
+        process.wait(timeout=300)
+        stderr_thread.join(timeout=1)
+        
+        if not response_started:
+            print("\n🤖 Agent: (processing...)", end="", flush=True)
+        
+        print()  # Newline after streaming
+        
+        # Check for errors
+        if process.returncode != 0:
+            error = ''.join(stderr_lines).strip() or "Unknown error"
+            return self._handle_error(error)
+        
+        return self._extract_clean_response(''.join(output_lines))
+    
+    def _run_blocking(self, cmd: list, env: dict) -> str:
+        """Run agent with spinner (non-streaming)"""
+        spinner_active = threading.Event()
+        spinner_active.set()
+        
+        def show_spinner():
+            chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            i = 0
+            while spinner_active.is_set():
+                print(f"\r{chars[i % len(chars)]} Thinking...", end="", flush=True)
+                i += 1
+                time.sleep(0.1)
+            print("\r" + " " * 20 + "\r", end="", flush=True)
+        
+        spinner_thread = threading.Thread(target=show_spinner, daemon=True)
+        spinner_thread.start()
+        
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+        
+        spinner_active.clear()
+        spinner_thread.join(timeout=0.5)
+        
+        if result.returncode != 0:
+            error = result.stderr.strip() or "Unknown error"
+            return self._handle_error(error)
+        
+        return self._extract_clean_response(result.stdout)
     
     def _extract_clean_response(self, raw_output: str) -> str:
         """Extract clean response from streaming output"""
         try:
-            # Collect all text deltas from streaming output
             collected_text = []
             lines = raw_output.split('\n')
             
@@ -187,17 +228,9 @@ class PatchAutomationClient:
                 
                 # Look for contentBlockDelta events with text
                 if '"contentBlockDelta"' in line and '"text"' in line:
-                    try:
-                        # Extract text from JSON event
-                        import re
-                        text_match = re.search(r'"text":\s*"([^"]*(?:\\.[^"]*)*)"', line)
-                        if text_match:
-                            text = text_match.group(1)
-                            # Unescape JSON
-                            text = text.replace('\\n', '\n').replace('\\"', '"')
-                            collected_text.append(text)
-                    except Exception:
-                        pass
+                    text = self._parse_text_delta(line)
+                    if text:
+                        collected_text.append(text)
             
             # Join all collected text
             if collected_text:
@@ -211,14 +244,11 @@ class PatchAutomationClient:
                 
                 return full_response
             
-            # Fallback: return truncated raw output
-            if self.debug:
-                print(f"\n[DEBUG] Could not parse response")
+            logging.warning("Could not parse response from output")
             return "No response received. Try again or check agent status."
             
         except Exception as e:
-            if self.debug:
-                print(f"\n[DEBUG] Extraction error: {e}")
+            logging.error(f"Extraction error: {e}", exc_info=True)
             return "Error parsing response. Enable debug mode for details."
     
     def export_conversation(self, filename: Optional[str] = None) -> str:
