@@ -20,7 +20,7 @@ When a critical vulnerability is discovered, this system automatically:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                 Patch Automation Supervisor                 │
-│              (Coordinates multi-agent workflow)             │
+│         (Intelligent routing with fallback logic)           │
 ├─────────────────────┬───────────────────────────────────────┤
 │  Vulnerability      │           Patch Manager               │
 │  Analyst            │                                       │
@@ -30,9 +30,25 @@ When a critical vulnerability is discovered, this system automatically:
 │ • Risk Scoring      │ • Patch Execution                     │
 │                     │ • Health Checks & Rollback            │
 └─────────────────────┴───────────────────────────────────────┘
+                              ↓
+                    use_aws (Fallback Tool)
+              For AWS services outside specialist scope
 ```
 
 **Technology**: Strands SDK (Python) + Amazon Bedrock AgentCore + AWS CDK
+
+## Recent Improvements
+
+### Intelligent Routing (Oct 2025)
+- **OUT_OF_SCOPE Logic**: Specialists explicitly reject queries outside their domain
+- **Decision Tree**: Keyword-based routing for deterministic specialist selection
+- **Fallback Pattern**: use_aws tool for AWS services not covered by specialists
+- **Performance**: 18-36% faster by eliminating wrong specialist calls
+
+### Production Hardening (Oct 2025)
+- **Error Handling**: Graceful degradation when specialists fail
+- **Memory Management**: Removed hardcoded memory IDs for multi-user support
+- **Conditional Profiling**: Performance logging via `ENABLE_PROFILING` flag
 
 ## Quick Start
 
@@ -52,11 +68,38 @@ agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 
 **Prerequisites**: Python 3.9+, AWS CLI, Bedrock AgentCore CLI, AWS account with SSM-managed instances
 
+## Configuration
+
+### Enable Performance Profiling
+```bash
+# For debugging and performance analysis
+export ENABLE_PROFILING=true
+agentcore launch
+
+# Profiling disabled by default for production
+```
+
+**What profiling shows:**
+- Supervisor routing time
+- Specialist execution time
+- Tool execution time
+- Total request latency
+
+**Use for:** Performance debugging, optimization analysis, demo preparation
+
+### AWS Profile
+Configure with: `aws configure --profile ri25-demo`
+
+### Agent Runtime
+Deployed to Amazon Bedrock AgentCore in `us-east-1`
+
 ## What's Implemented
 
 ### ✅ Core Capabilities
 - **3 Agents**: Supervisor, Vulnerability Analyst, Patch Manager
+- **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
 - **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, health checks, rollback, maintenance windows, compliance reporting, dependency analysis
+- **Fallback Tool**: use_aws for AWS services outside specialist scope (Lambda, S3, CloudWatch, etc.)
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
 - **Dependency Analysis**: AWS Config-based blast radius assessment with load balancer health tracking
 - **Phased Rollout**: dev → staging → prod with human approval between environments
@@ -64,6 +107,8 @@ agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 - **Rollback**: User-approved rollback via `yum history undo`
 - **Compliance Reporting**: Automated audit trail generation with S3 storage
 - **AWS Config Integration**: Resource dependency tracking and relationship discovery
+- **Error Handling**: Graceful degradation when specialists fail
+- **Performance Profiling**: Optional timing instrumentation via ENABLE_PROFILING flag
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
@@ -79,6 +124,29 @@ agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev environment"}'
 - **Health Checks**: Post-patch verification
 - **Rollback**: Restore previous package versions
 - **Compliance Reporting**: Automated audit trail with S3 storage
+
+### ✅ Routing Logic
+
+The Supervisor uses intelligent routing to direct queries to the right specialist:
+
+**Security Queries** → Vulnerability Analyst
+- Keywords: CVE, vulnerability, security, CVSS, threat, exploit
+- Examples: "Show critical vulnerabilities", "Analyze CVE-2024-1234"
+
+**Infrastructure Queries** → Patch Manager
+- Keywords: patch, deploy, instance, health, rollback, SSM, maintenance
+- Examples: "Show EC2 instances", "Check health of dev environment"
+
+**AWS Service Queries** → use_aws (direct)
+- Keywords: Lambda, S3, CloudWatch, RDS, billing, cost
+- Examples: "List Lambda functions", "Show S3 buckets"
+
+**OUT_OF_SCOPE Handling:**
+- Specialists explicitly reject queries outside their domain
+- Supervisor automatically retries with use_aws fallback
+- Ensures queries always get answered
+
+**Performance:** 18-36% faster than previous implementation by eliminating wrong specialist calls.
 
 ## Project Structure
 

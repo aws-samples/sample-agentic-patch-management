@@ -4,12 +4,17 @@ import boto3
 import json
 import logging
 import time
+import os
 from strands import tool
 from typing import Optional, List, Dict
 from datetime import datetime
 from croniter import croniter
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Profiling flag
+ENABLE_PROFILING = os.environ.get("ENABLE_PROFILING", "false").lower() == "true"
 
 # Initialize AWS clients
 inspector_client = boto3.client('inspector2', region_name='us-east-1')
@@ -24,7 +29,8 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                                limit: int = 50) -> dict:
     """Get vulnerability findings from AWS Inspector (ACTIVE findings only)."""
     start_time = time.time()
-    logger.info(f"[PROFILE] Tool: get_vulnerability_findings START")
+    if ENABLE_PROFILING:
+        logger.info(f"[PROFILE] Tool: get_vulnerability_findings START")
     
     try:
         filters = {
@@ -59,16 +65,20 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                 'fix_available': finding.get('fixAvailable')
             })
         
-        elapsed = time.time() - start_time
-        logger.info(f"[PROFILE] Tool: get_vulnerability_findings COMPLETE in {elapsed:.2f}s")
+        if ENABLE_PROFILING:
+            elapsed = time.time() - start_time
+            logger.info(f"[PROFILE] Tool: get_vulnerability_findings COMPLETE in {elapsed:.2f}s")
         
         return {
             "findings": findings,
             "total_count": len(findings)
         }
     except Exception as e:
-        elapsed = time.time() - start_time
-        logger.error(f"[PROFILE] Tool: get_vulnerability_findings ERROR in {elapsed:.2f}s: {e}")
+        if ENABLE_PROFILING:
+            elapsed = time.time() - start_time
+            logger.error(f"[PROFILE] Tool: get_vulnerability_findings ERROR in {elapsed:.2f}s: {e}")
+        else:
+            logger.error(f"Error getting vulnerability findings: {e}")
         return {"error": str(e), "findings": [], "total_count": 0}
 
 

@@ -13,6 +13,9 @@ from use_aws_tool import use_aws
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Profiling flag - set to False for production
+ENABLE_PROFILING = os.environ.get("ENABLE_PROFILING", "false").lower() == "true"
+
 # Configure environment
 os.environ["BYPASS_TOOL_CONSENT"] = os.environ.get("BYPASS_TOOL_CONSENT", "true")
 os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "disabled"
@@ -101,29 +104,49 @@ Present results concisely within <answer></answer> tags."""
 def consult_vulnerability_analyst(query: str) -> str:
     """Get vulnerability analysis from security specialist."""
     start_time = time.time()
-    logger.info(f"[PROFILE] Supervisor → Vulnerability Analyst: START")
+    if ENABLE_PROFILING:
+        logger.info(f"[PROFILE] Supervisor → Vulnerability Analyst: START")
     
-    vuln_agent = gather_vulnerabilities()
-    result = vuln_agent(query)
-    
-    elapsed = time.time() - start_time
-    logger.info(f"[PROFILE] Vulnerability Analyst: COMPLETE in {elapsed:.2f}s")
-    
-    return result.message['content'][0]['text']
+    try:
+        vuln_agent = gather_vulnerabilities()
+        result = vuln_agent(query)
+        
+        if ENABLE_PROFILING:
+            elapsed = time.time() - start_time
+            logger.info(f"[PROFILE] Vulnerability Analyst: COMPLETE in {elapsed:.2f}s")
+        
+        return result.message['content'][0]['text']
+    except Exception as e:
+        if ENABLE_PROFILING:
+            elapsed = time.time() - start_time
+            logger.error(f"[PROFILE] Vulnerability Analyst: ERROR in {elapsed:.2f}s: {e}")
+        else:
+            logger.error(f"Vulnerability Analyst error: {e}")
+        return f"Error consulting vulnerability analyst: {str(e)}. Please try again or rephrase your query."
 
 @tool  
 def consult_patch_manager(query: str) -> str:
     """Get patch deployment plan from infrastructure specialist."""
     start_time = time.time()
-    logger.info(f"[PROFILE] Supervisor → Patch Manager: START")
+    if ENABLE_PROFILING:
+        logger.info(f"[PROFILE] Supervisor → Patch Manager: START")
     
-    patch_agent = patching_operations()
-    result = patch_agent(query)
-    
-    elapsed = time.time() - start_time
-    logger.info(f"[PROFILE] Patch Manager: COMPLETE in {elapsed:.2f}s")
-    
-    return result.message['content'][0]['text']
+    try:
+        patch_agent = patching_operations()
+        result = patch_agent(query)
+        
+        if ENABLE_PROFILING:
+            elapsed = time.time() - start_time
+            logger.info(f"[PROFILE] Patch Manager: COMPLETE in {elapsed:.2f}s")
+        
+        return result.message['content'][0]['text']
+    except Exception as e:
+        if ENABLE_PROFILING:
+            elapsed = time.time() - start_time
+            logger.error(f"[PROFILE] Patch Manager: ERROR in {elapsed:.2f}s: {e}")
+        else:
+            logger.error(f"Patch Manager error: {e}")
+        return f"Error consulting patch manager: {str(e)}. Please try again or rephrase your query."
 
 @app.entrypoint
 async def agent_invocation(payload, context):
@@ -132,7 +155,9 @@ async def agent_invocation(payload, context):
     
     request_start = time.time()
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
-    logger.info(f"[PROFILE] REQUEST START: {user_message[:50]}...")
+    
+    if ENABLE_PROFILING:
+        logger.info(f"[PROFILE] REQUEST START: {user_message[:50]}...")
     
     # Create agent with factory
     agent = create_agent(
@@ -143,20 +168,22 @@ async def agent_invocation(payload, context):
     )
     
     supervisor_start = time.time()
-    logger.info(f"[PROFILE] Supervisor thinking: START")
+    if ENABLE_PROFILING:
+        logger.info(f"[PROFILE] Supervisor thinking: START")
     
     # Stream response
     stream = agent.stream_async(user_message)
     first_token = True
     async for event in stream:
-        if first_token:
+        if first_token and ENABLE_PROFILING:
             first_token_time = time.time() - supervisor_start
             logger.info(f"[PROFILE] Supervisor first token: {first_token_time:.2f}s")
             first_token = False
         yield event
     
-    total_time = time.time() - request_start
-    logger.info(f"[PROFILE] REQUEST COMPLETE: {total_time:.2f}s total")
+    if ENABLE_PROFILING:
+        total_time = time.time() - request_start
+        logger.info(f"[PROFILE] REQUEST COMPLETE: {total_time:.2f}s total")
 
 if __name__ == "__main__":
     app.run()

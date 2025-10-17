@@ -11,23 +11,29 @@ import uuid
 import sys
 import os
 import subprocess
+import time
+import threading
 from datetime import datetime
 from typing import Optional
 
 class PatchAutomationClient:
     """Minimal chat client - trust the agent's intelligence"""
     
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, profile: Optional[str] = None):
         """Initialize client"""
         self.debug = debug
+        self.profile = profile
         self.conversation_history = []
         self.session_id = f"patch_{uuid.uuid4().hex[:12]}"
         
         if self.debug:
             print(f"🔧 Debug Mode: ON")
-            print(f"🔧 Session: {self.session_id}\n")
+            print(f"🔧 Session: {self.session_id}")
+            if self.profile:
+                print(f"🔧 AWS Profile: {self.profile}")
+            print()
     
-    def chat(self, message: str) -> str:
+    def chat(self, message: str, stream: bool = True) -> str:
         """Send message to agent - it decides what to do"""
         payload = {"prompt": message, "session_id": self.session_id}
         
@@ -35,48 +41,118 @@ class PatchAutomationClient:
             print(f"\n[DEBUG] Payload:\n{json.dumps(payload, indent=2)}")
             print(f"[DEBUG] Invoking agent...")
         
-        # Use streaming to show real-time progress
         try:
-            process = subprocess.Popen(
-                ["agentcore", "invoke", json.dumps(payload)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1
-            )
+            # Build command with optional profile
+            cmd = ["agentcore", "invoke", json.dumps(payload)]
+            env = os.environ.copy()
+            if self.profile:
+                env["AWS_PROFILE"] = self.profile
             
-            # Show progress as agent works
-            output_lines = []
-            last_status = ""
-            
-            print("🤔 Starting...", end="", flush=True)
-            
-            for line in iter(process.stdout.readline, ''):
-                if not line:
-                    break
-                    
-                output_lines.append(line)
+            if stream:
+                # Streaming mode - show response as it arrives
+                process = subprocess.Popen(
+                    cmd,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1
+                )
                 
-                # Parse streaming events to show progress
-                status = self._parse_progress(line)
-                if status and status != last_status:
-                    # Clear previous status and show new one
-                    print("\r" + " " * 80 + "\r", end="", flush=True)
-                    print(f"{status}", end="", flush=True)
-                    last_status = status
-            
-            # Wait for process to complete
-            process.wait(timeout=300)
-            
-            # Clear status line
-            print("\r" + " " * 80 + "\r", end="", flush=True)
-            
-            raw_output = ''.join(output_lines)
+                output_lines = []
+                response_started = False
+                last_agent_shown = None
+                
+                for line in iter(process.stdout.readline, ''):
+                    if not line:
+                        break
+                    output_lines.append(line)
+                    
+                    # Show agent activity
+                    if '"toolUse"' in line or '"name"' in line:
+                        if 'consult_vulnerability_analyst' in line and last_agent_shown != 'vuln':
+                            print("\n🔍 Working with the Vulnerability Analyst...", flush=True)
+                            last_agent_shown = 'vuln'
+                        elif 'consult_patch_manager' in line and last_agent_shown != 'patch':
+                            print("\n🛠️  Working with the Patch Manager...", flush=True)
+                            last_agent_shown = 'patch'
+                        elif 'use_aws' in line and last_agent_shown != 'aws':
+                            print("\n⚙️  Querying AWS...", flush=True)
+                            last_agent_shown = 'aws'
+                    
+                    # Show actual response text
+                    if '"contentBlockDelta"' in line and '"text"' in line:
+                        try:
+                            import re
+                            text_match = re.search(r'"text":\s*"([^"]*(?:\\.[^"]*)*)"', line)
+                            if text_match:
+                                text = text_match.group(1)
+                                # Unescape JSON
+                                text = text.replace('\\n', '\n').replace('\\"', '"').replace('\\/', '/')
+                                if text:
+                                    if not response_started:
+                                        print("\n🤖 Agent: ", end="", flush=True)
+                                        response_started = True
+                                    print(text, end="", flush=True)
+                        except Exception:
+                            pass
+                
+                process.wait(timeout=300)
+                
+                if not response_started:
+                    print("\n🤖 Agent: (processing...)", end="", flush=True)
+                
+                print()  # Newline after streaming
+                
+                raw_output = ''.join(output_lines)
+                
+                # Check for errors
+                if process.returncode != 0:
+                    error = process.stderr.read().strip() if process.stderr else "Unknown error"
+                    if "not found" in error.lower():
+                        return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
+                    elif "not deployed" in error.lower():
+                        return "❌ Agent not deployed. Run: ./deploy.sh agent"
+                    else:
+                        return f"❌ Agent error:\n{error}"
+                
+                response = self._extract_clean_response(raw_output)
+                
+            else:
+                # Non-streaming mode with spinner
+                spinner_active = threading.Event()
+                spinner_active.set()
+                
+                def show_spinner():
+                    chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+                    i = 0
+                    while spinner_active.is_set():
+                        print(f"\r{chars[i % len(chars)]} Thinking...", end="", flush=True)
+                        i += 1
+                        time.sleep(0.1)
+                    print("\r" + " " * 20 + "\r", end="", flush=True)
+                
+                spinner_thread = threading.Thread(target=show_spinner, daemon=True)
+                spinner_thread.start()
+                
+                result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+                
+                spinner_active.clear()
+                spinner_thread.join(timeout=0.5)
+                
+                if result.returncode != 0:
+                    error = result.stderr.strip() if result.stderr else "Unknown error"
+                    if "not found" in error.lower():
+                        return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
+                    elif "not deployed" in error.lower():
+                        return "❌ Agent not deployed. Run: ./deploy.sh agent"
+                    else:
+                        return f"❌ Agent error:\n{error}"
+                
+                response = self._extract_clean_response(result.stdout)
             
             if self.debug:
-                print(f"[DEBUG] Response received ({len(raw_output)} chars)")
-            
-            response = self._extract_clean_response(raw_output)
+                print(f"[DEBUG] Response received")
             
             # Store in history
             self.conversation_history.append({
@@ -88,63 +164,15 @@ class PatchAutomationClient:
             return response
             
         except subprocess.TimeoutExpired:
-            print("\r" + " " * 80 + "\r", end="", flush=True)
             return "⏱️  Agent timeout (5 min). Try a simpler query or check agent status."
         
-        except subprocess.CalledProcessError as e:
-            print("\r" + " " * 80 + "\r", end="", flush=True)
-            error = e.stderr.strip() if e.stderr else "Unknown error"
-            
-            if self.debug:
-                print(f"\n[DEBUG] Error: {error}")
-            
-            # Friendly error messages
-            if "not found" in error.lower():
-                return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
-            elif "not deployed" in error.lower():
-                return "❌ Agent not deployed. Run: ./deploy.sh agent"
-            else:
-                return f"❌ Agent error: {error[:200]}"
-        
         except FileNotFoundError:
-            print("\r" + " " * 80 + "\r", end="", flush=True)
             return "❌ AgentCore CLI not found. Install: pip install bedrock-agentcore"
         
         except Exception as e:
-            print("\r" + " " * 80 + "\r", end="", flush=True)
             if self.debug:
                 print(f"\n[DEBUG] Unexpected error: {e}")
-            return f"❌ Unexpected error: {str(e)[:200]}"
-    
-    def _parse_progress(self, line: str) -> Optional[str]:
-        """Parse streaming output to show what agent is doing"""
-        try:
-            # Skip debug/internal JSON lines
-            if line.strip().startswith('{') and any(x in line for x in ['"init_event_loop"', '"start_event_loop"', '"event":', '"data":', "'agent':"]):
-                return None
-            
-            # Look for agent consultations
-            if 'consult_vulnerability_analyst' in line:
-                return "🔍 Consulting Vulnerability Analyst..."
-            elif 'consult_patch_manager' in line:
-                return "🛠️  Consulting Patch Manager..."
-            
-            # Look for tool usage (generic)
-            if '"tool":' in line or '"name":' in line:
-                return "⚙️  Using tools..."
-            
-            # Look for response generation
-            if '"type": "text"' in line and len(line) > 100:
-                return "✍️  Generating response..."
-            
-            # Look for completion
-            if '"stop_reason":' in line or '"finish_reason":' in line:
-                return "✅ Complete"
-            
-        except Exception:
-            pass
-        
-        return None
+            return f"❌ Unexpected error: {str(e)}"
     
     def _extract_clean_response(self, raw_output: str) -> str:
         """Extract clean response from streaming output"""
@@ -252,7 +280,13 @@ class PatchAutomationClient:
         print("   • Show patch compliance status for production")
         print("   • Create an emergency response plan for CVE-2025-38527")
         print()
-        print("📝 Commands: 'history' | 'info' | 'reset' | 'export' | 'quit'")
+        print("📝 Commands:")
+        print("   history  - Show conversation history")
+        print("   info     - Show session information")
+        print("   export   - Save conversation to file")
+        print("   debug    - Toggle debug mode")
+        print("   reset    - Start new session")
+        print("   quit     - Exit (auto-exports if messages sent)")
         print("─" * 70)
         print()
     
@@ -275,12 +309,12 @@ class PatchAutomationClient:
                 if user_input.lower() in ['quit', 'exit', 'q']:
                     print()
                     print("─" * 70)
-                    print(f"👋 Session ended. {message_count} messages exchanged.")
                     if message_count > 0:
-                        export = input("💾 Export conversation? (y/n): ").strip().lower()
-                        if export == 'y':
-                            filename = self.export_conversation()
-                            print(f"✅ Saved to {filename}")
+                        filename = self.export_conversation()
+                        print(f"👋 Session ended. {message_count} messages exchanged.")
+                        print(f"💾 Saved to {filename}")
+                    else:
+                        print(f"👋 Session ended. No messages exchanged.")
                     print("─" * 70)
                     break
                 
@@ -315,7 +349,12 @@ class PatchAutomationClient:
                 
                 # Send to agent
                 response = self.chat(user_input)
-                print(f"\n🤖 Agent:\n{response}\n")
+                
+                # Only print response if not already streamed
+                if not response.startswith("🤖"):
+                    print(f"\n🤖 Agent:\n{response}")
+                
+                print("\n" + "─" * 70 + "\n")
                 
                 message_count += 1
                 
@@ -341,24 +380,30 @@ Examples:
   %(prog)s                                    # Interactive chat
   %(prog)s -m "What vulnerabilities exist?"   # Single message
   %(prog)s -m "Handle CVE-2025-38527" -d      # Debug mode
+  %(prog)s -p ri25-demo                       # Use AWS profile
   %(prog)s -m "Show compliance" -e report.json # Export to file
         """
     )
     
     parser.add_argument("-m", "--message", help="Send single message")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("-p", "--profile", help="AWS profile to use")
     parser.add_argument("-e", "--export", metavar="FILE", help="Export conversation to file")
     
     args = parser.parse_args()
     
     # Create client
-    client = PatchAutomationClient(debug=args.debug)
+    client = PatchAutomationClient(debug=args.debug, profile=args.profile)
     
     if args.message:
         # Single message mode
         print("🤖 Patch Automation Agent\n")
-        response = client.chat(args.message)
-        print(f"{response}\n")
+        response = client.chat(args.message, stream=True)
+        
+        # Only print if not already streamed
+        if not response.startswith("🤖"):
+            print(f"{response}")
+        print()
         
         if args.export:
             filename = client.export_conversation(args.export)
