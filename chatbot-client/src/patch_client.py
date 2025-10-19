@@ -132,14 +132,30 @@ class PatchAutomationClient:
             try:
                 event = json.loads(line.strip())
                 
-                # Detect tool usage
+                # Detect tool usage - check multiple event structures
                 if isinstance(event, dict):
-                    # Check for toolUse event with name field
                     tool_name = None
+                    
+                    # Check various tool event structures
                     if 'toolUse' in event:
-                        tool_name = event.get('toolUse', {}).get('name') if isinstance(event['toolUse'], dict) else None
-                    elif event.get('type') == 'toolUse' or 'name' in event:
+                        tool_use = event['toolUse']
+                        if isinstance(tool_use, dict):
+                            tool_name = tool_use.get('name')
+                        elif isinstance(tool_use, str):
+                            tool_name = tool_use
+                    elif 'tool' in event:
+                        tool_name = event['tool'].get('name') if isinstance(event['tool'], dict) else event['tool']
+                    elif 'name' in event:
                         tool_name = event.get('name')
+                    
+                    # Also check for tool names in the line itself
+                    if not tool_name:
+                        if 'consult_vulnerability_analyst' in line:
+                            tool_name = 'consult_vulnerability_analyst'
+                        elif 'consult_patch_manager' in line:
+                            tool_name = 'consult_patch_manager'
+                        elif 'use_aws' in line:
+                            tool_name = 'use_aws'
                     
                     if tool_name:
                         if tool_name == 'consult_vulnerability_analyst' and last_agent_shown != 'vuln':
@@ -156,8 +172,9 @@ class PatchAutomationClient:
                     if 'contentBlockDelta' in event:
                         delta = event['contentBlockDelta']
                         if isinstance(delta, dict) and 'delta' in delta:
-                            text = delta['delta'].get('text')
-                            if text:
+                            text = delta['delta'].get('text', '')
+                            # Filter out XML tags
+                            if text and not text.strip().startswith('<') and not text.strip().endswith('>'):
                                 if not response_started:
                                     print("\n🤖 Agent: ", end="", flush=True)
                                     response_started = True
@@ -167,7 +184,8 @@ class PatchAutomationClient:
                 # Not valid JSON or unexpected structure - try regex fallback for text
                 if '"contentBlockDelta"' in line and '"text"' in line:
                     text = self._parse_text_delta(line)
-                    if text:
+                    # Filter out XML tags
+                    if text and not text.strip().startswith('<') and not text.strip().endswith('>'):
                         if not response_started:
                             print("\n🤖 Agent: ", end="", flush=True)
                             response_started = True
