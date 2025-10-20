@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
 Patch Automation Chat Client
-
-Minimal, intelligent chat interface that trusts the agent's decision-making.
-Let the LLM handle workflow detection, tool selection, and response formatting.
 """
 
 import json
@@ -25,7 +22,7 @@ TEXT_DELTA_PATTERN = re.compile(r'"text":\s*"([^"]*(?:\\.[^"]*)*)"')
 logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] %(message)s')
 
 class PatchAutomationClient:
-    """Minimal chat client - trust the agent's intelligence"""
+    """....."""
     
     def __init__(self, debug: bool = False, profile: Optional[str] = None):
         """Initialize client"""
@@ -320,7 +317,7 @@ class PatchAutomationClient:
     def _show_welcome(self):
         """Display welcome message with examples"""
         print("╔" + "═" * 68 + "╗")
-        print("║" + " " * 15 + "🤖 Intelligent Patch Automation Agent" + " " * 28 + "║")
+        print("║" + " " * 15 + "🤖 Intelligent Patch Automation Agent" + " " * 16 + "║")
         print("╚" + "═" * 68 + "╝")
         print()
         print("💡 Ask me anything about vulnerabilities, patching, or compliance:")
