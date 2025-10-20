@@ -9,18 +9,21 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
-# Change to agent directory (where .bedrock_agentcore.yaml exists)
-cd "$(dirname "$0")/agent"
+# Get project root BEFORE changing directories
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # Check virtual environment
-if [ ! -d "../venv" ]; then
+if [ ! -d "$PROJECT_ROOT/venv" ]; then
     echo -e "${RED}❌ Virtual environment not found${NC}"
     echo "Run: ./deploy.sh env"
     exit 1
 fi
 
 # Activate virtual environment
-source ../venv/bin/activate
+source "$PROJECT_ROOT/venv/bin/activate"
+
+# Change to agent directory (where .bedrock_agentcore.yaml exists)
+cd "$PROJECT_ROOT/agent"
 
 # Check agentcore CLI
 if ! command -v agentcore &> /dev/null; then
