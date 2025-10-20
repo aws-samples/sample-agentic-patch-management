@@ -1,297 +1,331 @@
-# Architecture Documentation
+# Technical Architecture
 
-## Design Principles
-
-### Strands Pattern Implementation
-
-**Rich System Prompts**: Each agent has comprehensive prompts with methodologies, decision frameworks, and examples. The intelligence is in the prompts, not hardcoded logic.
-
-**Simple Tools**: Tools are thin wrappers around AWS APIs. They don't contain business logic - agents decide when and how to use them.
-
-**Agent-Driven Logic**: LLMs make decisions about tool usage, workflow sequencing, and error handling based on context.
-
-**Natural Language Coordination**: Agents communicate through natural language, not rigid APIs or message formats.
-
-## Agent Architecture
+## Agent System Design
 
 ### Supervisor Agent
-**Purpose**: Strategic coordination and workflow orchestration
-
-**Responsibilities**:
-- Route queries to appropriate specialist agents
-- Coordinate multi-step workflows
-- Track phased rollout progress across invocations
-- Manage approval gates between environments
-
-**Tools**: 
-- `consult_vulnerability_analyst()` - Delegate to security specialist
-- `consult_patch_manager()` - Delegate to operations specialist
-
-**Key Behaviors**:
-- Detects query type (information vs complete workflow)
-- Maintains conversation context across invocations
-- Handles "proceed" commands for phased rollout continuation
-
-### Vulnerability Analyst Agent
-**Purpose**: Security threat analysis and risk assessment
-
-**Responsibilities**:
-- CVE validation and enrichment
-- CVSS scoring and threat classification
-- Exploitation probability assessment
-- Business impact evaluation
+**Role**: Intelligent routing and workflow orchestration
 
 **Tools**:
-- `query_inspector_findings()` - Get vulnerabilities from AWS Inspector
-- `get_cve_details()` - Enrich CVE information
+- `consult_vulnerability_analyst()` - Delegate to security specialist
+- `consult_patch_manager()` - Delegate to operations specialist  
+- `use_aws()` - Fallback for AWS services outside specialist scope
 
-**Key Behaviors**:
-- Provides security-focused analysis without operational concerns
-- Assesses urgency and criticality
-- Recommends response priority
+**Routing Logic**:
+- Security queries (CVE, vulnerability, CVSS, threat) → Vulnerability Analyst
+- Infrastructure queries (patch, instance, health, SSM) → Patch Manager
+- AWS service queries (Lambda, S3, CloudWatch) → use_aws (direct)
+- OUT_OF_SCOPE responses → Retry with use_aws fallback
+
+**Performance**: 18-36% faster via keyword-based classification (eliminates wrong specialist calls)
+
+---
+
+### Vulnerability Analyst Agent
+**Role**: Security threat analysis and risk assessment
+
+**Tools**:
+- `get_vulnerability_findings()` - Query AWS Inspector
+- `use_aws()` - Fallback for non-security queries
+
+**Behavior**:
+- CVSS scoring and threat classification
+- Returns OUT_OF_SCOPE for infrastructure/patching queries
+- Provides security-focused analysis only
+
+---
 
 ### Patch Manager Agent
-**Purpose**: Infrastructure operations and patch execution
-
-**Responsibilities**:
-- EC2 instance discovery and classification
-- Environment segregation (dev/staging/prod)
-- Patch execution via SSM
-- Health monitoring and rollback
+**Role**: Infrastructure operations and patch execution
 
 **Tools**:
 - `get_instance_inventory()` - Discover EC2 instances
-- `execute_patch_operation()` - Execute patches via SSM
-- `get_patch_compliance()` - Check compliance status
-- `check_instance_health()` - Verify instance health
-- `rollback_patches()` - Restore previous packages
-- `get_resource_dependencies()` - Get resource relationships
+- `execute_patch_operation()` - Execute patches via SSM (async, returns command_id)
+- `get_command_status()` - Check async operation status
+- `check_instance_health()` - Verify SSM connectivity (infrastructure layer)
+- `check_cloudwatch_alarms()` - Monitor application health via CloudWatch alarms
+- `check_service_status()` - Direct service check via SSM (optional)
+- `rollback_patches()` - Restore via yum history undo
+- `get_resource_dependencies()` - Analyze blast radius via AWS Config
+- `get_maintenance_windows()` - Query maintenance schedules
+- `generate_compliance_report()` - Create audit trails
+- `use_aws()` - Fallback for non-patching queries
 
-**Key Behaviors**:
-- Handles ONE environment per invocation for phased rollout
-- Uses memory to track which environments are complete
-- Recommends rollback but requires user approval
-- Provides demo mode for faster testing
+**Behavior**:
+- Handles ONE environment per invocation (phased rollout)
+- Asynchronous workflow: execute → wait → check status → check health → proceed
+- Two-layer health checks: infrastructure (SSM) + application (CloudWatch alarms)
+- Waits 2 minutes after patching for CloudWatch alarm evaluation
+- Returns OUT_OF_SCOPE for security/CVE analysis queries
+
+---
 
 ## Workflow Patterns
 
-### Information Query Pattern
+### Information Query
 ```
 User: "What is CVE-2025-12345?"
   ↓
 Supervisor → Vulnerability Analyst
   ↓
-Analyst queries Inspector, enriches CVE data
+Analyst queries Inspector
   ↓
-Returns analysis to user
+Returns analysis
 ```
 
-**Characteristics**:
-- Single agent consultation
-- No state changes
-- Direct answer format
-
-### Complete Workflow Pattern
+### Asynchronous Patch Workflow
 ```
-User: "Handle CVE-2025-12345"
+User: "Handle CVE-2025-12345 in dev"
   ↓
 Supervisor → Patch Manager
   ↓
-Patch Manager: Patches dev environment
+Patch Manager: execute_patch_operation() → command_id
   ↓
-Patch Manager: "Say 'proceed' to continue"
+User: "check status"
   ↓
-User: "proceed"
+Patch Manager: get_command_status(command_id)
   ↓
-Supervisor → Patch Manager (continuation)
+IF Success:
+  User: "check health" (after 2 min wait)
   ↓
-Patch Manager: Patches staging environment
+  Patch Manager: check_instance_health()
+                 check_cloudwatch_alarms(instance_ids, "httpd")
   ↓
-[Repeat for production]
+  IF Healthy:
+    User: "proceed"
+    ↓
+    [Repeat for staging → prod]
 ```
 
-**Characteristics**:
-- Multi-invocation workflow
-- State maintained in memory
-- Approval gates between phases
-- Structured output format
+### Health Check Pattern
+```
+Patch Manager: check_instance_health(instance_ids)
+               ↓ (Infrastructure: SSM connectivity)
+               
+Patch Manager: check_cloudwatch_alarms(instance_ids, "httpd")
+               ↓ (Application: CloudWatch alarms)
+               
+IF alarms firing:
+  Patch Manager: get_resource_dependencies(failed_instance)
+                 ↓ (Blast radius analysis)
+  Patch Manager: Recommend rollback
+ELSE:
+  Patch Manager: Proceed to next environment
+```
 
 ### Rollback Pattern
 ```
-Patch Manager: Executes patches
+Patch Manager: Detects alarms firing
   ↓
-Patch Manager: Checks health
+Patch Manager: Analyzes blast radius
   ↓
-IF health < 80%:
-  Patch Manager: "Rollback recommended"
+User: Approves rollback
   ↓
-  User: "Rollback dev"
+Patch Manager: rollback_patches(instance_ids)
   ↓
-  Patch Manager: Executes rollback
+Patch Manager: Waits 2 min
+  ↓
+Patch Manager: check_cloudwatch_alarms() (verify recovery)
 ```
 
-**Characteristics**:
-- Human-in-the-loop decision
-- Agent recommends, user approves
-- Halts phased rollout on failure
+### Intelligent Routing
+```
+User: "List my Lambda functions"
+  ↓
+Supervisor: Detects AWS service query
+  ↓
+Supervisor: use_aws(query) (no specialist needed)
+  ↓
+Returns result
+```
 
-## Infrastructure Architecture
+---
+
+## Infrastructure Components
 
 ### Networking Stack
-- VPC with public and private subnets
-- Internet Gateway for public access
-- NAT Gateway for private subnet internet access
-- Route tables and associations
+- VPC with public/private subnets
+- Internet Gateway
+- NAT Gateway
+- Route tables
 
 ### Security Stack
-- Security groups for EC2 instances
+- Security groups for EC2
 - IAM roles for EC2 (SSM permissions)
-- IAM roles for AgentCore
+- IAM roles for AgentCore (read-only + SSM execution)
 - AWS Config for resource tracking
-- S3 bucket for Config snapshots
+- S3 bucket for compliance reports
+- CloudWatch alarms for application monitoring
 
 ### Demo Instances Stack
-- 15 EC2 instances (Amazon Linux 2)
-- 5 dev, 5 staging, 5 prod
+- 15 EC2 instances (Amazon Linux 2): 5 dev, 5 staging, 5 prod
 - Tagged by environment
 - SSM agent pre-installed
-- Apache web server for demo
+- Apache httpd with CloudWatch alarms
 
 ### Permissions Stack
 - AgentCore IAM policies
-- EC2, SSM, Inspector, Config permissions
-- Least privilege access
+- Broad read-only access (List*, Get*, Describe*) for 25+ AWS services
+- SSM execution permissions (patching, rollback)
+- No admin access (least privilege)
+
+---
 
 ## Data Flow
 
-### Vulnerability Discovery
-```
-AWS Inspector → Inspector API → Vulnerability Analyst → User
-```
-
-### Instance Discovery
-```
-EC2 API → Patch Manager → User
-SSM API → Patch Manager → User
-Config API → Patch Manager → User (for dependencies)
-```
-
-### Patch Execution
+### Patch Execution (Asynchronous)
 ```
 User → Patch Manager → SSM SendCommand → EC2 Instances
                     ↓
-              Command Status → Patch Manager → User
+              Returns command_id
+                    ↓
+User: "check status"
+                    ↓
+        SSM GetCommandInvocation → Status
 ```
 
-### Health Monitoring
+### Health Monitoring (Two-Layer)
 ```
-SSM DescribeInstanceInformation → Patch Manager
-                                      ↓
-                              Health Score Calculation
-                                      ↓
-                              Recommendation → User
+Infrastructure Layer:
+  SSM DescribeInstanceInformation → Health score
+
+Application Layer:
+  CloudWatch DescribeAlarms (StateValue='ALARM')
+    ↓
+  Filter by InstanceId dimension
+    ↓
+  Check alarm state → Recommendation
 ```
+
+### Blast Radius Analysis
+```
+AWS Config GetResourceConfigHistory
+  ↓
+Extract relationships (target groups, load balancers)
+  ↓
+ELBv2 DescribeTargetHealth
+  ↓
+Impact assessment
+```
+
+---
+
+## Tool Implementation Details
+
+### check_cloudwatch_alarms()
+**Purpose**: Query CloudWatch alarms for application health
+
+**Implementation**:
+- Single API call: `describe_alarms(StateValue='ALARM')`
+- Filters by InstanceId dimension (not alarm name)
+- Supports optional alarm_name_pattern filter
+- Limits to 5 alarms per instance (token optimization)
+- Returns: alarm count, alarm details, health status, recommendation
+
+**Performance**: O(1) API calls regardless of instance count
+
+### execute_patch_operation()
+**Purpose**: Execute patches asynchronously via SSM
+
+**Implementation**:
+- Calls `ssm_client.send_command()`
+- Returns command_id immediately
+- Actual patching takes 5-10 minutes
+- User checks status with get_command_status()
+
+### get_resource_dependencies()
+**Purpose**: Analyze blast radius via AWS Config
+
+**Implementation**:
+- Queries AWS Config for resource relationships
+- Extracts load balancer associations
+- Checks target group health status
+- Returns: dependencies, load balancer health, blast radius assessment
+
+---
 
 ## Security Model
 
-### Least Privilege
-- AgentCore role has minimal required permissions
-- No write access to infrastructure (except SSM commands)
-- Read-only access to Inspector, Config, EC2
+### IAM Permissions
+- Read-only access to most AWS services (List*, Get*, Describe*)
+- Write access only for SSM commands
+- No infrastructure modification permissions
+- No admin access
 
 ### Approval Gates
 - Human approval required between environments
 - Rollback requires explicit user confirmation
-- No automatic production changes
+- User controls workflow pace
 
 ### Audit Trail
-- All agent actions logged to CloudWatch
-- SSM command history maintained
-- Tool invocations tracked
+- CloudWatch Logs: All agent actions
+- SSM Command History: Patch operations
+- S3: Compliance reports
 
-## Scalability Considerations
-
-### Current Limitations
-- Single region (us-east-1)
-- Manual approval doesn't scale to 100s of environments
-- No parallel patching across environments
-- Memory limited to single session
-
-### Future Enhancements
-- Multi-region support
-- Automated approval for non-prod
-- Parallel execution within environment
-- Persistent memory across sessions
-
-## Extension Points
-
-### Adding New Agents
-1. Create agent file in `agent/` directory
-2. Define system prompt with role and capabilities
-3. Import relevant tools
-4. Add consultation tool to supervisor
-5. Update supervisor routing logic
-
-### Adding New Tools
-1. Add function to `tools.py` with `@tool` decorator
-2. Import in relevant agent file
-3. Document in agent's system prompt
-4. Test with agent invocations
-
-### Adding New Workflows
-1. Define workflow pattern in agent prompt
-2. Add routing logic to supervisor
-3. Implement state management if multi-invocation
-4. Add testing examples
-
-## Technology Choices
-
-### Why Strands SDK?
-- Prompt-driven pattern fits agentic workflows
-- Simple tool registration
-- Built-in memory management
-- AgentCore integration
-
-### Why AgentCore?
-- Managed runtime (no infrastructure to maintain)
-- Built-in observability
-- Memory persistence
-- AWS service integration
-
-### Why CDK?
-- Type-safe infrastructure definition
-- Reusable constructs
-- Easy to version and review
-- Native AWS support
+---
 
 ## Performance Characteristics
 
-### Typical Response Times
+### Response Times
 - Information query: 3-5 seconds
-- Patch execution: 5-10 minutes (actual patching)
-- Health check: 2-3 seconds
+- Patch execution: 5-10 minutes (async)
+- Command status check: 1-2 seconds
+- Health check (infrastructure): 2-3 seconds
+- Health check (CloudWatch): 1-2 seconds
 - Rollback: 3-5 minutes
 
-### Resource Usage
-- AgentCore: Serverless (pay per invocation)
-- EC2 instances: 15 t3.micro instances
-- SSM: No additional cost
-- CloudWatch Logs: ~1GB/month
+### Routing Performance
+- 18-36% faster via intelligent routing
+- Eliminates wrong specialist calls
+- OUT_OF_SCOPE fallback prevents retry loops
 
-## Monitoring and Observability
+---
+
+## Monitoring
 
 ### CloudWatch Logs
 - Agent conversations
 - Tool invocations
-- Error messages
-- Performance metrics
+- Error messages with stack traces
+- Performance metrics (ENABLE_PROFILING flag)
+
+### CloudWatch Alarms
+- Application health (httpd service)
+- Per-instance with InstanceId dimension
+- 2 evaluation periods (2 min to trigger)
 
 ### SSM Command History
 - Patch execution logs
 - Command status
-- Output and errors
+- Rollback operations
 
 ### AWS Config
 - Resource configuration history
 - Relationship tracking
-- Compliance timeline
+- Blast radius data source
+
+---
+
+## Key Technical Decisions
+
+### Asynchronous Patching
+- SSM commands take 5-10 minutes
+- Returns command_id immediately
+- User checks status when ready
+- Prevents timeout issues
+
+### Two-Layer Health Checks
+- Infrastructure (SSM): Instance connectivity
+- Application (CloudWatch): Service health
+- Catches both infrastructure and application failures
+
+### CloudWatch Alarm Integration
+- Application-layer monitoring
+- Existing AWS primitive (no new infrastructure)
+- 2-minute evaluation period
+- Dimension-based filtering (InstanceId)
+
+### OUT_OF_SCOPE Pattern
+- Specialists reject wrong queries
+- Supervisor retries with fallback
+- Improves routing accuracy
+- Reduces token waste
