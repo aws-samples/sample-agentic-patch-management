@@ -21,6 +21,7 @@ inspector_client = boto3.client('inspector2', region_name='us-east-1')
 ssm_client = boto3.client('ssm', region_name='us-east-1')
 ec2_client = boto3.client('ec2', region_name='us-east-1')
 config_client = boto3.client('config', region_name='us-east-1')
+cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
 
 
 @tool
@@ -441,6 +442,95 @@ def check_service_status(instance_ids: List[str], service_name: str = "httpd") -
     except Exception as e:
         logger.error(f"Error checking service status: {e}")
         return {"error": str(e)}
+
+
+@tool
+def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optional[str] = None) -> dict:
+    """
+    Check CloudWatch alarms for instances.
+    Returns alarms in ALARM state, grouped by instance.
+    
+    Args:
+        instance_ids: Instance IDs to check
+        alarm_name_pattern: Optional filter for alarm names (e.g., 'httpd', 'nginx')
+    
+    Returns:
+        Health status with all alarms firing per instance
+    """
+    start_time = time.time()
+    if ENABLE_PROFILING:
+        logger.info(f"[PROFILE] Tool: check_cloudwatch_alarms START")
+    
+    try:
+        # Query all alarms in ALARM state (single API call)
+        response = cloudwatch_client.describe_alarms(
+            StateValue='ALARM',
+            MaxRecords=100
+        )
+        
+        alarms_in_alarm = response.get('MetricAlarms', [])
+        
+        alarm_results = []
+        for instance_id in instance_ids:
+            instance_alarms = []
+            
+            for alarm in alarms_in_alarm:
+                # Check if alarm has InstanceId dimension
+                dimensions = alarm.get('Dimensions', [])
+                has_instance = any(
+                    d['Name'] == 'InstanceId' and d['Value'] == instance_id 
+                    for d in dimensions
+                )
+                
+                if has_instance:
+                    # Apply optional name filter
+                    if alarm_name_pattern is None or alarm_name_pattern.lower() in alarm['AlarmName'].lower():
+                        instance_alarms.append({
+                            'name': alarm['AlarmName'],
+                            'state': alarm['StateValue'],
+                            'reason': alarm.get('StateReason', 'Unknown'),
+                            'timestamp': str(alarm.get('StateUpdatedTimestamp', 'N/A'))
+                        })
+            
+            # Limit to 5 most recent alarms to avoid token bloat
+            instance_alarms = instance_alarms[:5]
+            
+            alarm_results.append({
+                'instance_id': instance_id,
+                'alarm_count': len(instance_alarms),
+                'alarms': instance_alarms,
+                'is_healthy': len(instance_alarms) == 0
+            })
+        
+        unhealthy_count = sum(1 for r in alarm_results if not r['is_healthy'])
+        total_alarms = sum(r['alarm_count'] for r in alarm_results)
+        
+        result = {
+            'results': alarm_results,
+            'total_instances': len(instance_ids),
+            'unhealthy_instances': unhealthy_count,
+            'total_alarms_firing': total_alarms,
+            'recommendation': 'HEALTHY' if unhealthy_count == 0 else 'ROLLBACK_RECOMMENDED',
+            'message': (
+                f'{unhealthy_count} instances have alarms firing ({total_alarms} total alarms)' 
+                if unhealthy_count > 0 
+                else 'All instances healthy - no alarms firing'
+            )
+        }
+        
+        if ENABLE_PROFILING:
+            elapsed = time.time() - start_time
+            logger.info(f"[PROFILE] Tool: check_cloudwatch_alarms END ({elapsed:.2f}s)")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error checking CloudWatch alarms: {e}", exc_info=True)
+        return {
+            "error": str(e),
+            "instance_ids": instance_ids,
+            "recommendation": "UNKNOWN"
+        }
 
 
 @tool

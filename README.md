@@ -31,10 +31,10 @@ When a critical vulnerability is discovered, this system automatically:
 3. Decides between scheduled patching (wait for window) or emergency patching (immediate)
 4. Discovers affected EC2 instances across environments
 5. Executes phased patching (dev → staging → production) with approval gates
-6. Monitors health and recommends rollback if issues detected
+6. Monitors health via CloudWatch alarms and recommends rollback if issues detected
 7. Generates compliance reports with audit trail
 
-**Key differentiator**: Agents make intelligent, risk-based decisions using maintenance windows and CVSS scores, not just execute scripts.
+**Key differentiator**: Agents make intelligent, risk-based decisions using maintenance windows and CVSS scores, not just execute scripts. Application-layer health monitoring via CloudWatch alarms ensures safe patching operations.
 
 ## Architecture
 
@@ -172,13 +172,14 @@ Deployed to Amazon Bedrock AgentCore in `us-east-1`
 ### ✅ Core Capabilities
 - **3 Agents**: Supervisor, Vulnerability Analyst, Patch Manager
 - **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
-- **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, health checks, rollback, maintenance windows, compliance reporting, dependency analysis
+- **13 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis
 - **Fallback Tool**: use_aws for AWS services outside specialist scope (Lambda, S3, CloudWatch, etc.)
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
 - **Dependency Analysis**: AWS Config-based blast radius assessment with load balancer health tracking
 - **Phased Rollout**: dev → staging → prod with human approval between environments
-- **Health Monitoring**: SSM connectivity checks after patching
-- **Rollback**: User-approved rollback via `yum history undo`
+- **Application-Layer Health Monitoring**: CloudWatch alarm integration for httpd service monitoring
+- **Infrastructure Health Checks**: SSM connectivity verification after patching
+- **Rollback**: User-approved rollback via `yum history undo` with health verification
 - **Compliance Reporting**: Automated audit trail generation with S3 storage
 - **AWS Config Integration**: Resource dependency tracking and relationship discovery
 - **Error Handling**: Graceful degradation when specialists fail
@@ -305,7 +306,7 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 
 - **Demo mode behavior** - Agent may proceed between environments without strict status verification to maintain demo flow (5-10 min patching waits). Production use requires verify_and_proceed() tool implementation.
 - **Manual approval required** - between each environment in phased rollout
-- **SSM-only health checks** - connectivity-based, not application-aware
+- **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured (httpd monitoring)
 - **Linux-only** - yum-based rollback for Amazon Linux/RHEL
 
 ## Monitoring

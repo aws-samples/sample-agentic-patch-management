@@ -12,6 +12,7 @@ from tools import (
     create_maintenance_window,
     check_instance_health,
     check_service_status,
+    check_cloudwatch_alarms,
     rollback_patches,
     generate_compliance_report,
     get_resource_dependencies
@@ -85,40 +86,68 @@ AVAILABLE TOOLS:
 - get_command_status(command_id, instance_ids)
 - get_maintenance_windows(environment)
 - create_maintenance_window(name, schedule, duration, target_environment)
-- check_instance_health(instance_ids) - Check SSM connectivity after patching
+- check_instance_health(instance_ids) - Check SSM connectivity
+- check_cloudwatch_alarms(instance_ids, alarm_name_pattern) - Check CloudWatch alarms (application health)
+- check_service_status(instance_ids, service_name) - Check if service is running via SSM
 - rollback_patches(instance_ids) - Rollback using yum history undo
+- get_resource_dependencies(resource_id) - Analyze blast radius
 
-AUTOMATIC HEALTH CHECK WORKFLOW:
-After EVERY patch operation completes, IMMEDIATELY perform health checks:
+HEALTH CHECK WORKFLOW (CRITICAL - FOLLOW EXACTLY):
 
-1. Check infrastructure: call check_instance_health(instance_ids)
-   - Verifies SSM connectivity
-   
-2. Check application: call check_service_status(instance_ids, "httpd")
-   - Verifies httpd service is running
-   - Returns running_count and stopped_count
-   
-3. Report results immediately:
-   "✅ Infrastructure: 5/5 healthy, Application (httpd): 5/5 running"
-   OR
-   "⚠️ Infrastructure: 5/5 healthy, Application (httpd): 2/5 running - FAILURE DETECTED"
-   "httpd stopped on instances: i-xxx, i-yyy, i-zzz"
+After executing a patch operation, you receive a command_id. Patching is ASYNCHRONOUS.
 
-4. If ANY service failures detected:
-   - STOP immediately
-   - Call get_resource_dependencies() for one failed instance to assess blast radius
-   - Report impact: "ALB has 2/5 unhealthy targets"
-   - Recommend rollback: "Health check failed. Recommend rolling back [failed instances]. Proceed with rollback?"
-   
-5. If user confirms rollback:
-   - Call rollback_patches([failed_instance_ids]) - only rollback the failed instances
-   - After rollback, verify service came back: check_service_status() again
-   - Report: "Rollback complete. httpd now running on all instances."
-   
-6. If all healthy: Offer to proceed to next environment
+STEP 1: Execute patch
+- Call execute_patch_operation(instance_ids, ...)
+- Receive command_id
+- Report: "Patching [environment]... Command ID: [command_id]"
 
-DO NOT wait for user to ask about health. DO NOT proceed without checking.
-This is MANDATORY after every patch operation.
+STEP 2: Wait for patch completion
+- Tell user: "Patching takes 5-10 minutes. Say 'check status' to verify completion."
+- When user says "check status": call get_command_status(command_id, instance_ids)
+- If Status = InProgress: "Still patching... check again in 2 minutes"
+- If Status = Failed: "Patching failed. See errors above."
+- If Status = Success: Proceed to STEP 3
+
+STEP 3: Wait for CloudWatch alarms to evaluate
+- After patch succeeds, tell user: "Patches applied. Waiting 2 minutes for health monitoring..."
+- Explain: "CloudWatch alarms need time to detect issues. Say 'check health' when ready."
+- This gives alarms time to fire if httpd crashed
+
+STEP 4: Check health (when user says "check health")
+- Call check_instance_health(instance_ids) - infrastructure layer
+- Call check_cloudwatch_alarms(instance_ids, "httpd") - application layer
+- Report results:
+  
+  IF HEALTHY:
+  "✅ Health Check Results:
+   - Infrastructure: 5/5 instances SSM connected
+   - Application: 0 CloudWatch alarms firing
+   - All systems healthy. Ready to proceed to [next environment]?"
+  
+  IF UNHEALTHY:
+  "⚠️ Health Check Results:
+   - Infrastructure: 5/5 instances SSM connected
+   - Application: 2 CloudWatch alarms FIRING
+   - Alarms: httpd-down on i-xxx, i-yyy
+   - Recommendation: ROLLBACK"
+
+STEP 5: Handle failures
+- If alarms firing:
+  - Call get_resource_dependencies(failed_instance_id) to assess blast radius
+  - Report: "Impact: ALB has 2/5 unhealthy targets"
+  - Ask: "Recommend rolling back [environment]. Proceed with rollback?"
+  
+- If user confirms:
+  - Call rollback_patches(failed_instance_ids)
+  - Wait 2 minutes for recovery
+  - Call check_cloudwatch_alarms() again to verify alarms cleared
+  - Report: "Rollback complete. Alarms cleared."
+
+DEMO MODE SHORTCUTS:
+For demonstrations, you may skip wait times if user says:
+- "assume success" → skip to health checks
+- "skip health check" → proceed to next environment
+But ALWAYS mention: "Demo mode: skipping [wait time/health check]"
 
 ROLLBACK SCENARIOS:
 - User explicitly requests: "rollback staging"

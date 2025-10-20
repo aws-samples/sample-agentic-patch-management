@@ -84,8 +84,8 @@ This demo showcases production-grade patterns and architecture. This document ou
 
 ## Feature Enhancements
 
+- [x] **CloudWatch alarm integration** - Application-layer health monitoring via CloudWatch alarms (COMPLETED)
 - [ ] **Verify and proceed tool** - Implement proper status verification between environments
-- [ ] **Application-aware health checks** - Beyond SSM connectivity (HTTP checks, custom scripts)
 - [ ] **Patch scheduling** - Calendar integration for maintenance windows
 - [ ] **Notification preferences** - User-configurable alert channels
 - [ ] **Patch preview** - Show what will be patched before execution
@@ -98,7 +98,7 @@ This demo showcases production-grade patterns and architecture. This document ou
 
 - **Demo mode behavior** - Agent may proceed between environments without strict status verification to maintain demo flow (5-10 min patching waits)
 - **Manual approval required** - Between each environment in phased rollout
-- **SSM-only health checks** - Connectivity-based, not application-aware
+- **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured (httpd monitoring)
 - **Linux-only** - yum-based rollback for Amazon Linux/RHEL
 - **Single region** - Hardcoded to us-east-1
 - **No cost tracking** - No resource tagging for chargeback
