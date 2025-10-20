@@ -2,6 +2,27 @@
 
 Multi-agent system for automated vulnerability-driven patch management using Strands SDK, Amazon Bedrock AgentCore, and AWS Systems Manager.
 
+---
+
+## Why This Matters
+
+**Traditional patching:** 15 browser tabs, 3 CLI tools, 45 minutes of manual work per CVE.
+
+**This approach:** Natural language query → intelligent decision → automated execution.
+
+```bash
+You: Handle CVE-2025-38527 in dev environment
+🤖 Agent: Checking maintenance window... Emergency patching required.
+         Patching dev → staging → prod with approval gates.
+         ✅ Complete. Compliance report saved to S3.
+```
+
+**Key differentiator:** Agents make intelligent, risk-based decisions using maintenance windows and CVSS scores, not just execute scripts.
+
+**Built with:** AWS native services (Bedrock AgentCore, SSM, Inspector, Config). No new infrastructure to manage.
+
+---
+
 ## What It Does
 
 When a critical vulnerability is discovered, this system automatically:
