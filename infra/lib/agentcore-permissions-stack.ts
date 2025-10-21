@@ -102,6 +102,8 @@ export class AgentCorePermissionsStack extends cdk.Stack {
             'cloudwatch:GetMetricStatistics',
             'cloudwatch:ListMetrics',
             'cloudwatch:GetMetricData',
+            'cloudwatch:DescribeAlarms',
+            'cloudwatch:DescribeAlarmHistory',
             'logs:DescribeLogGroups',
             'logs:DescribeLogStreams',
             'logs:GetLogEvents'

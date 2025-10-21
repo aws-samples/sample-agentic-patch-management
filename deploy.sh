@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # COP407 Intelligent Patch Automation - Fast Deployment Script
-# Usage: ./deploy.sh [all|infra|agent|frontend|env]
+# Usage: ./deploy.sh [all|infra|agent|frontend|env|destroy]
 
 set -e  # Exit on any error
 
@@ -120,6 +120,24 @@ deploy_infrastructure() {
     cd ..
 }
 
+# Infrastructure destruction
+destroy_infrastructure() {
+    echo -e "${RED}🗑️  Destroying infrastructure...${NC}"
+    
+    cd infra
+    
+    # Fast npm install check
+    if [ ! -d "node_modules" ]; then
+        npm ci --silent
+    fi
+    
+    echo "Destroying CDK stacks..."
+    npx cdk destroy --all --force
+    print_status "Infrastructure destroyed"
+    
+    cd ..
+}
+
 # Agent deployment (fast)
 deploy_agent() {
     echo -e "${BLUE}🤖 Agent deployment...${NC}"
@@ -169,6 +187,9 @@ main() {
         "frontend")
             deploy_frontend
             ;;
+        "destroy")
+            destroy_infrastructure
+            ;;
         "all")
             setup_environment
             deploy_infrastructure
@@ -176,7 +197,7 @@ main() {
             ;;
         *)
             print_error "Invalid target: $DEPLOY_TARGET"
-            echo "Usage: $0 [all|infra|agent|frontend|env]"
+            echo "Usage: $0 [all|infra|agent|frontend|env|destroy]"
             exit 1
             ;;
     esac

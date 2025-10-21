@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 class PatchClient:
-    def __init__(self, profile: str = None):
+    def __init__(self, profile: str = 'ri25-demo'):
         self.profile = profile
         self.session_id = f"patch-session-{uuid.uuid4().hex}"  # 45 chars total
         self.conversation_history = []
@@ -47,6 +47,7 @@ class PatchClient:
         # Parse streaming response - response['response'] is a StreamingBody
         full_text = []
         current_tool = None
+        buffer = ""  # Buffer to handle XML tags at start
         
         # Read lines from streaming body (SSE format)
         for line in response['response'].iter_lines():
@@ -81,14 +82,36 @@ class PatchClient:
                     if 'text' in delta:
                         text_content = delta['text']
                         full_text.append(text_content)
-                        # Strip XML tags for display
-                        display = text_content.replace('<answer>', '').replace('</answer>', '')
-                        display = display.replace('<thinking>', '').replace('</thinking>', '')
-                        if display.strip():
-                            print(display, end='', flush=True)
+                        
+                        # Add to buffer
+                        buffer += text_content
+                        
+                        # Strip XML tags from buffer
+                        display = buffer
+                        for tag in ['<answer>', '</answer>', '<thinking>', '</thinking>']:
+                            display = display.replace(tag, '')
+                        
+                        # Print if: buffer is large enough, or we have content and no pending tags
+                        should_flush = (
+                            len(buffer) > 20 or  # Buffer is large
+                            (display.strip() and not any(tag in buffer for tag in ['<answer', '</answer', '<thinking', '</thinking']))  # Content ready, no partial tags
+                        )
+                        
+                        if should_flush:
+                            if display.strip():
+                                print(display, end='', flush=True)
+                            buffer = ""
             
             except json.JSONDecodeError:
                 pass
+        
+        # Flush any remaining buffer
+        if buffer.strip():
+            display = buffer
+            for tag in ['<answer>', '</answer>', '<thinking>', '</thinking>']:
+                display = display.replace(tag, '')
+            if display.strip():
+                print(display, end='', flush=True)
         
         print()  # Newline after response
         result = ''.join(full_text)

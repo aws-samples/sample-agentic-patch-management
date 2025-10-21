@@ -436,46 +436,41 @@ def check_instance_health(instance_ids: List[str]) -> dict:
         dict: {'health_results': list, 'summary': dict, 'overall_health': str}
     """
     try:
-        health_results = []
+        # Batch: Check SSM connectivity for all instances in single API call
+        ssm_info = ssm_client.describe_instance_information(
+            Filters=[{'Key': 'InstanceIds', 'Values': instance_ids}]
+        )
         
+        # Create lookup map for fast access
+        instance_info_map = {
+            info['InstanceId']: info 
+            for info in ssm_info.get('InstanceInformationList', [])
+        }
+        
+        health_results = []
         for instance_id in instance_ids:
-            try:
-                # Check SSM connectivity
-                ssm_info = ssm_client.describe_instance_information(
-                    Filters=[{'Key': 'InstanceIds', 'Values': [instance_id]}]
-                )
-                
-                if not ssm_info.get('InstanceInformationList'):
-                    health_results.append({
-                        'instance_id': instance_id,
-                        'ssm_status': 'UNREACHABLE',
-                        'health_score': 0,
-                        'issues': ['SSM agent not responding']
-                    })
-                    continue
-                
-                instance_info = ssm_info['InstanceInformationList'][0]
-                ping_status = instance_info.get('PingStatus', 'Unknown')
-                
-                # Health scoring
-                health_score = 100 if ping_status == 'Online' else 0
-                issues = [] if ping_status == 'Online' else [f'SSM ping status: {ping_status}']
-                
+            instance_info = instance_info_map.get(instance_id)
+            
+            if not instance_info:
                 health_results.append({
                     'instance_id': instance_id,
-                    'ssm_status': ping_status,
-                    'health_score': health_score,
-                    'issues': issues,
-                    'last_ping': str(instance_info.get('LastPingDateTime', 'N/A'))
-                })
-                
-            except Exception as e:
-                health_results.append({
-                    'instance_id': instance_id,
-                    'ssm_status': 'ERROR',
+                    'ssm_status': 'UNREACHABLE',
                     'health_score': 0,
-                    'issues': [str(e)]
+                    'issues': ['SSM agent not responding']
                 })
+                continue
+            
+            ping_status = instance_info.get('PingStatus', 'Unknown')
+            health_score = 100 if ping_status == 'Online' else 0
+            issues = [] if ping_status == 'Online' else [f'SSM ping status: {ping_status}']
+            
+            health_results.append({
+                'instance_id': instance_id,
+                'ssm_status': ping_status,
+                'health_score': health_score,
+                'issues': issues,
+                'last_ping': str(instance_info.get('LastPingDateTime', 'N/A'))
+            })
         
         # Calculate overall health
         avg_health = sum(r['health_score'] for r in health_results) / len(health_results) if health_results else 0
@@ -506,13 +501,21 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
         dict: {'alarms': list, 'summary': dict, 'overall_status': str}
     """
     try:
-        # Query all alarms in ALARM state (single API call)
-        response = cloudwatch_client.describe_alarms(
-            StateValue='ALARM',
-            MaxRecords=100
-        )
+        # Query all alarms in ALARM state with pagination
+        alarms_in_alarm = []
+        next_token = None
         
-        alarms_in_alarm = response.get('MetricAlarms', [])
+        while True:
+            params = {'StateValue': 'ALARM', 'MaxRecords': 100}
+            if next_token:
+                params['NextToken'] = next_token
+            
+            response = cloudwatch_client.describe_alarms(**params)
+            alarms_in_alarm.extend(response.get('MetricAlarms', []))
+            
+            next_token = response.get('NextToken')
+            if not next_token:
+                break
         
         alarm_results = []
         for instance_id in instance_ids:
