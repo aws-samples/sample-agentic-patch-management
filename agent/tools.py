@@ -24,6 +24,51 @@ config_client = boto3.client('config', region_name='us-east-1')
 cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
 
 
+def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional[dict]:
+    """
+    Helper function to calculate SLA requirement based on compliance frameworks.
+    Returns strictest (minimum) SLA if multiple frameworks apply.
+    
+    Args:
+        frameworks: List of compliance framework names (e.g., ['PCI-DSS', 'SOC2'])
+        severity: Vulnerability severity (CRITICAL, HIGH, MEDIUM, LOW)
+    
+    Returns:
+        dict with {sla_hours, source, frameworks, severity} or None if calculation fails
+    """
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), 'config', 'sla_policy.json')
+        with open(config_path, 'r') as f:
+            sla_policy = json.load(f)
+        
+        sla_hours = None
+        source_framework = None
+        
+        # Check each framework for SLA, use strictest (minimum)
+        if frameworks:
+            for framework in frameworks:
+                if framework in sla_policy.get('frameworks', {}):
+                    framework_sla = sla_policy['frameworks'][framework].get(severity.upper())
+                    if framework_sla and (sla_hours is None or framework_sla < sla_hours):
+                        sla_hours = framework_sla
+                        source_framework = framework
+        
+        # Fall back to default if no framework SLA found
+        if sla_hours is None:
+            sla_hours = sla_policy.get('default', {}).get(severity.upper(), 24)
+            source_framework = "default"
+        
+        return {
+            "sla_hours": sla_hours,
+            "frameworks": frameworks,
+            "source": source_framework,
+            "severity": severity.upper()
+        }
+    except Exception as e:
+        logger.warning(f"Could not calculate SLA: {e}")
+        return None
+
+
 @tool
 def get_vulnerability_findings(cve_id: Optional[str] = None, 
                                severity: Optional[str] = None, 
@@ -87,8 +132,9 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
 def get_instance_inventory(instance_ids: Optional[List[str]] = None,
                           package_name: Optional[str] = None,
                           environment: Optional[str] = None,
+                          severity: Optional[str] = None,
                           limit: Optional[int] = None) -> dict:
-    """Get software inventory from AWS Systems Manager."""
+    """Get software inventory from AWS Systems Manager. If severity provided, includes SLA requirement."""
     try:
         # Get instances by environment tag if specified
         if environment and not instance_ids:
@@ -122,6 +168,7 @@ def get_instance_inventory(instance_ids: Optional[List[str]] = None,
         
         # Get inventory for instances
         instances = []
+        all_frameworks = set()
         
         for instance_id in instance_ids:
             try:
@@ -140,6 +187,11 @@ def get_instance_inventory(instance_ids: Optional[List[str]] = None,
                 ec2_response = ec2_client.describe_instances(InstanceIds=[instance_id])
                 tags = ec2_response['Reservations'][0]['Instances'][0].get('Tags', [])
                 env_tag = next((t['Value'] for t in tags if t['Key'] == 'Environment'), 'unknown')
+                
+                # Extract compliance frameworks
+                frameworks_str = next((t['Value'] for t in tags if t['Key'] == 'ComplianceFrameworks'), '')
+                frameworks = [f.strip() for f in frameworks_str.split(',') if f.strip()] if frameworks_str else []
+                all_frameworks.update(frameworks)
                 
                 # Get inventory if package_name specified
                 packages = []
@@ -161,13 +213,22 @@ def get_instance_inventory(instance_ids: Optional[List[str]] = None,
                 instances.append({
                     'instance_id': instance_id,
                     'environment': env_tag,
+                    'compliance_frameworks': frameworks,
                     'packages': packages
                 })
             except Exception as e:
                 logger.warning(f"Error getting inventory for {instance_id}: {e}")
                 continue
         
-        return {"instances": instances, "total_count": len(instances)}
+        result = {"instances": instances, "total_count": len(instances)}
+        
+        # Calculate SLA requirement if severity provided
+        if severity and instances and all_frameworks:
+            sla_req = _calculate_sla_requirement(list(all_frameworks), severity)
+            if sla_req:
+                result['sla_requirement'] = sla_req
+        
+        return result
     except Exception as e:
         logger.error(f"Error getting instance inventory: {e}")
         return {"error": str(e), "instances": [], "total_count": 0}
@@ -891,19 +952,11 @@ def generate_compliance_report(
         # Generate report ID
         report_id = f"{cve_id}-{date_str}-{timestamp_str}"
         
-        # Load SLA policy
-        config_path = os.path.join(os.path.dirname(__file__), 'config', 'sla_policy.json')
-        try:
-            with open(config_path, 'r') as f:
-                sla_policy = json.load(f)
-        except Exception as policy_error:
-            logger.warning(f"Could not load SLA policy: {policy_error}")
-            sla_policy = None
-        
         # Get instance tags for organizational metadata and compliance frameworks
         instance_metadata = {}
         compliance_frameworks = []
         sla_requirement_hours = None
+        sla_source = None
         
         if affected_instances:
             try:
@@ -917,27 +970,12 @@ def generate_compliance_report(
                     if frameworks_str:
                         compliance_frameworks = [f.strip() for f in frameworks_str.split(',') if f.strip()]
                     
-                    # Determine SLA requirement from compliance frameworks
-                    if sla_policy and compliance_frameworks:
-                        # Get SLA for each framework, use strictest (minimum)
-                        framework_slas = []
-                        for framework in compliance_frameworks:
-                            if framework in sla_policy.get('frameworks', {}):
-                                framework_sla = sla_policy['frameworks'][framework].get(severity.upper())
-                                if framework_sla:
-                                    framework_slas.append(framework_sla)
-                        
-                        if framework_slas:
-                            sla_requirement_hours = min(framework_slas)
-                            sla_source = f"compliance_framework ({','.join(compliance_frameworks)})"
-                        else:
-                            # Framework not in policy, use default
-                            sla_requirement_hours = sla_policy.get('default', {}).get(severity.upper())
-                            sla_source = "default_policy"
-                    elif sla_policy:
-                        # No frameworks, use default
-                        sla_requirement_hours = sla_policy.get('default', {}).get(severity.upper())
-                        sla_source = "default_policy"
+                    # Calculate SLA requirement using helper function
+                    if compliance_frameworks:
+                        sla_req = _calculate_sla_requirement(compliance_frameworks, severity)
+                        if sla_req:
+                            sla_requirement_hours = sla_req['sla_hours']
+                            sla_source = sla_req['source']
                     
                     # Extract organizational metadata
                     instance_metadata = {
