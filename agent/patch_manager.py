@@ -78,14 +78,11 @@ TOOLS:
 - get_resource_dependencies(resource_id)
 
 OUTPUT FORMAT:
-- Lead with status in CAPS or emoji (✅ ⚠️ ❌)
-- Use numbered lists (1. 2. 3.) or bullets (- •) for items
+- Use emoji for status (✅ ⚠️ ❌)
 - Show environment progression: "PHASE 1 - DEV", "PHASE 2 - STAGING", "PHASE 3 - PROD"
 - Report command IDs clearly
-- Separate sections with blank lines
 - End with clear next steps: "Type 'check status' to verify, or 'proceed' to continue"
-- Use markdown tables ONLY for tabular data (instance lists, health checks)
-- NO markdown headers (##), NO markdown bold (**), NO markdown code blocks"""
+- Use markdown tables for instance lists and health checks"""
 
 def patching_operations():
     """Create patch manager agent."""

@@ -162,14 +162,23 @@ class PatchAutomationClient:
                     
                     if tool_name:
                         if tool_name == 'consult_vulnerability_analyst' and last_agent_shown != 'vuln':
+                            if response_started:
+                                print()  # Newline before switching tools
                             print("\n🔍 Consulting Vulnerability Analyst...", flush=True)
                             last_agent_shown = 'vuln'
+                            response_started = False  # Reset for new tool output
                         elif tool_name == 'consult_patch_manager' and last_agent_shown != 'patch':
+                            if response_started:
+                                print()  # Newline before switching tools
                             print("\n🛠️  Consulting Patch Manager...", flush=True)
                             last_agent_shown = 'patch'
+                            response_started = False  # Reset for new tool output
                         elif tool_name == 'use_aws' and last_agent_shown != 'aws':
+                            if response_started:
+                                print()  # Newline before switching tools
                             print("\n⚙️  Querying AWS...", flush=True)
                             last_agent_shown = 'aws'
+                            response_started = False  # Reset for new tool output
                     
                     # Check for contentBlockDelta with text
                     if 'event' in event and 'contentBlockDelta' in event['event']:
