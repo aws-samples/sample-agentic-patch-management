@@ -32,6 +32,8 @@ ROUTING:
 - Compliance queries (report, SLA, breach, audit, compliance) → consult_compliance_analyst
 - AWS services (Lambda, S3, CloudWatch, RDS, billing, cost) → use_aws
 
+PRIORITY: If query contains "patch", route to consult_patch_manager even if it also mentions compliance/audit
+
 TOOLS:
 - consult_vulnerability_analyst(query): CVE analysis, CVSS scoring, security risk assessment
 - consult_patch_manager(query): EC2 patching, health checks, rollback, maintenance windows

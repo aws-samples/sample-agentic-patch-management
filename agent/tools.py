@@ -253,6 +253,60 @@ def get_instance_inventory(instance_ids: Optional[List[str]] = None,
 
 
 @tool
+def get_patch_compliance(environment: Optional[str] = None, 
+                        instance_ids: Optional[List[str]] = None) -> dict:
+    """Get patch compliance status from AWS Systems Manager."""
+    try:
+        # Get instance IDs by environment if specified
+        if environment and not instance_ids:
+            env_value = _normalize_environment(environment)
+            ec2_response = ec2_client.describe_instances(
+                Filters=[
+                    {'Name': 'tag:Environment', 'Values': [env_value]},
+                    {'Name': 'instance-state-name', 'Values': ['running']}
+                ]
+            )
+            instance_ids = []
+            for reservation in ec2_response['Reservations']:
+                for instance in reservation['Instances']:
+                    instance_ids.append(instance['InstanceId'])
+        
+        if not instance_ids:
+            return {"instances": [], "total_count": 0}
+        
+        # Single API call to get patch states for all instances
+        response = ssm_client.describe_instance_patch_states(InstanceIds=instance_ids)
+        
+        instances = []
+        for state in response.get('InstancePatchStates', []):
+            instances.append({
+                'instance_id': state['InstanceId'],
+                'patch_group': state.get('PatchGroup', 'N/A'),
+                'installed_count': state.get('InstalledCount', 0),
+                'missing_count': state.get('MissingCount', 0),
+                'failed_count': state.get('FailedCount', 0),
+                'security_non_compliant_count': state.get('SecurityNonCompliantCount', 0),
+                'operation': state.get('Operation', 'N/A'),
+                'operation_start_time': state.get('OperationStartTime', '').isoformat() if state.get('OperationStartTime') else 'N/A',
+                'operation_end_time': state.get('OperationEndTime', '').isoformat() if state.get('OperationEndTime') else 'N/A',
+                'reboot_option': state.get('RebootOption', 'N/A')
+            })
+        
+        return {
+            "instances": instances,
+            "total_count": len(instances),
+            "summary": {
+                "total_missing": sum(i['missing_count'] for i in instances),
+                "total_security_non_compliant": sum(i['security_non_compliant_count'] for i in instances),
+                "instances_needing_patches": sum(1 for i in instances if i['missing_count'] > 0)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting patch compliance: {e}")
+        return {"error": str(e), "instances": [], "total_count": 0}
+
+
+@tool
 def execute_patch_operation(instance_ids: List[str], 
                            operation: str = "Install",
                            cve_ids: Optional[List[str]] = None) -> dict:

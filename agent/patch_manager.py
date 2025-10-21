@@ -2,6 +2,7 @@
 
 from tools import (
     get_instance_inventory,
+    get_patch_compliance,
     execute_patch_operation,
     get_command_status,
     get_maintenance_windows,
@@ -61,6 +62,7 @@ ROLLBACK:
 
 TOOLS:
 - get_instance_inventory(instance_ids, package_name, environment, severity, limit)
+- get_patch_compliance(environment, instance_ids): Get patch states (missing, installed, failed counts)
 - execute_patch_operation(instance_ids, operation, cve_ids)
 - get_command_status(command_id, instance_ids)
 - get_maintenance_windows(environment)
@@ -85,6 +87,7 @@ def patching_operations(context):
         system_prompt=SYSTEM_PROMPT,
         tools=[
             get_instance_inventory,
+            get_patch_compliance,
             execute_patch_operation,
             get_command_status,
             get_maintenance_windows,
