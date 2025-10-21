@@ -7,14 +7,12 @@ import time
 import os
 from strands import tool
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 from croniter import croniter
+from profiling import profile, ENABLE_PROFILING
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Profiling flag
-ENABLE_PROFILING = os.environ.get("ENABLE_PROFILING", "false").lower() == "true"
 
 # Initialize AWS clients
 inspector_client = boto3.client('inspector2', region_name='us-east-1')
@@ -22,6 +20,18 @@ ssm_client = boto3.client('ssm', region_name='us-east-1')
 ec2_client = boto3.client('ec2', region_name='us-east-1')
 config_client = boto3.client('config', region_name='us-east-1')
 cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
+
+
+def _get_compliance_bucket_name() -> str:
+    """Get S3 bucket name for compliance reports (DRY helper)."""
+    sts_client = boto3.client('sts', region_name='us-east-1')
+    account_id = sts_client.get_caller_identity()['Account']
+    return f'patch-compliance-reports-{account_id}'
+
+
+def _get_date_prefix(date: datetime) -> str:
+    """Get S3 prefix for a given date (DRY helper)."""
+    return f"{date.year}/{date.month:02d}/{date.day:02d}/"
 
 
 def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional[dict]:
@@ -70,14 +80,11 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
 
 
 @tool
+@profile("Tool: get_vulnerability_findings")
 def get_vulnerability_findings(cve_id: Optional[str] = None, 
                                severity: Optional[str] = None, 
                                limit: int = 50) -> dict:
     """Get vulnerability findings from AWS Inspector (ACTIVE findings only)."""
-    start_time = time.time()
-    if ENABLE_PROFILING:
-        logger.info(f"[PROFILE] Tool: get_vulnerability_findings START")
-    
     try:
         filters = {
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
@@ -111,20 +118,12 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                 'fix_available': finding.get('fixAvailable')
             })
         
-        if ENABLE_PROFILING:
-            elapsed = time.time() - start_time
-            logger.info(f"[PROFILE] Tool: get_vulnerability_findings COMPLETE in {elapsed:.2f}s")
-        
         return {
             "findings": findings,
             "total_count": len(findings)
         }
     except Exception as e:
-        if ENABLE_PROFILING:
-            elapsed = time.time() - start_time
-            logger.error(f"[PROFILE] Tool: get_vulnerability_findings ERROR in {elapsed:.2f}s: {e}")
-        else:
-            logger.error(f"Error getting vulnerability findings: {e}")
+        logger.error(f"Error getting vulnerability findings: {e}")
         return {"error": str(e), "findings": [], "total_count": 0}
 
 
@@ -506,6 +505,7 @@ def check_service_status(instance_ids: List[str], service_name: str = "httpd") -
 
 
 @tool
+@profile("Tool: check_cloudwatch_alarms")
 def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optional[str] = None) -> dict:
     """
     Check CloudWatch alarms for instances.
@@ -518,10 +518,6 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
     Returns:
         Health status with all alarms firing per instance
     """
-    start_time = time.time()
-    if ENABLE_PROFILING:
-        logger.info(f"[PROFILE] Tool: check_cloudwatch_alarms START")
-    
     try:
         # Query all alarms in ALARM state (single API call)
         response = cloudwatch_client.describe_alarms(
@@ -578,10 +574,6 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
                 else 'All instances healthy - no alarms firing'
             )
         }
-        
-        if ENABLE_PROFILING:
-            elapsed = time.time() - start_time
-            logger.info(f"[PROFILE] Tool: check_cloudwatch_alarms END ({elapsed:.2f}s)")
         
         return result
         
@@ -1058,14 +1050,11 @@ def generate_compliance_report(
         
         # Try to save to S3
         s3_client = boto3.client('s3', region_name='us-east-1')
-        
-        # Get account ID for bucket name
-        sts_client = boto3.client('sts', region_name='us-east-1')
-        account_id = sts_client.get_caller_identity()['Account']
-        bucket_name = f'patch-compliance-reports-{account_id}'
+        bucket_name = _get_compliance_bucket_name()
         
         # Generate S3 key with date-based folder structure
-        object_key = f"{timestamp.year}/{timestamp.month:02d}/{timestamp.day:02d}/{cve_id}-{environment}-{timestamp_str}.json"
+        date_prefix = _get_date_prefix(timestamp)
+        object_key = f"{date_prefix}{cve_id}-{environment}-{timestamp_str}.json"
         
         try:
             # Upload to S3
@@ -1136,3 +1125,155 @@ def generate_compliance_report(
             'error': str(e),
             'report_id': None
         }
+
+
+@tool
+def query_compliance_reports(
+    days_back: int = 7,
+    severity: Optional[str] = None,
+    environment: Optional[str] = None,
+    sla_breaches_only: bool = False,
+    limit: int = 50
+) -> dict:
+    """Query compliance reports from S3 for the last N days with summary statistics."""
+    try:
+        s3_client = boto3.client('s3', region_name='us-east-1')
+        bucket_name = _get_compliance_bucket_name()
+        
+        # Check if bucket exists
+        try:
+            s3_client.head_bucket(Bucket=bucket_name)
+        except Exception:
+            return {
+                "reports": [],
+                "total_count": 0,
+                "message": "No compliance reports found. Generate reports first."
+            }
+        
+        # Fetch reports
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days_back)
+        reports = _fetch_reports_from_s3(s3_client, bucket_name, start_date, end_date, 
+                                         severity, environment, sla_breaches_only)
+        
+        # Sort by date (most recent first)
+        reports.sort(key=lambda x: x['generated_at'], reverse=True)
+        
+        # Calculate statistics
+        stats = _calculate_report_statistics(reports)
+        
+        # Apply limit
+        limited_reports = reports[:limit]
+        
+        return {
+            'reports': limited_reports,
+            'total_count': len(reports),
+            'showing': len(limited_reports),
+            'date_range': f"{start_date.date()} to {end_date.date()}",
+            'statistics': stats,
+            'filters_applied': {
+                'severity': severity,
+                'environment': environment,
+                'sla_breaches_only': sla_breaches_only,
+                'limit': limit
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error querying compliance reports: {e}")
+        return {"error": str(e), "reports": [], "total_count": 0}
+
+
+def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime, 
+                           end_date: datetime, severity: Optional[str], 
+                           environment: Optional[str], sla_breaches_only: bool) -> list:
+    """Fetch and filter reports from S3 (KISS helper)."""
+    reports = []
+    days_diff = (end_date - start_date).days + 1
+    
+    for day_offset in range(days_diff):
+        check_date = start_date + timedelta(days=day_offset)
+        prefix = _get_date_prefix(check_date)
+        
+        try:
+            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+            for obj in response.get('Contents', []):
+                report = _parse_report_metadata(s3_client, bucket_name, obj)
+                if report and _matches_filters(report, severity, environment, sla_breaches_only):
+                    reports.append(report)
+        except Exception as e:
+            logger.debug(f"No reports for {prefix}: {e}")
+            continue
+    
+    return reports
+
+
+def _parse_report_metadata(s3_client, bucket_name: str, obj: dict) -> Optional[dict]:
+    """Parse S3 object metadata into report dict (KISS helper)."""
+    try:
+        metadata_response = s3_client.head_object(Bucket=bucket_name, Key=obj['Key'])
+        metadata = metadata_response.get('Metadata', {})
+        
+        return {
+            'report_id': obj['Key'].split('/')[-1].replace('.json', ''),
+            'cve_id': metadata.get('cve-id', 'unknown'),
+            'severity': metadata.get('severity', 'unknown'),
+            'environment': metadata.get('environment', 'unknown'),
+            'decision': metadata.get('decision-type', 'unknown'),
+            'sla_met': metadata.get('sla-met') == 'True',
+            'team': metadata.get('team', 'unknown'),
+            'product': metadata.get('product', 'unknown'),
+            's3_key': obj['Key'],
+            'generated_at': obj['LastModified'].isoformat()
+        }
+    except Exception as e:
+        logger.warning(f"Could not parse metadata for {obj['Key']}: {e}")
+        return None
+
+
+def _matches_filters(report: dict, severity: Optional[str], environment: Optional[str], 
+                     sla_breaches_only: bool) -> bool:
+    """Check if report matches filter criteria (KISS helper)."""
+    if severity and report['severity'].upper() != severity.upper():
+        return False
+    if environment and report['environment'] != environment:
+        return False
+    if sla_breaches_only and report['sla_met']:
+        return False
+    return True
+
+
+def _calculate_report_statistics(reports: list) -> dict:
+    """Calculate summary statistics from reports (KISS helper)."""
+    total = len(reports)
+    if total == 0:
+        return {
+            'total_reports': 0,
+            'sla_breaches': 0,
+            'sla_breach_rate': 0,
+            'by_severity': {},
+            'by_team': {}
+        }
+    
+    sla_breaches = sum(1 for r in reports if not r['sla_met'])
+    breach_rate = (sla_breaches / total * 100)
+    
+    # Breakdown by severity
+    severity_breakdown = {}
+    for r in reports:
+        sev = r['severity']
+        severity_breakdown[sev] = severity_breakdown.get(sev, 0) + 1
+    
+    # Breakdown by team
+    team_breakdown = {}
+    for r in reports:
+        team = r['team']
+        team_breakdown[team] = team_breakdown.get(team, 0) + 1
+    
+    return {
+        'total_reports': total,
+        'sla_breaches': sla_breaches,
+        'sla_breach_rate': round(breach_rate, 1),
+        'by_severity': severity_breakdown,
+        'by_team': team_breakdown
+    }

@@ -10,7 +10,7 @@ from memory_hooks import AgentCoreMemoryHook
 logger = logging.getLogger(__name__)
 
 
-def create_agent(name: str, system_prompt: str, tools: list, context) -> Agent:
+def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens: int = 2000) -> Agent:
     """
     Create agent with AgentCore memory integration.
     
@@ -19,6 +19,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context) -> Agent:
         system_prompt: Agent's system prompt
         tools: List of tools available to agent
         context: AgentCore context with session_id
+        max_tokens: Maximum tokens for response (default 2000 for supervisor, 8000 for specialists)
     
     Returns:
         Configured Agent instance
@@ -52,7 +53,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context) -> Agent:
             model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             region_name='us-east-1',
             temperature=0.1,
-            max_tokens=2000
+            max_tokens=max_tokens
         ),
         system_prompt=system_prompt,
         tools=tools,

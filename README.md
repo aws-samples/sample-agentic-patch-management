@@ -42,15 +42,17 @@ When a critical vulnerability is discovered, this system automatically:
 ┌─────────────────────────────────────────────────────────────┐
 │                 Patch Automation Supervisor                 │
 │         (Intelligent routing with fallback logic)           │
-├─────────────────────┬───────────────────────────────────────┤
-│  Vulnerability      │           Patch Manager               │
-│  Analyst            │                                       │
-│                     │                                       │
-│ • CVE Analysis      │ • Infrastructure Discovery            │
-│ • Threat Assessment │ • Environment Classification          │
-│ • Risk Scoring      │ • Patch Execution                     │
-│                     │ • Health Checks & Rollback            │
-└─────────────────────┴───────────────────────────────────────┘
+├─────────────┬───────────────────┬───────────────────────────┤
+│ Vulnerability│   Patch Manager   │   Compliance Analyst     │
+│ Analyst      │                   │                          │
+│              │                   │                          │
+│ • CVE        │ • Infrastructure  │ • Report Queries         │
+│   Analysis   │   Discovery       │ • SLA Tracking           │
+│ • Threat     │ • Patch Execution │ • Audit Trails           │
+│   Assessment │ • Health Checks   │ • Executive Reporting    │
+│ • Risk       │ • Rollback        │ • Trend Analysis         │
+│   Scoring    │                   │                          │
+└─────────────┴───────────────────┴───────────────────────────┘
                               ↓
                     use_aws (Fallback Tool)
               For AWS services outside specialist scope
@@ -168,20 +170,22 @@ Deployed to Amazon Bedrock AgentCore in `us-east-1`
 ## What's Implemented
 
 ### ✅ Core Capabilities
-- **3 Agents**: Supervisor, Vulnerability Analyst, Patch Manager
+- **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
 - **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
-- **13 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis
+- **14 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying
 - **Fallback Tool**: use_aws for AWS services outside specialist scope (Lambda, S3, CloudWatch, etc.)
+- **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
 - **Dependency Analysis**: AWS Config-based blast radius assessment with load balancer health tracking
 - **Phased Rollout**: dev → staging → prod with human approval between environments
 - **Application-Layer Health Monitoring**: CloudWatch alarm integration for httpd service monitoring
 - **Infrastructure Health Checks**: SSM connectivity verification after patching
 - **Rollback**: User-approved rollback via `yum history undo` with health verification
-- **Compliance Reporting**: Automated audit trail generation with S3 storage
+- **Compliance Reporting**: Automated audit trail generation with S3 storage and queryable reports
+- **Executive Reporting**: Compliance analyst for CISO/CRO/CTO queries (SLA breaches, team performance, trends)
 - **AWS Config Integration**: Resource dependency tracking and relationship discovery
 - **Error Handling**: Graceful degradation when specialists fail
-- **Performance Profiling**: Optional timing instrumentation via ENABLE_PROFILING flag
+- **Performance Profiling**: Centralized profiling utility with decorator pattern via ENABLE_PROFILING flag
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing

@@ -1,18 +1,86 @@
 # Technical Architecture
 
-## Recent Improvements
+## Agent System Design
 
-### SLA-Aware Patching
-**Feature**: Compliance framework-based SLA calculation and enforcement
+### Supervisor Agent
+**Role**: Intelligent routing and workflow orchestration
 
-**Implementation**:
-- External policy file: `agent/config/sla_policy.json` defines SLA hours by framework and severity
-- Helper function: `_calculate_sla_requirement()` in tools.py (DRY principle)
-- Instance tagging: `ComplianceFrameworks` tag drives SLA calculation (e.g., "PCI-DSS,SOC2")
-- Strictest SLA wins: If instance has multiple frameworks, minimum SLA hours applies
-- Decision logic: Compare maintenance window hours vs SLA hours → EMERGENCY or SCHEDULED
+**Tools**:
+- `consult_vulnerability_analyst()` - Delegate to security specialist
+- `consult_patch_manager()` - Delegate to operations specialist
+- `consult_compliance_analyst()` - Delegate to compliance specialist
+- `use_aws()` - Fallback for AWS services outside specialist scope
 
-**SLA Policy Structure**:
+**Routing Logic**:
+- Security queries (CVE, vulnerability, CVSS, threat) → Vulnerability Analyst
+- Infrastructure queries (patch, instance, health, SSM) → Patch Manager
+- Compliance queries (report, SLA, breach, audit) → Compliance Analyst
+- AWS service queries (Lambda, S3, CloudWatch) → use_aws (direct)
+- OUT_OF_SCOPE responses → Retry with use_aws fallback
+
+**Performance**: Keyword-based classification eliminates wrong specialist calls
+
+---
+
+### Vulnerability Analyst Agent
+**Role**: Security threat analysis and risk assessment
+
+**Tools**:
+- `get_vulnerability_findings()` - Query AWS Inspector
+- `get_instance_inventory()` - Check affected infrastructure with SLA calculation
+- `use_aws()` - Fallback for non-security queries
+
+**Behavior**:
+- CVSS scoring and threat classification
+- SLA requirement calculation when analyzing affected instances
+- Returns OUT_OF_SCOPE for infrastructure/patching queries
+
+---
+
+### Patch Manager Agent
+**Role**: Infrastructure operations and patch execution
+
+**Tools**:
+- `get_instance_inventory()` - Discover EC2 instances
+- `execute_patch_operation()` - Execute patches via SSM (async, returns command_id)
+- `get_command_status()` - Check async operation status
+- `check_instance_health()` - Verify SSM connectivity
+- `check_cloudwatch_alarms()` - Monitor application health
+- `rollback_patches()` - Restore via yum history undo
+- `get_resource_dependencies()` - Analyze blast radius via AWS Config
+- `get_maintenance_windows()` - Query maintenance schedules
+- `generate_compliance_report()` - Create audit trails
+- `use_aws()` - Fallback
+
+**Behavior**:
+- Handles ONE environment per invocation (phased rollout)
+- Asynchronous workflow: execute → wait → check status → check health → proceed
+- Two-layer health checks: infrastructure (SSM) + application (CloudWatch alarms)
+- Returns OUT_OF_SCOPE for security/CVE analysis queries
+
+---
+
+### Compliance Analyst Agent
+**Role**: Executive reporting and audit trail analysis
+
+**Tools**:
+- `query_compliance_reports()` - Query reports from S3 with filtering and aggregation
+- `use_aws()` - Fallback
+
+**Behavior**:
+- Queries compliance reports from S3 (date-partitioned)
+- Aggregates statistics (breach count, breach rate, team/severity breakdown)
+- Provides trend analysis and recommendations
+- Returns OUT_OF_SCOPE for patching/security queries
+
+---
+
+## SLA-Aware Patching
+
+### Policy Configuration
+**File**: `agent/config/sla_policy.json`
+
+**Structure**:
 ```json
 {
   "frameworks": {
@@ -24,96 +92,11 @@
 }
 ```
 
-**Tools Enhanced**:
-- `get_instance_inventory(severity=X)`: Returns `sla_requirement` dict when severity provided
-- `generate_compliance_report()`: Includes SLA tracking with breach detection
-
-### Prompt Optimization
-**Achievement**: 71% reduction in total prompt size (425 → 124 lines)
-
-**Changes**:
-- Patch Manager: 280 → 61 lines (removed redundant examples, defensive over-specification)
-- Vulnerability Agent: 120 → 38 lines (flexible workflow vs rigid 4-step process)
-- Supervisor: Already optimal at 25 lines
-- Removed: Step-by-step instructions, multiple workflow examples, demo mode explanations
-- Kept: Essential scope, tools, workflow, output format
-
-**Philosophy**: Trust the model, provide guidance not instructions
-
-### Code Quality Improvements
-**DRY Refactoring**:
-- Extracted `_calculate_sla_requirement()` helper function
-- Eliminated duplicate SLA logic in `get_instance_inventory()` and `generate_compliance_report()`
-- Single source of truth for SLA calculation
-
-**Output Format**:
-- Terminal-friendly: Emoji, markdown tables, clean sections
-- No rigid formatting rules (removed "NO ## headers" restrictions)
-- Trust model to format clearly and readably
-
-**Chat Client**:
-- Fixed streaming: Proper newlines when switching between tools
-- Reset `response_started` flag on tool switch
-- No more merged output lines
-
----
-
-## Agent System Design
-
-### Supervisor Agent
-**Role**: Intelligent routing and workflow orchestration
-
-**Tools**:
-- `consult_vulnerability_analyst()` - Delegate to security specialist
-- `consult_patch_manager()` - Delegate to operations specialist  
-- `use_aws()` - Fallback for AWS services outside specialist scope
-
-**Routing Logic**:
-- Security queries (CVE, vulnerability, CVSS, threat) → Vulnerability Analyst
-- Infrastructure queries (patch, instance, health, SSM) → Patch Manager
-- AWS service queries (Lambda, S3, CloudWatch) → use_aws (direct)
-- OUT_OF_SCOPE responses → Retry with use_aws fallback
-
-**Performance**: 18-36% faster via keyword-based classification (eliminates wrong specialist calls)
-
----
-
-### Vulnerability Analyst Agent
-**Role**: Security threat analysis and risk assessment
-
-**Tools**:
-- `get_vulnerability_findings()` - Query AWS Inspector
-- `use_aws()` - Fallback for non-security queries
-
-**Behavior**:
-- CVSS scoring and threat classification
-- Returns OUT_OF_SCOPE for infrastructure/patching queries
-- Provides security-focused analysis only
-
----
-
-### Patch Manager Agent
-**Role**: Infrastructure operations and patch execution
-
-**Tools**:
-- `get_instance_inventory()` - Discover EC2 instances
-- `execute_patch_operation()` - Execute patches via SSM (async, returns command_id)
-- `get_command_status()` - Check async operation status
-- `check_instance_health()` - Verify SSM connectivity (infrastructure layer)
-- `check_cloudwatch_alarms()` - Monitor application health via CloudWatch alarms
-- `check_service_status()` - Direct service check via SSM (optional)
-- `rollback_patches()` - Restore via yum history undo
-- `get_resource_dependencies()` - Analyze blast radius via AWS Config
-- `get_maintenance_windows()` - Query maintenance schedules
-- `generate_compliance_report()` - Create audit trails
-- `use_aws()` - Fallback for non-patching queries
-
-**Behavior**:
-- Handles ONE environment per invocation (phased rollout)
-- Asynchronous workflow: execute → wait → check status → check health → proceed
-- Two-layer health checks: infrastructure (SSM) + application (CloudWatch alarms)
-- Waits 2 minutes after patching for CloudWatch alarm evaluation
-- Returns OUT_OF_SCOPE for security/CVE analysis queries
+### Implementation
+- Instance tagging: `ComplianceFrameworks` tag drives SLA calculation
+- Helper function: `_calculate_sla_requirement(frameworks, severity)` returns strictest SLA
+- Decision logic: Compare maintenance window hours vs SLA hours → EMERGENCY or SCHEDULED
+- Tools enhanced: `get_instance_inventory(severity=X)` returns `sla_requirement` dict
 
 ---
 

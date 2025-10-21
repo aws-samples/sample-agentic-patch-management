@@ -1,9 +1,5 @@
 """Patch Manager - Infrastructure Assessment and Patch Execution"""
 
-import logging
-import globals
-from strands import Agent
-from strands.models import BedrockModel
 from tools import (
     get_instance_inventory,
     execute_patch_operation,
@@ -18,10 +14,6 @@ from tools import (
     get_resource_dependencies
 )
 from use_aws_tool import use_aws
-from bedrock_agentcore.memory import MemoryClient
-from memory_hooks import AgentCoreMemoryHook
-
-logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a patch management coordinator responsible for safe, efficient patching.
 
@@ -84,32 +76,12 @@ OUTPUT FORMAT:
 - End with clear next steps: "Type 'check status' to verify, or 'proceed' to continue"
 - Use markdown tables for instance lists and health checks"""
 
-def patching_operations():
-    """Create patch manager agent."""
+def patching_operations(context):
+    """Create patch manager agent using factory."""
+    from agent_factory import create_agent
     
-    hooks = []
-    if globals.MEMORY_ID and globals.SESSION_ID:
-        try:
-            memory_client = MemoryClient()
-            patch_memory_hook = AgentCoreMemoryHook(
-                memory_client=memory_client,
-                memory_id=globals.MEMORY_ID,
-                actor_id="patch_manager",
-                session_id=globals.SESSION_ID
-            )
-            hooks = [patch_memory_hook]
-            logger.info("Patch manager created with memory integration")
-        except Exception as e:
-            logger.warning(f"Failed to create memory hook: {e}")
-    
-    agent = Agent(
+    return create_agent(
         name="patch-manager",
-        model=BedrockModel(
-            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            region_name='us-east-1',
-            temperature=0.1,
-            max_tokens=8000
-        ),
         system_prompt=SYSTEM_PROMPT,
         tools=[
             get_instance_inventory,
@@ -123,7 +95,7 @@ def patching_operations():
             get_resource_dependencies,
             use_aws
         ],
-        hooks=hooks
+        context=context,
+        max_tokens=8000
     )
-    
-    return agent
+
