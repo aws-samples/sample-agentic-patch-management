@@ -1,4 +1,4 @@
-"""Specific tools for patch automation - replaces generic use_aws"""
+"""Specific tools for patch automation"""
 
 import boto3
 import json
@@ -27,14 +27,14 @@ cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
 # ============================================================================
 
 def _get_compliance_bucket_name() -> str:
-    """Get S3 bucket name for compliance reports (DRY helper)."""
+    """Get S3 bucket name for compliance reports."""
     sts_client = boto3.client('sts', region_name='us-east-1')
     account_id = sts_client.get_caller_identity()['Account']
     return f'patch-compliance-reports-{account_id}'
 
 
 def _get_date_prefix(date: datetime) -> str:
-    """Get S3 prefix for a given date (DRY helper)."""
+    """Get S3 prefix for a given date."""
     return f"{date.year}/{date.month:02d}/{date.day:02d}/"
 
 
