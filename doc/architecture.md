@@ -1,5 +1,63 @@
 # Technical Architecture
 
+## Recent Improvements
+
+### SLA-Aware Patching
+**Feature**: Compliance framework-based SLA calculation and enforcement
+
+**Implementation**:
+- External policy file: `agent/config/sla_policy.json` defines SLA hours by framework and severity
+- Helper function: `_calculate_sla_requirement()` in tools.py (DRY principle)
+- Instance tagging: `ComplianceFrameworks` tag drives SLA calculation (e.g., "PCI-DSS,SOC2")
+- Strictest SLA wins: If instance has multiple frameworks, minimum SLA hours applies
+- Decision logic: Compare maintenance window hours vs SLA hours → EMERGENCY or SCHEDULED
+
+**SLA Policy Structure**:
+```json
+{
+  "frameworks": {
+    "PCI-DSS": {"CRITICAL": 12, "HIGH": 48, "MEDIUM": 168, "LOW": 720},
+    "SOC2": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720},
+    "HIPAA": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720}
+  },
+  "default": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720}
+}
+```
+
+**Tools Enhanced**:
+- `get_instance_inventory(severity=X)`: Returns `sla_requirement` dict when severity provided
+- `generate_compliance_report()`: Includes SLA tracking with breach detection
+
+### Prompt Optimization
+**Achievement**: 71% reduction in total prompt size (425 → 124 lines)
+
+**Changes**:
+- Patch Manager: 280 → 61 lines (removed redundant examples, defensive over-specification)
+- Vulnerability Agent: 120 → 38 lines (flexible workflow vs rigid 4-step process)
+- Supervisor: Already optimal at 25 lines
+- Removed: Step-by-step instructions, multiple workflow examples, demo mode explanations
+- Kept: Essential scope, tools, workflow, output format
+
+**Philosophy**: Trust the model, provide guidance not instructions
+
+### Code Quality Improvements
+**DRY Refactoring**:
+- Extracted `_calculate_sla_requirement()` helper function
+- Eliminated duplicate SLA logic in `get_instance_inventory()` and `generate_compliance_report()`
+- Single source of truth for SLA calculation
+
+**Output Format**:
+- Terminal-friendly: Emoji, markdown tables, clean sections
+- No rigid formatting rules (removed "NO ## headers" restrictions)
+- Trust model to format clearly and readably
+
+**Chat Client**:
+- Fixed streaming: Proper newlines when switching between tools
+- Reset `response_started` flag on tool switch
+- No more merged output lines
+
+---
+
 ## Agent System Design
 
 ### Supervisor Agent

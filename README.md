@@ -58,18 +58,16 @@ When a critical vulnerability is discovered, this system automatically:
 
 **Technology**: Strands SDK (Python) + Amazon Bedrock AgentCore + AWS CDK
 
-## Recent Improvements
+## Key Features
 
-### Intelligent Routing (Oct 2025)
-- **OUT_OF_SCOPE Logic**: Specialists explicitly reject queries outside their domain
-- **Decision Tree**: Keyword-based routing for deterministic specialist selection
-- **Fallback Pattern**: use_aws tool for AWS services not covered by specialists
-- **Performance**: 18-36% faster by eliminating wrong specialist calls
-
-### Production Hardening (Oct 2025)
-- **Error Handling**: Graceful degradation when specialists fail
-- **Memory Management**: Removed hardcoded memory IDs for multi-user support
-- **Conditional Profiling**: Performance logging via `ENABLE_PROFILING` flag
+- **SLA-Aware Patching**: Automatic compliance-based decisions (PCI-DSS, SOC2, HIPAA)
+- **Risk-Based Scheduling**: EMERGENCY vs SCHEDULED patching based on maintenance windows
+- **Intelligent Routing**: Keyword-based specialist selection with fallback logic
+- **Phased Rollout**: dev → staging → prod with approval gates
+- **Health Monitoring**: Two-layer checks (infrastructure + application via CloudWatch alarms)
+- **Automated Rollback**: User-approved rollback with health verification
+- **Compliance Reporting**: Automated audit trails with SLA tracking stored in S3
+- **Natural Language**: No rigid commands, just conversational queries
 
 ## Quick Start
 

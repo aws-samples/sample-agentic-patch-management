@@ -4,6 +4,19 @@ This demo showcases production-grade patterns and architecture. This document ou
 
 ---
 
+## ✅ Recently Completed
+
+### SLA-Aware Patching
+- [x] **Compliance framework integration** - PCI-DSS, SOC2, HIPAA SLA policies
+- [x] **Risk-based decision logic** - EMERGENCY vs SCHEDULED patching
+- [x] **Policy externalization** - JSON configuration for SLA mappings
+- [x] **SLA tracking in compliance reports** - Breach detection and audit trail
+- [x] **Prompt optimization** - 71% reduction (425 → 124 lines)
+- [x] **DRY refactoring** - Extracted SLA calculation helper function
+- [x] **Chat client streaming fixes** - Proper newlines between tool switches
+
+---
+
 ## Security & Compliance
 
 - [ ] **Least-privilege IAM roles** - Separate roles per environment (dev/staging/prod)
@@ -84,6 +97,10 @@ This demo showcases production-grade patterns and architecture. This document ou
 
 ## Feature Enhancements
 
+- [x] **SLA-aware patching** - Compliance framework integration (COMPLETED)
+- [x] **Prompt optimization** - Reduced bloat by 71% (COMPLETED)
+- [x] **DRY refactoring** - Extracted SLA calculation helper (COMPLETED)
+- [x] **Chat client improvements** - Fixed streaming output (COMPLETED)
 - [x] **CloudWatch alarm integration** - Application-layer health monitoring via CloudWatch alarms (COMPLETED)
 - [ ] **Verify and proceed tool** - Implement proper status verification between environments
 - [ ] **Patch scheduling** - Calendar integration for maintenance windows
@@ -96,12 +113,13 @@ This demo showcases production-grade patterns and architecture. This document ou
 
 ## Known Limitations (Current Demo)
 
-- **Demo mode behavior** - Agent may proceed between environments without strict status verification to maintain demo flow (5-10 min patching waits)
+- **Demo mode behavior** - Agent proceeds between environments when user says "proceed" (assumes success for demo flow)
 - **Manual approval required** - Between each environment in phased rollout
 - **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured (httpd monitoring)
 - **Linux-only** - yum-based rollback for Amazon Linux/RHEL
 - **Single region** - Hardcoded to us-east-1
 - **No cost tracking** - No resource tagging for chargeback
+- **SLA calculation** - Requires ComplianceFrameworks tag on instances (defaults to 24hr if missing)
 
 ---
 

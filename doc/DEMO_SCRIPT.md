@@ -49,7 +49,7 @@ What critical vulnerabilities do we have?
 
 ## Scene 2: Intelligent Decision Making (3 minutes)
 
-**Say:** "Now let's handle that critical CVE. Watch how the agent makes risk-based decisions..."
+**Say:** "Now let's handle that critical CVE. Watch how the agent makes risk-based decisions using SLA policies..."
 
 **Type:**
 ```
@@ -58,15 +58,18 @@ Handle CVE-2025-38527 in dev environment
 
 **Expected Output:**
 - 🛠️ Consulting Patch Manager...
-- Decision reasoning (checks maintenance window)
+- SLA calculation: "SLA: 12hr (PCI-DSS) | Window: 24hr | Decision: SCHEDULED"
+- OR "SLA: 12hr (PCI-DSS) | Window: 96hr | Decision: EMERGENCY"
 - Patching initiated with command ID
 - Instructions to check status
 
 **Talking Points:**
-- Agent checked maintenance window automatically
-- Risk calculation: CVSS score vs. acceptable delay
+- Agent automatically checks SLA requirements from compliance frameworks (PCI-DSS, SOC2, HIPAA)
+- Compares maintenance window timing vs SLA deadline
+- Risk calculation: If window exceeds SLA → EMERGENCY patching
 - Phased rollout: dev → staging → prod
 - Patching is asynchronous (returns command ID)
+- SLA policies externalized in JSON config (easy to customize)
 
 **Type when prompted:**
 ```
@@ -154,8 +157,8 @@ Generate compliance report
 
 **Say:** 
 "This isn't just automation. It's intelligent orchestration that understands:
-- Business context (maintenance windows)
-- Risk tradeoffs (CVSS vs. acceptable delay)  
+- Compliance requirements (PCI-DSS, SOC2, HIPAA SLA policies)
+- Business context (maintenance windows, risk tolerance)
 - Operational safety (phased rollout, health checks)
 
 Built entirely with AWS native services. No new infrastructure to manage."
