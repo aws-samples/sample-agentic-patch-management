@@ -91,38 +91,26 @@ agentcore invoke '{"prompt": "How many EC2 instances do I have?"}'
 
 ## Chat Client
 
-Minimal, intelligent chat interface that trusts the agent's decision-making. No rigid commands, just natural conversation.
+Lightweight Python client using boto3 to communicate directly with the Bedrock AgentCore runtime. Clean streaming responses with real-time tool indicators.
 
 ### Interactive Mode
 ```bash
 ./chat.sh                    # Start interactive chat
 ./chat.sh -p ri25-demo       # Use specific AWS profile
-./chat.sh -d                 # Enable debug mode
 ```
 
 ### Single Message Mode
 ```bash
 ./chat.sh -m "What vulnerabilities do we have?"
 ./chat.sh -m "Handle CVE-2025-38527" -p ri25-demo
-./chat.sh -m "Show compliance" -e report.json  # Export to file
 ```
 
 ### Features
 - **Real-time agent activity** - See which specialist is working (🔍 Vulnerability Analyst, 🛠️ Patch Manager, ⚙️ AWS)
-- **Streaming responses** - Watch answers appear as they're generated
-- **Auto-export** - Conversations saved on exit
+- **Streaming responses** - Watch answers appear as they're generated using SSE (Server-Sent Events)
+- **Direct boto3 integration** - No CLI subprocess overhead, clean JSON parsing
 - **Natural language** - No rigid commands, just ask
-- **Proper JSON parsing** - Robust event handling with graceful fallbacks
-- **Error handling** - Friendly messages with debug mode for troubleshooting
-
-### Commands (Interactive Mode)
-- `history` - Show conversation history
-- `info` - Session information
-- `export` - Save conversation to file
-- `debug` - Toggle debug mode
-- `reset` - Start new session
-- `help` or `?` - Show examples
-- `quit` - Exit (auto-saves conversation)
+- **Session management** - Maintains conversation context across messages
 
 ### What You'll See
 ```
@@ -132,40 +120,12 @@ You: What critical vulnerabilities do we have?
 
 🤖 Agent: I found 3 critical vulnerabilities in your environment:
 1. CVE-2025-38527 (CVSS 9.8)...
-
-──────────────────────────────────────────────────────────────────────
 ```
 
 ### Troubleshooting
-- **Agent not found**: `pip install bedrock-agentcore`
+- **Missing dependencies**: `pip install boto3 pyyaml`
 - **Agent not deployed**: `./deploy.sh agent`
-- **Timeout (5 min)**: Try simpler query or check agent status
-- **Debug details**: Use `-d` flag to see full request/response flow
-
-## Configuration
-
-### Enable Performance Profiling
-```bash
-# For debugging and performance analysis
-export ENABLE_PROFILING=true
-agentcore launch
-
-# Profiling disabled by default for production
-```
-
-**What profiling shows:**
-- Supervisor routing time
-- Specialist execution time
-- Tool execution time
-- Total request latency
-
-**Use for:** Performance debugging, optimization analysis, demo preparation
-
-### AWS Profile
-Configure with: `aws configure --profile ri25-demo`
-
-### Agent Runtime
-Deployed to Amazon Bedrock AgentCore in `us-east-1`
+- **AWS credentials**: Ensure AWS profile is configured (`aws configure --profile ri25-demo`)
 
 ## What's Implemented
 
@@ -186,7 +146,7 @@ Deployed to Amazon Bedrock AgentCore in `us-east-1`
 - **Executive Reporting**: Compliance analyst for CISO/CRO/CTO queries (SLA breaches, team performance, trends)
 - **AWS Config Integration**: Resource dependency tracking and relationship discovery
 - **Error Handling**: Graceful degradation when specialists fail
-- **Performance Profiling**: Centralized profiling utility with decorator pattern via ENABLE_PROFILING flag
+- **Observability**: Centralized performance tracking with CloudWatch Logs integration (cache metrics, AWS API timing, query performance)
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
@@ -240,7 +200,7 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   ├── utils/                      # Utilities
 │   │   ├── agent_factory.py        # Common agent creation
 │   │   ├── memory_hooks.py         # AgentCore memory integration
-│   │   ├── profiling.py            # Performance profiling
+│   │   ├── observability.py        # Performance tracking & metrics
 │   │   └── globals.py              # Shared state
 │   ├── config/
 │   │   └── config.json             # Patch management configuration
@@ -300,6 +260,23 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 ```
 
 ## Configuration
+
+### Observability & Performance Monitoring
+```bash
+# View performance metrics
+./view_metrics.py              # Last hour
+./view_metrics.py --hours 24   # Last 24 hours
+```
+
+**What's tracked:**
+- Cache hit rates (target: 60-80%)
+- AWS API call performance
+- Query response times
+- Tool usage statistics
+
+**See:** `doc/observability.md` for CloudWatch Insights queries and detailed analysis
+
+### AWS Profile & Runtime
 
 **AWS Profile**: `ri25-demo` (configure with `aws configure --profile ri25-demo`)
 

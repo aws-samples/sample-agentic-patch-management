@@ -5,14 +5,42 @@ import json
 import logging
 import time
 import os
+from functools import lru_cache
 from strands import tool
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from croniter import croniter
-from profiling import profile, ENABLE_PROFILING
+from observability import get_tracker, track_performance, log_event
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Cache TTL: 60 seconds for AWS API responses
+_cache_timestamp = {}
+
+def cache_with_ttl(ttl_seconds=60):
+    """Decorator for caching with TTL"""
+    def decorator(func):
+        cache = {}
+        def wrapper(*args, **kwargs):
+            # Create cache key from function name and args
+            key = f"{func.__name__}:{str(args)}:{str(kwargs)}"
+            now = time.time()
+            
+            # Check if cached and not expired
+            if key in cache:
+                result, timestamp = cache[key]
+                if now - timestamp < ttl_seconds:
+                    logger.info(f"Cache HIT: {func.__name__}")
+                    return result
+            
+            # Call function and cache result
+            logger.info(f"Cache MISS: {func.__name__}")
+            result = func(*args, **kwargs)
+            cache[key] = (result, now)
+            return result
+        return wrapper
+    return decorator
 
 # Initialize AWS clients
 inspector_client = boto3.client('inspector2', region_name='us-east-1')
@@ -105,7 +133,6 @@ def _normalize_environment(user_input: str) -> str:
 # --- Vulnerability & Discovery ---
 
 @tool
-@profile("Tool: get_vulnerability_findings")
 def get_vulnerability_findings(cve_id: Optional[str] = None, 
                                severity: Optional[str] = None,
                                environment: Optional[str] = None,
@@ -468,7 +495,6 @@ def check_instance_health(instance_ids: List[str]) -> dict:
 
 
 @tool
-@profile("Tool: check_cloudwatch_alarms")
 def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optional[str] = None) -> dict:
     """Check CloudWatch alarms for EC2 instances.
     
@@ -1325,9 +1351,35 @@ def use_aws(
         label: Human-readable description of the operation
     
     Returns:
-        dict: API response
+        dict: API response (limited to first 15 items for list operations)
     """
+    tracker = get_tracker()
+    start_time = time.time()
+    
+    # Check if this is a read-only operation (cacheable)
+    read_operations = ['describe', 'list', 'get']
+    is_read_only = any(operation_name.startswith(op) for op in read_operations)
+    
+    # Create cache key for read operations
+    if is_read_only:
+        cache_key = f"{service_name}:{operation_name}:{json.dumps(parameters, sort_keys=True)}:{region}"
+        now = time.time()
+        
+        # Check cache (60s TTL)
+        if hasattr(use_aws, '_cache'):
+            if cache_key in use_aws._cache:
+                result, timestamp = use_aws._cache[cache_key]
+                if now - timestamp < 60:
+                    tracker.record_cache_hit(cache_key)
+                    return result
+        else:
+            use_aws._cache = {}
+    
     try:
+        # Record cache miss if read operation
+        if is_read_only:
+            tracker.record_cache_miss(cache_key)
+        
         client = boto3.client(service_name, region_name=region)
         
         if not hasattr(client, operation_name):
@@ -1338,11 +1390,48 @@ def use_aws(
             }
         
         operation_method = getattr(client, operation_name)
+        
+        # Track AWS API call duration
+        api_start = time.time()
         response = operation_method(**parameters)
+        api_duration_ms = (time.time() - api_start) * 1000
+        tracker.record_aws_call(service_name, operation_name, api_duration_ms)
         
         # Remove ResponseMetadata for cleaner output
         if 'ResponseMetadata' in response:
             del response['ResponseMetadata']
+        
+        # Limit large list responses to prevent formatting overhead
+        if 'Reservations' in response and len(response['Reservations']) > 0:
+            # EC2 instances - limit to 15
+            total_instances = sum(len(r.get('Instances', [])) for r in response['Reservations'])
+            if total_instances > 15:
+                # Keep first 15 instances
+                count = 0
+                limited_reservations = []
+                for reservation in response['Reservations']:
+                    if count >= 15:
+                        break
+                    instances = reservation.get('Instances', [])
+                    remaining = 15 - count
+                    if len(instances) <= remaining:
+                        limited_reservations.append(reservation)
+                        count += len(instances)
+                    else:
+                        limited_res = reservation.copy()
+                        limited_res['Instances'] = instances[:remaining]
+                        limited_reservations.append(limited_res)
+                        count = 15
+                
+                response['Reservations'] = limited_reservations
+                response['_truncated'] = True
+                response['_total_count'] = total_instances
+                response['_showing'] = 15
+        
+        # Cache read-only operations
+        if is_read_only:
+            logger.info(f"Cache MISS: {service_name}.{operation_name}")
+            use_aws._cache[cache_key] = (response, now)
         
         return response
         

@@ -9,7 +9,7 @@ from vulnerability_agent import gather_vulnerabilities
 from patch_manager import patching_operations
 from compliance_analyst import analyze_compliance
 from tools import use_aws
-from profiling import profile, log_profile, ENABLE_PROFILING
+from observability import get_tracker, track_performance, log_event
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +25,15 @@ app = BedrockAgentCoreApp()
 SYSTEM_PROMPT = """You are a Patch Automation Coordinator who routes queries to specialist agents.
 
 Provide your final answer within <answer></answer> tags.
+
+RESPONSE GUIDELINES (CRITICAL):
+- ALWAYS use markdown tables for lists (never bullets for >3 items)
+- For lists >10 items: Show first 10 ONLY with "Showing 10 of X" message
+- Maximum 3 columns in tables (ID, Name, Key Info)
+- NO verbose descriptions - be direct
+- NO "Common Attributes" sections - put in table
+- If data is truncated (_truncated: true), just say "Showing X of Y"
+- Target: <500 words per response
 
 ROUTING:
 - Security queries (CVE, vulnerability, CVSS, threat, Inspector) → consult_vulnerability_analyst
@@ -62,7 +71,6 @@ OUTPUT FORMAT:
 - End with clear next steps or questions"""
 
 @tool
-@profile("Supervisor → Vulnerability Analyst")
 def consult_vulnerability_analyst(query: str) -> str:
     """Get vulnerability analysis from security specialist."""
     # Create context object from globals
@@ -75,7 +83,6 @@ def consult_vulnerability_analyst(query: str) -> str:
     return result.message['content'][0]['text']
 
 @tool
-@profile("Supervisor → Patch Manager")
 def consult_patch_manager(query: str) -> str:
     """Get patch deployment plan from infrastructure specialist."""
     # Create context object from globals
@@ -88,7 +95,6 @@ def consult_patch_manager(query: str) -> str:
     return result.message['content'][0]['text']
 
 @tool
-@profile("Supervisor → Compliance Analyst")
 def consult_compliance_analyst(query: str) -> str:
     """Get compliance reporting and audit trail analysis."""
     # Create context object from globals
@@ -105,8 +111,11 @@ async def agent_invocation(payload, context):
     """Handler for agent invocation with AgentCore memory integration."""
     from agent_factory import create_agent
     
+    tracker = get_tracker()
+    request_start = time.time()
+    
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
-    log_profile(f"REQUEST START: {user_message[:50]}...")
+    log_event('request_start', f"New request: {user_message[:100]}", query_length=len(user_message))
     
     # Create agent with factory
     agent = create_agent(
@@ -116,18 +125,21 @@ async def agent_invocation(payload, context):
         context=context
     )
     
-    log_profile("Supervisor thinking: START")
-    
     # Stream response
     stream = agent.stream_async(user_message)
-    first_token = True
     async for event in stream:
-        if first_token and ENABLE_PROFILING:
-            log_profile("Supervisor first token received")
-            first_token = False
         yield event
     
-    log_profile("REQUEST COMPLETE")
+    # Record overall query time
+    total_duration_ms = (time.time() - request_start) * 1000
+    tracker.record_query_time(user_message, total_duration_ms)
+    
+    # Log performance summary periodically (every 5 queries)
+    if len(tracker.metrics['query_times']) % 5 == 0:
+        tracker.log_summary()
+    
+    log_event('request_complete', f"Request completed in {total_duration_ms:.0f}ms", 
+              duration_ms=total_duration_ms)
 
 if __name__ == "__main__":
     app.run()
