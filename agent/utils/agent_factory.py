@@ -1,11 +1,11 @@
 """Common agent factory to eliminate duplication"""
 
-import globals
+import utils.globals as globals
 import logging
 from strands import Agent
 from strands.models import BedrockModel
 from bedrock_agentcore.memory import MemoryClient
-from memory_hooks import AgentCoreMemoryHook
+from utils.memory_hooks import AgentCoreMemoryHook
 
 logger = logging.getLogger(__name__)
 

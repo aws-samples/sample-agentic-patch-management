@@ -1,19 +1,18 @@
 """Patch Manager - Infrastructure Assessment and Patch Execution"""
 
-from tools import (
+from tools.aws_tools import (
     get_patch_compliance,
     execute_patch_operation,
     get_command_status,
     get_maintenance_windows,
     create_maintenance_window,
     check_instance_health,
-    check_service_status,
     check_cloudwatch_alarms,
     rollback_patches,
     generate_compliance_report,
-    get_resource_dependencies
+    get_resource_dependencies,
+    use_aws
 )
-from use_aws_tool import use_aws
 
 SYSTEM_PROMPT = """You are a patch management coordinator responsible for safe, efficient patching.
 
@@ -51,7 +50,7 @@ HEALTH CHECKS:
 After patching completes (get_command_status shows Success):
 - Wait 2 minutes for CloudWatch alarm evaluation
 - check_instance_health(instance_ids) - SSM connectivity
-- check_cloudwatch_alarms(instance_ids, "httpd") - application health
+- check_cloudwatch_alarms(instance_ids, "httpd") - application health via CloudWatch alarms
 - If alarms firing: call get_resource_dependencies() for blast radius, recommend rollback
 
 ROLLBACK:
@@ -64,8 +63,8 @@ TOOLS:
 - execute_patch_operation(instance_ids, operation, cve_ids)
 - get_command_status(command_id, instance_ids)
 - get_maintenance_windows(environment)
-- check_instance_health(instance_ids)
-- check_cloudwatch_alarms(instance_ids, alarm_name_pattern)
+- check_instance_health(instance_ids): SSM connectivity check
+- check_cloudwatch_alarms(instance_ids, alarm_name_pattern): Application health via CloudWatch
 - rollback_patches(instance_ids)
 - get_resource_dependencies(resource_id)
 
@@ -78,7 +77,7 @@ OUTPUT FORMAT:
 
 def patching_operations(context):
     """Create patch manager agent using factory."""
-    from agent_factory import create_agent
+    from utils.agent_factory import create_agent
     
     return create_agent(
         name="patch-manager",
@@ -90,7 +89,7 @@ def patching_operations(context):
             get_maintenance_windows,
             create_maintenance_window,
             check_instance_health,
-            check_service_status,
+            check_cloudwatch_alarms,
             rollback_patches,
             get_resource_dependencies,
             use_aws

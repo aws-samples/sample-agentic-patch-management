@@ -172,14 +172,15 @@ Deployed to Amazon Bedrock AgentCore in `us-east-1`
 ### ✅ Core Capabilities
 - **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
 - **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
-- **13 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying
+- **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying
 - **Fallback Tool**: use_aws for AWS services outside specialist scope (Lambda, S3, CloudWatch, etc.)
 - **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
 - **Dependency Analysis**: AWS Config-based blast radius assessment with load balancer health tracking
 - **Phased Rollout**: dev → staging → prod with human approval between environments
-- **Application-Layer Health Monitoring**: CloudWatch alarm integration for httpd service monitoring
-- **Infrastructure Health Checks**: SSM connectivity verification after patching
+- **Two-Layer Health Monitoring**: 
+  - Infrastructure: SSM connectivity verification
+  - Application: CloudWatch alarm monitoring (requires alarms configured)
 - **Rollback**: User-approved rollback via `yum history undo` with health verification
 - **Compliance Reporting**: Automated audit trail generation with S3 storage and queryable reports
 - **Executive Reporting**: Compliance analyst for CISO/CRO/CTO queries (SLA breaches, team performance, trends)
@@ -229,13 +230,20 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 
 ```
 ├── agent/                          # Strands agents
-│   ├── supervisor.py               # Orchestration
-│   ├── vulnerability_agent.py      # Security analysis
-│   ├── patch_manager.py            # Patching operations
-│   ├── tools.py                    # 13 AWS integration tools
-│   ├── agent_factory.py            # Common agent creation (DRY)
+│   ├── agents/                     # Agent implementations
+│   │   ├── supervisor.py           # Orchestration
+│   │   ├── vulnerability_agent.py  # Security analysis
+│   │   ├── patch_manager.py        # Patching operations
+│   │   └── compliance_analyst.py   # Reporting & audit
+│   ├── tools/                      # AWS integration
+│   │   └── aws_tools.py            # 12 AWS tools + use_aws fallback
+│   ├── utils/                      # Utilities
+│   │   ├── agent_factory.py        # Common agent creation
+│   │   ├── memory_hooks.py         # AgentCore memory integration
+│   │   ├── profiling.py            # Performance profiling
+│   │   └── globals.py              # Shared state
 │   ├── config/
-│   │   └── config.json              # Patch management configuration (SLA policy, environment aliases)
+│   │   └── config.json             # Patch management configuration
 │   └── .bedrock_agentcore.yaml     # AgentCore config
 ├── infra/                          # AWS CDK infrastructure
 │   ├── lib/

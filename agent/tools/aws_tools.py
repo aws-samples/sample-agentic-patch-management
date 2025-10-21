@@ -22,6 +22,10 @@ config_client = boto3.client('config', region_name='us-east-1')
 cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
 
 
+# ============================================================================
+# PRIVATE HELPER FUNCTIONS
+# ============================================================================
+
 def _get_compliance_bucket_name() -> str:
     """Get S3 bucket name for compliance reports (DRY helper)."""
     sts_client = boto3.client('sts', region_name='us-east-1')
@@ -94,13 +98,29 @@ def _normalize_environment(user_input: str) -> str:
     return user_input
 
 
+# ============================================================================
+# PUBLIC TOOLS
+# ============================================================================
+
+# --- Vulnerability & Discovery ---
+
 @tool
 @profile("Tool: get_vulnerability_findings")
 def get_vulnerability_findings(cve_id: Optional[str] = None, 
                                severity: Optional[str] = None,
                                environment: Optional[str] = None,
                                limit: int = 50) -> dict:
-    """Get vulnerability findings from AWS Inspector (ACTIVE findings only), optionally filtered by environment."""
+    """Query AWS Inspector for vulnerability findings.
+    
+    Args:
+        cve_id: Specific CVE ID to search for (e.g., 'CVE-2024-1234')
+        severity: Filter by severity (CRITICAL, HIGH, MEDIUM, LOW)
+        environment: Filter by environment tag (dev, staging, prod)
+        limit: Maximum number of findings to return (default: 50)
+    
+    Returns:
+        dict: {'findings': list, 'total_count': int}
+    """
     try:
         filters = {
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
@@ -146,11 +166,22 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
         return {"error": str(e), "findings": [], "total_count": 0}
 
 
+# --- Patch Management ---
+
 @tool
 def get_patch_compliance(environment: Optional[str] = None, 
                         instance_ids: Optional[List[str]] = None,
                         severity: Optional[str] = None) -> dict:
-    """Get patch compliance status from AWS Systems Manager. If severity provided, includes SLA calculation."""
+    """Get patch compliance status from AWS Systems Manager.
+    
+    Args:
+        environment: Filter by environment (dev, staging, prod)
+        instance_ids: Specific instance IDs to check
+        severity: If provided, includes SLA calculation based on compliance frameworks
+    
+    Returns:
+        dict: {'instances': list, 'total_count': int, 'summary': dict, 'sla_requirement': dict (optional)}
+    """
     try:
         instance_tags = {}
         
@@ -226,7 +257,16 @@ def get_patch_compliance(environment: Optional[str] = None,
 def execute_patch_operation(instance_ids: List[str], 
                            operation: str = "Install",
                            cve_ids: Optional[List[str]] = None) -> dict:
-    """Execute patch operation via AWS Systems Manager."""
+    """Execute patch operation via AWS Systems Manager.
+    
+    Args:
+        instance_ids: List of EC2 instance IDs to patch
+        operation: Patch operation type (default: 'Install')
+        cve_ids: Optional list of specific CVE IDs (requires custom patch baseline)
+    
+    Returns:
+        dict: {'command_id': str, 'status': str, 'instance_count': int}
+    """
     try:
         params = {
             'Operation': [operation],
@@ -254,7 +294,15 @@ def execute_patch_operation(instance_ids: List[str],
 
 @tool
 def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
-    """Get status of SSM command execution."""
+    """Get status of SSM command execution.
+    
+    Args:
+        command_id: SSM command ID to check
+        instance_ids: List of instance IDs the command was sent to
+    
+    Returns:
+        dict: {'results': list, 'summary': dict, 'overall_status': str}
+    """
     try:
         results = []
         for instance_id in instance_ids:
@@ -301,10 +349,22 @@ def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
         return {"error": str(e)}
 
 
+# --- Maintenance Windows ---
+
 @tool
 def create_maintenance_window(name: str, schedule: str, duration: int,
                               target_environment: str) -> dict:
-    """Create maintenance window in AWS Systems Manager."""
+    """Create AWS Systems Manager maintenance window.
+    
+    Args:
+        name: Name for the maintenance window
+        schedule: Cron expression for schedule (e.g., 'cron(0 2 ? * TUE *)')
+        duration: Duration in hours
+        target_environment: Environment to target (dev, staging, prod)
+    
+    Returns:
+        dict: {'window_id': str, 'name': str, 'schedule': str}
+    """
     try:
         response = ssm_client.create_maintenance_window(
             Name=name,
@@ -336,9 +396,18 @@ def create_maintenance_window(name: str, schedule: str, duration: int,
         return {"error": str(e)}
 
 
+# --- Health & Monitoring ---
+
 @tool
 def check_instance_health(instance_ids: List[str]) -> dict:
-    """Check instance health after patching operations."""
+    """Check instance health after patching operations.
+    
+    Args:
+        instance_ids: List of EC2 instance IDs to check
+    
+    Returns:
+        dict: {'health_results': list, 'summary': dict, 'overall_health': str}
+    """
     try:
         health_results = []
         
@@ -399,87 +468,16 @@ def check_instance_health(instance_ids: List[str]) -> dict:
 
 
 @tool
-def check_service_status(instance_ids: List[str], service_name: str = "httpd") -> dict:
-    """Check if a service is running on instances."""
-    try:
-        command = f"systemctl is-active {service_name}"
-        
-        response = ssm_client.send_command(
-            InstanceIds=instance_ids,
-            DocumentName='AWS-RunShellScript',
-            Parameters={'commands': [command]},
-            TimeoutSeconds=30
-        )
-        
-        command_id = response['Command']['CommandId']
-        
-        # Wait briefly for command to complete
-        import time
-        time.sleep(3)
-        
-        # Get results
-        service_results = []
-        for instance_id in instance_ids:
-            try:
-                output = ssm_client.get_command_invocation(
-                    CommandId=command_id,
-                    InstanceId=instance_id
-                )
-                
-                status = output.get('Status')
-                stdout = output.get('StandardOutputContent', '').strip()
-                
-                # systemctl is-active returns "active" if running
-                is_running = (status == 'Success' and stdout == 'active')
-                
-                service_results.append({
-                    'instance_id': instance_id,
-                    'service': service_name,
-                    'status': 'running' if is_running else 'stopped',
-                    'is_healthy': is_running,
-                    'details': stdout if not is_running else 'active'
-                })
-                
-            except Exception as e:
-                service_results.append({
-                    'instance_id': instance_id,
-                    'service': service_name,
-                    'status': 'unknown',
-                    'is_healthy': False,
-                    'details': str(e)
-                })
-        
-        running_count = sum(1 for r in service_results if r['is_healthy'])
-        stopped_count = len(instance_ids) - running_count
-        
-        return {
-            'service': service_name,
-            'results': service_results,
-            'running_count': running_count,
-            'stopped_count': stopped_count,
-            'total_instances': len(instance_ids),
-            'all_healthy': stopped_count == 0,
-            'recommendation': 'HEALTHY' if stopped_count == 0 else 'ROLLBACK_RECOMMENDED'
-        }
-        
-    except Exception as e:
-        logger.error(f"Error checking service status: {e}")
-        return {"error": str(e)}
-
-
-@tool
 @profile("Tool: check_cloudwatch_alarms")
 def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optional[str] = None) -> dict:
-    """
-    Check CloudWatch alarms for instances.
-    Returns alarms in ALARM state, grouped by instance.
+    """Check CloudWatch alarms for EC2 instances.
     
     Args:
-        instance_ids: Instance IDs to check
-        alarm_name_pattern: Optional filter for alarm names (e.g., 'httpd', 'nginx')
+        instance_ids: List of EC2 instance IDs to check alarms for
+        alarm_name_pattern: Optional pattern to filter alarm names (e.g., 'httpd', 'nginx')
     
     Returns:
-        Health status with all alarms firing per instance
+        dict: {'alarms': list, 'summary': dict, 'overall_status': str}
     """
     try:
         # Query all alarms in ALARM state (single API call)
@@ -551,7 +549,14 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
 
 @tool
 def rollback_patches(instance_ids: List[str]) -> dict:
-    """Rollback patches using yum history undo."""
+    """Rollback patches on EC2 instances using yum history.
+    
+    Args:
+        instance_ids: List of EC2 instance IDs to rollback patches on
+    
+    Returns:
+        dict: {'command_id': str, 'status': str, 'instance_count': int}
+    """
     try:
         # Use yum history to rollback the last transaction
         rollback_script = """
@@ -600,15 +605,19 @@ fi
 
 @tool
 def get_resource_dependencies(resource_id: str) -> dict:
-    """
-    Analyze resource dependencies using AWS Config as primary source.
+    """Analyze resource dependencies using AWS Config.
     
-    Returns comprehensive view including:
-    - All relationships tracked by Config
-    - Load balancer health status
-    - Business context from tags
-    - Blast radius assessment
-    - Rollback recommendation
+    Args:
+        resource_id: EC2 instance ID to analyze dependencies for
+    
+    Returns:
+        dict: {
+            'resource_id': str,
+            'relationships': list,
+            'load_balancers': list,
+            'blast_radius': str,
+            'recommendation': str
+        }
     """
     try:
         # Query AWS Config for instance configuration
@@ -752,9 +761,19 @@ def get_resource_dependencies(resource_id: str) -> dict:
         return {"error": str(e), "resource_id": resource_id}
 
 
+# --- Compliance & Reporting ---
+
 @tool
 def get_maintenance_windows(environment: str = None, instance_ids: list = None) -> dict:
-    """Get maintenance window information and validate if specific instances are covered."""
+    """Get maintenance window information and validate instance coverage.
+    
+    Args:
+        environment: Filter by environment (dev, staging, prod)
+        instance_ids: Optional list of instance IDs to validate coverage
+    
+    Returns:
+        dict: {'windows': list, 'instance_coverage': dict (optional)}
+    """
     try:
         # Query all maintenance windows (filter by environment later)
         response = ssm_client.describe_maintenance_windows()
@@ -910,7 +929,22 @@ def generate_compliance_report(
     discovered_at: str = None,
     patched_at: str = None
 ) -> dict:
-    """Generate compliance report with SLA tracking from policy file and organizational metadata from tags."""
+    """Generate compliance report with SLA tracking and save to S3.
+    
+    Args:
+        cve_id: CVE identifier (e.g., 'CVE-2024-1234')
+        severity: Vulnerability severity (CRITICAL, HIGH, MEDIUM, LOW)
+        decision: Patching decision (EMERGENCY, SCHEDULED, DEFERRED)
+        justification: Reason for the decision
+        affected_instances: List of affected instance IDs
+        execution_results: Results from patch execution
+        environment: Target environment (default: 'unknown')
+        discovered_at: Discovery timestamp (optional)
+        patched_at: Patching timestamp (optional)
+    
+    Returns:
+        dict: {'report_id': str, 's3_location': str, 'sla_status': str}
+    """
     try:
         import json
         import os
@@ -1114,7 +1148,18 @@ def query_compliance_reports(
     sla_breaches_only: bool = False,
     limit: int = 50
 ) -> dict:
-    """Query compliance reports from S3 for the last N days with summary statistics."""
+    """Query compliance reports from S3 with filtering and statistics.
+    
+    Args:
+        days_back: Number of days to look back (default: 7)
+        severity: Filter by severity (CRITICAL, HIGH, MEDIUM, LOW)
+        environment: Filter by environment (dev, staging, prod)
+        sla_breaches_only: Only return SLA breaches (default: False)
+        limit: Maximum number of reports to return (default: 50)
+    
+    Returns:
+        dict: {'reports': list, 'statistics': dict, 'total_count': int}
+    """
     try:
         s3_client = boto3.client('s3', region_name='us-east-1')
         bucket_name = _get_compliance_bucket_name()
@@ -1256,3 +1301,55 @@ def _calculate_report_statistics(reports: list) -> dict:
         'by_severity': severity_breakdown,
         'by_team': team_breakdown
     }
+
+
+# ============================================================================
+# FALLBACK TOOL
+# ============================================================================
+
+@tool
+def use_aws(
+    service_name: str,
+    operation_name: str,
+    parameters: Dict[str, Any],
+    region: str = "us-east-1",
+    label: str = "AWS API Call"
+) -> dict:
+    """Call any AWS API operation using boto3.
+    
+    Args:
+        service_name: AWS service name (e.g., 'ssm', 'inspector2', 'ec2')
+        operation_name: API operation name in snake_case (e.g., 'send_command')
+        parameters: Dictionary of parameters for the operation
+        region: AWS region (default: 'us-east-1')
+        label: Human-readable description of the operation
+    
+    Returns:
+        dict: API response
+    """
+    try:
+        client = boto3.client(service_name, region_name=region)
+        
+        if not hasattr(client, operation_name):
+            available_ops = [op for op in dir(client) if not op.startswith('_')]
+            return {
+                "error": f"Operation '{operation_name}' not found in service '{service_name}'",
+                "available_operations": available_ops[:20]
+            }
+        
+        operation_method = getattr(client, operation_name)
+        response = operation_method(**parameters)
+        
+        # Remove ResponseMetadata for cleaner output
+        if 'ResponseMetadata' in response:
+            del response['ResponseMetadata']
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error calling {service_name}.{operation_name}: {e}")
+        return {
+            "error": str(e),
+            "service_name": service_name,
+            "operation_name": operation_name
+        }

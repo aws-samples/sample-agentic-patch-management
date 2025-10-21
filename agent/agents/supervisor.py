@@ -5,11 +5,11 @@ import time
 import logging
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import tool
-from vulnerability_agent import gather_vulnerabilities
-from patch_manager import patching_operations
-from compliance_analyst import analyze_compliance
-from use_aws_tool import use_aws
-from profiling import profile, log_profile, ENABLE_PROFILING
+from agents.vulnerability_agent import gather_vulnerabilities
+from agents.patch_manager import patching_operations
+from agents.compliance_analyst import analyze_compliance
+from tools.aws_tools import use_aws
+from utils.profiling import profile, log_profile, ENABLE_PROFILING
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +42,13 @@ TOOLS:
 
 OUT_OF_SCOPE HANDLING:
 If specialist response contains "OUT_OF_SCOPE", immediately retry with use_aws tool.
+
+USE_AWS OPTIMIZATION:
+When using use_aws tool, optimize for efficiency:
+- Batch related queries when possible (e.g., describe multiple resources in one call)
+- Use filters to reduce data transfer (e.g., tag filters, state filters)
+- Prefer single calls with multiple resource IDs over loops
+- Example: describe_instances with Filters instead of multiple describe_instances calls
 
 EXECUTION:
 - Call one tool at a time

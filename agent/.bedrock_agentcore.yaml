@@ -2,7 +2,7 @@ default_agent: intelligent_patch_automation_praveen
 agents:
   intelligent_patch_automation_praveen:
     name: intelligent_patch_automation_praveen
-    entrypoint: supervisor.py
+    entrypoint: agents/supervisor.py
     platform: linux/arm64
     container_runtime: finch
     source_path: null
@@ -23,7 +23,7 @@ agents:
     bedrock_agentcore:
       agent_id: intelligent_patch_automation_praveen-90LFV03r8h
       agent_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:runtime/intelligent_patch_automation_praveen-90LFV03r8h
-      agent_session_id: 74bb55bf-9614-4347-a22d-afa663b30cc2
+      agent_session_id: null
     codebuild:
       project_name: bedrock-agentcore-intelligent_patch_automation_praveen-builder
       execution_role: arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-a154b39750
