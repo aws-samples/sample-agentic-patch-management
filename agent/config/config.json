@@ -1,6 +1,11 @@
 {
-  "description": "SLA policy for patch management by compliance framework",
+  "description": "Configuration for patch management system",
   "version": "1.0",
+  "environment_aliases": {
+    "dev": ["dev", "development", "non prod", "non production"],
+    "staging": ["staging", "stage"],
+    "prod": ["prod", "production"]
+  },
   "frameworks": {
     "PCI-DSS": {
       "description": "Payment Card Industry Data Security Standard",

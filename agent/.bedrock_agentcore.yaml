@@ -23,7 +23,7 @@ agents:
     bedrock_agentcore:
       agent_id: intelligent_patch_automation_praveen-90LFV03r8h
       agent_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:runtime/intelligent_patch_automation_praveen-90LFV03r8h
-      agent_session_id: 256b2952-a29c-45df-b2f2-7aa9b6e3bbd6
+      agent_session_id: 69179a14-a6e7-474f-b26e-79d1e7ef4954
     codebuild:
       project_name: bedrock-agentcore-intelligent_patch_automation_praveen-builder
       execution_role: arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-a154b39750

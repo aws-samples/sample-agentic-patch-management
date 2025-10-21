@@ -47,7 +47,7 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
         dict with {sla_hours, source, frameworks, severity} or None if calculation fails
     """
     try:
-        config_path = os.path.join(os.path.dirname(__file__), 'config', 'sla_policy.json')
+        config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.json')
         with open(config_path, 'r') as f:
             sla_policy = json.load(f)
         
@@ -78,13 +78,29 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
         logger.warning(f"Could not calculate SLA: {e}")
         return None
 
+def _normalize_environment(user_input: str) -> str:
+    """Map user input to canonical environment tag value."""
+    config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.json')
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    aliases = config.get('environment_aliases', {})
+    user_lower = user_input.lower()
+    
+    for canonical, alias_list in aliases.items():
+        if user_lower in alias_list:
+            return canonical
+    
+    return user_input
+
 
 @tool
 @profile("Tool: get_vulnerability_findings")
 def get_vulnerability_findings(cve_id: Optional[str] = None, 
-                               severity: Optional[str] = None, 
+                               severity: Optional[str] = None,
+                               environment: Optional[str] = None,
                                limit: int = 50) -> dict:
-    """Get vulnerability findings from AWS Inspector (ACTIVE findings only)."""
+    """Get vulnerability findings from AWS Inspector (ACTIVE findings only), optionally filtered by environment."""
     try:
         filters = {
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
@@ -93,6 +109,9 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
             filters['cveId'] = [{'comparison': 'EQUALS', 'value': cve_id}]
         if severity:
             filters['severity'] = [{'comparison': 'EQUALS', 'value': severity}]
+        if environment:
+            env_value = _normalize_environment(environment)
+            filters['resourceTags'] = [{'comparison': 'EQUALS', 'key': 'Environment', 'value': env_value}]
         
         response = inspector_client.list_findings(
             filterCriteria=filters,
