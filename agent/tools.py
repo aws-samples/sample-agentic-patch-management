@@ -641,14 +641,31 @@ def get_resource_dependencies(resource_id: str) -> dict:
         if target_group_relationships:
             elbv2_client = boto3.client('elbv2', region_name='us-east-1')
             
-            for tg_rel in target_group_relationships:
-                try:
-                    # Get target group details
-                    tg_arn = tg_rel['resourceId']
-                    tg_response = elbv2_client.describe_target_groups(TargetGroupArns=[tg_arn])
-                    
-                    if tg_response['TargetGroups']:
-                        tg = tg_response['TargetGroups'][0]
+            # Batch: Get all target group ARNs at once
+            tg_arns = [r['resourceId'] for r in target_group_relationships]
+            
+            try:
+                # Single API call for all target groups
+                tg_response = elbv2_client.describe_target_groups(TargetGroupArns=tg_arns)
+                tg_map = {tg['TargetGroupArn']: tg for tg in tg_response['TargetGroups']}
+                
+                # Collect all ALB ARNs
+                alb_arns = []
+                for tg in tg_response['TargetGroups']:
+                    alb_arns.extend(tg.get('LoadBalancerArns', []))
+                
+                # Single API call for all ALBs
+                alb_map = {}
+                if alb_arns:
+                    albs_response = elbv2_client.describe_load_balancers(LoadBalancerArns=list(set(alb_arns)))
+                    alb_map = {alb['LoadBalancerArn']: alb['LoadBalancerName'] for alb in albs_response['LoadBalancers']}
+                
+                # Get health for each target group (can't batch this)
+                for tg_arn in tg_arns:
+                    try:
+                        tg = tg_map.get(tg_arn)
+                        if not tg:
+                            continue
                         
                         # Get health status
                         health = elbv2_client.describe_target_health(TargetGroupArn=tg_arn)
@@ -656,14 +673,11 @@ def get_resource_dependencies(resource_id: str) -> dict:
                                      if t['TargetHealth']['State'] == 'healthy')
                         total = len(health['TargetHealthDescriptions'])
                         
-                        # Get ALB name
+                        # Get ALB name from map
                         alb_name = 'unknown'
                         if tg.get('LoadBalancerArns'):
-                            albs = elbv2_client.describe_load_balancers(
-                                LoadBalancerArns=tg['LoadBalancerArns']
-                            )
-                            if albs['LoadBalancers']:
-                                alb_name = albs['LoadBalancers'][0]['LoadBalancerName']
+                            alb_arn = tg['LoadBalancerArns'][0]
+                            alb_name = alb_map.get(alb_arn, 'unknown')
                         
                         load_balancers.append({
                             'name': alb_name,
@@ -672,8 +686,11 @@ def get_resource_dependencies(resource_id: str) -> dict:
                             'total_targets': total,
                             'status': 'HEALTHY' if healthy == total else 'DEGRADED' if healthy > 0 else 'UNHEALTHY'
                         })
-                except Exception as e:
-                    logger.warning(f"Could not query target group {tg_rel['resourceId']}: {e}")
+                    except Exception as e:
+                        logger.warning(f"Could not get health for target group {tg_arn}: {e}")
+                        
+            except Exception as e:
+                logger.warning(f"Could not query target groups: {e}")
         
         # Calculate blast radius
         blast_radius = 'LOW'
@@ -773,7 +790,6 @@ def get_maintenance_windows(environment: str = None, instance_ids: list = None) 
                 next_execution = None
                 if schedule:
                     try:
-                        # Remove 'cron(' prefix and ')' suffix
                         cron_expr = schedule.replace('cron(', '').replace(')', '').strip()
                         # AWS cron: minute hour day month day-of-week year
                         # Standard cron: minute hour day month day-of-week

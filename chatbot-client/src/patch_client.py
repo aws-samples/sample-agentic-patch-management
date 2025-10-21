@@ -157,6 +157,8 @@ class PatchAutomationClient:
                             tool_name = 'consult_vulnerability_analyst'
                         elif 'consult_patch_manager' in line:
                             tool_name = 'consult_patch_manager'
+                        elif 'consult_compliance_analyst' in line:
+                            tool_name = 'consult_compliance_analyst'
                         elif 'use_aws' in line:
                             tool_name = 'use_aws'
                     
@@ -172,6 +174,12 @@ class PatchAutomationClient:
                                 print()  # Newline before switching tools
                             print("\n🛠️  Consulting Patch Manager...", flush=True)
                             last_agent_shown = 'patch'
+                            response_started = False  # Reset for new tool output
+                        elif tool_name == 'consult_compliance_analyst' and last_agent_shown != 'compliance':
+                            if response_started:
+                                print()  # Newline before switching tools
+                            print("\n📊 Consulting Compliance Analyst...", flush=True)
+                            last_agent_shown = 'compliance'
                             response_started = False  # Reset for new tool output
                         elif tool_name == 'use_aws' and last_agent_shown != 'aws':
                             if response_started:
