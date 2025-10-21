@@ -1,6 +1,6 @@
 """Compliance Analyst - Reporting and Audit Trail Specialist"""
 
-from tools.aws_tools import query_compliance_reports, use_aws
+from tools import query_compliance_reports, use_aws
 
 SYSTEM_PROMPT = """You are a Compliance Analyst specializing in audit trails and reporting.
 
@@ -28,7 +28,7 @@ OUTPUT FORMAT:
 
 def analyze_compliance(context):
     """Create compliance analyst agent using factory."""
-    from utils.agent_factory import create_agent
+    from agent_factory import create_agent
     
     return create_agent(
         name="compliance-analyst",

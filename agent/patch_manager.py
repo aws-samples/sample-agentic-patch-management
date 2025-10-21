@@ -1,6 +1,6 @@
 """Patch Manager - Infrastructure Assessment and Patch Execution"""
 
-from tools.aws_tools import (
+from tools import (
     get_patch_compliance,
     execute_patch_operation,
     get_command_status,
@@ -77,7 +77,7 @@ OUTPUT FORMAT:
 
 def patching_operations(context):
     """Create patch manager agent using factory."""
-    from utils.agent_factory import create_agent
+    from agent_factory import create_agent
     
     return create_agent(
         name="patch-manager",

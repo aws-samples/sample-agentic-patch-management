@@ -5,11 +5,11 @@ import time
 import logging
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import tool
-from agents.vulnerability_agent import gather_vulnerabilities
-from agents.patch_manager import patching_operations
-from agents.compliance_analyst import analyze_compliance
-from tools.aws_tools import use_aws
-from utils.profiling import profile, log_profile, ENABLE_PROFILING
+from vulnerability_agent import gather_vulnerabilities
+from patch_manager import patching_operations
+from compliance_analyst import analyze_compliance
+from tools import use_aws
+from profiling import profile, log_profile, ENABLE_PROFILING
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
