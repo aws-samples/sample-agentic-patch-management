@@ -34,7 +34,7 @@ agents:
       memory_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:memory/intelligent_patch_automation_praveen_mem-lMRdfD5RJP
       memory_name: intelligent_patch_automation_praveen_mem
       event_expiry_days: 30
-      first_invoke_memory_check_done: false
+      first_invoke_memory_check_done: true
       was_created_by_toolkit: false
     authorizer_configuration: null
     request_header_configuration: null

@@ -119,10 +119,16 @@ class PatchAutomationClient:
         output_lines = []
         response_started = False
         last_agent_shown = None
+        collected_text = []
         
         for line in iter(process.stdout.readline, ''):
             if not line:
                 break
+            
+            # Skip Python object representations
+            if line.strip().startswith("{'") or '<strands.' in line or '<object at' in line:
+                continue
+                
             output_lines.append(line)
             
             # Parse JSON events properly
@@ -166,27 +172,35 @@ class PatchAutomationClient:
                             last_agent_shown = 'aws'
                     
                     # Check for contentBlockDelta with text
-                    if 'contentBlockDelta' in event:
-                        delta = event['contentBlockDelta']
+                    if 'event' in event and 'contentBlockDelta' in event['event']:
+                        delta = event['event']['contentBlockDelta']
                         if isinstance(delta, dict) and 'delta' in delta:
                             text = delta['delta'].get('text', '')
-                            # Filter out XML tags
-                            if text and not text.strip().startswith('<') and not text.strip().endswith('>'):
-                                if not response_started:
-                                    print("\n🤖 Agent: ", end="", flush=True)
-                                    response_started = True
-                                print(text, end="", flush=True)
+                            if text:
+                                # Collect for history (with tags for proper extraction)
+                                collected_text.append(text)
+                                # Strip XML tags from display
+                                display_text = text.replace('<answer>', '').replace('</answer>', '').replace('<thinking>', '').replace('</thinking>', '')
+                                if display_text.strip():
+                                    if not response_started:
+                                        print("\n🤖 Agent: ", end="", flush=True)
+                                        response_started = True
+                                    print(display_text, end="", flush=True)
             
             except (json.JSONDecodeError, KeyError, TypeError):
-                # Not valid JSON or unexpected structure - try regex fallback for text
+                # Not valid JSON - try regex fallback for text
                 if '"contentBlockDelta"' in line and '"text"' in line:
                     text = self._parse_text_delta(line)
-                    # Filter out XML tags
-                    if text and not text.strip().startswith('<') and not text.strip().endswith('>'):
-                        if not response_started:
-                            print("\n🤖 Agent: ", end="", flush=True)
-                            response_started = True
-                        print(text, end="", flush=True)
+                    if text:
+                        # Collect for history
+                        collected_text.append(text)
+                        # Strip XML tags from display
+                        display_text = text.replace('<answer>', '').replace('</answer>', '').replace('<thinking>', '').replace('</thinking>', '')
+                        if display_text.strip():
+                            if not response_started:
+                                print("\n🤖 Agent: ", end="", flush=True)
+                                response_started = True
+                            print(display_text, end="", flush=True)
         
         process.wait(timeout=300)
         stderr_thread.join(timeout=1)
@@ -201,8 +215,15 @@ class PatchAutomationClient:
             error = ''.join(stderr_lines).strip() or "Unknown error"
             return self._handle_error(error)
         
-        # Extract response for history, but return marker to prevent double print
-        full_response = self._extract_clean_response(''.join(output_lines))
+        # Build full response from collected text
+        full_response = ''.join(collected_text).strip()
+        
+        # Extract from answer tags if present
+        if '<answer>' in full_response and '</answer>' in full_response:
+            start = full_response.find('<answer>') + 8
+            end = full_response.find('</answer>')
+            full_response = full_response[start:end].strip()
+        
         return f"[STREAMED] {full_response}"
     
     def _run_blocking(self, cmd: list, env: dict) -> str:
