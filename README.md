@@ -172,7 +172,7 @@ Deployed to Amazon Bedrock AgentCore in `us-east-1`
 ### ✅ Core Capabilities
 - **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
 - **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
-- **14 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying
+- **13 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying
 - **Fallback Tool**: use_aws for AWS services outside specialist scope (Lambda, S3, CloudWatch, etc.)
 - **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
@@ -232,10 +232,10 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   ├── supervisor.py               # Orchestration
 │   ├── vulnerability_agent.py      # Security analysis
 │   ├── patch_manager.py            # Patching operations
-│   ├── tools.py                    # 12 AWS integration tools
+│   ├── tools.py                    # 13 AWS integration tools
 │   ├── agent_factory.py            # Common agent creation (DRY)
 │   ├── config/
-│   │   └── sla_policy.json         # Compliance framework SLA mappings
+│   │   └── config.json              # Patch management configuration (SLA policy, environment aliases)
 │   └── .bedrock_agentcore.yaml     # AgentCore config
 ├── infra/                          # AWS CDK infrastructure
 │   ├── lib/

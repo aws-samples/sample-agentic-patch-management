@@ -147,116 +147,13 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
 
 
 @tool
-def get_instance_inventory(instance_ids: Optional[List[str]] = None,
-                          package_name: Optional[str] = None,
-                          environment: Optional[str] = None,
-                          severity: Optional[str] = None,
-                          limit: Optional[int] = None) -> dict:
-    """Get software inventory from AWS Systems Manager. If severity provided, includes SLA requirement."""
-    try:
-        # Get instances by environment tag if specified
-        if environment and not instance_ids:
-            ec2_response = ec2_client.describe_instances(
-                Filters=[
-                    {'Name': 'tag:Environment', 'Values': [environment]},
-                    {'Name': 'instance-state-name', 'Values': ['running']}
-                ]
-            )
-            instance_ids = []
-            for reservation in ec2_response['Reservations']:
-                for instance in reservation['Instances']:
-                    instance_ids.append(instance['InstanceId'])
-        
-        # If no filters, get all running instances
-        if not instance_ids:
-            ec2_response = ec2_client.describe_instances(
-                Filters=[{'Name': 'instance-state-name', 'Values': ['running']}]
-            )
-            instance_ids = []
-            for reservation in ec2_response['Reservations']:
-                for instance in reservation['Instances']:
-                    instance_ids.append(instance['InstanceId'])
-        
-        # Apply limit if specified
-        if limit and len(instance_ids) > limit:
-            instance_ids = instance_ids[:limit]
-        
-        if not instance_ids:
-            return {"instances": [], "total_count": 0}
-        
-        # Get inventory for instances
-        instances = []
-        all_frameworks = set()
-        
-        for instance_id in instance_ids:
-            try:
-                # Get SSM instance information
-                ssm_info = ssm_client.describe_instance_information(
-                    Filters=[{
-                        'Key': 'InstanceIds',
-                        'Values': [instance_id]
-                    }]
-                )
-                
-                if not ssm_info.get('InstanceInformationList'):
-                    continue
-                
-                # Get instance tags
-                ec2_response = ec2_client.describe_instances(InstanceIds=[instance_id])
-                tags = ec2_response['Reservations'][0]['Instances'][0].get('Tags', [])
-                env_tag = next((t['Value'] for t in tags if t['Key'] == 'Environment'), 'unknown')
-                
-                # Extract compliance frameworks
-                frameworks_str = next((t['Value'] for t in tags if t['Key'] == 'ComplianceFrameworks'), '')
-                frameworks = [f.strip() for f in frameworks_str.split(',') if f.strip()] if frameworks_str else []
-                all_frameworks.update(frameworks)
-                
-                # Get inventory if package_name specified
-                packages = []
-                if package_name:
-                    try:
-                        inv_response = ssm_client.list_inventory_entries(
-                            InstanceId=instance_id,
-                            TypeName='AWS:Application'
-                        )
-                        for entry in inv_response.get('Entries', []):
-                            if package_name.lower() in entry.get('Name', '').lower():
-                                packages.append({
-                                    'name': entry.get('Name'),
-                                    'version': entry.get('Version')
-                                })
-                    except Exception:
-                        pass
-                
-                instances.append({
-                    'instance_id': instance_id,
-                    'environment': env_tag,
-                    'compliance_frameworks': frameworks,
-                    'packages': packages
-                })
-            except Exception as e:
-                logger.warning(f"Error getting inventory for {instance_id}: {e}")
-                continue
-        
-        result = {"instances": instances, "total_count": len(instances)}
-        
-        # Calculate SLA requirement if severity provided
-        if severity and instances and all_frameworks:
-            sla_req = _calculate_sla_requirement(list(all_frameworks), severity)
-            if sla_req:
-                result['sla_requirement'] = sla_req
-        
-        return result
-    except Exception as e:
-        logger.error(f"Error getting instance inventory: {e}")
-        return {"error": str(e), "instances": [], "total_count": 0}
-
-
-@tool
 def get_patch_compliance(environment: Optional[str] = None, 
-                        instance_ids: Optional[List[str]] = None) -> dict:
-    """Get patch compliance status from AWS Systems Manager."""
+                        instance_ids: Optional[List[str]] = None,
+                        severity: Optional[str] = None) -> dict:
+    """Get patch compliance status from AWS Systems Manager. If severity provided, includes SLA calculation."""
     try:
+        instance_tags = {}
+        
         # Get instance IDs by environment if specified
         if environment and not instance_ids:
             env_value = _normalize_environment(environment)
@@ -269,7 +166,12 @@ def get_patch_compliance(environment: Optional[str] = None,
             instance_ids = []
             for reservation in ec2_response['Reservations']:
                 for instance in reservation['Instances']:
-                    instance_ids.append(instance['InstanceId'])
+                    instance_id = instance['InstanceId']
+                    instance_ids.append(instance_id)
+                    # Extract tags for SLA calculation
+                    if severity:
+                        tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                        instance_tags[instance_id] = tags
         
         if not instance_ids:
             return {"instances": [], "total_count": 0}
@@ -292,7 +194,7 @@ def get_patch_compliance(environment: Optional[str] = None,
                 'reboot_option': state.get('RebootOption', 'N/A')
             })
         
-        return {
+        result = {
             "instances": instances,
             "total_count": len(instances),
             "summary": {
@@ -301,6 +203,20 @@ def get_patch_compliance(environment: Optional[str] = None,
                 "instances_needing_patches": sum(1 for i in instances if i['missing_count'] > 0)
             }
         }
+        
+        # Calculate SLA if severity provided
+        if severity and instance_tags:
+            # Get compliance frameworks from first instance
+            first_instance_tags = next(iter(instance_tags.values()), {})
+            frameworks_str = first_instance_tags.get('ComplianceFrameworks', '')
+            frameworks = [f.strip() for f in frameworks_str.split(',') if f.strip()] if frameworks_str else []
+            
+            if frameworks:
+                sla_req = _calculate_sla_requirement(frameworks, severity)
+                if sla_req:
+                    result['sla_requirement'] = sla_req
+        
+        return result
     except Exception as e:
         logger.error(f"Error getting patch compliance: {e}")
         return {"error": str(e), "instances": [], "total_count": 0}
@@ -383,32 +299,6 @@ def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
     except Exception as e:
         logger.error(f"Error getting command status: {e}")
         return {"error": str(e)}
-
-
-@tool
-def get_maintenance_windows(environment: Optional[str] = None) -> dict:
-    """Get maintenance windows from AWS Systems Manager."""
-    try:
-        response = ssm_client.describe_maintenance_windows()
-        windows = response.get('WindowIdentities', [])
-        
-        if environment:
-            windows = [w for w in windows if environment.lower() in w.get('Name', '').lower()]
-        
-        formatted_windows = []
-        for window in windows:
-            formatted_windows.append({
-                'window_id': window.get('WindowId'),
-                'name': window.get('Name'),
-                'enabled': window.get('Enabled'),
-                'schedule': window.get('Schedule'),
-                'next_execution': window.get('NextExecutionTime')
-            })
-        
-        return {"windows": formatted_windows, "total_count": len(formatted_windows)}
-    except Exception as e:
-        logger.error(f"Error getting maintenance windows: {e}")
-        return {"error": str(e), "windows": [], "total_count": 0}
 
 
 @tool

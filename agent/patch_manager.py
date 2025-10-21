@@ -1,7 +1,6 @@
 """Patch Manager - Infrastructure Assessment and Patch Execution"""
 
 from tools import (
-    get_instance_inventory,
     get_patch_compliance,
     execute_patch_operation,
     get_command_status,
@@ -28,9 +27,9 @@ For security analysis (CVE details, CVSS) or AWS services (Lambda, S3, billing),
 PATCHING WORKFLOW:
 When user requests patching for a CVE with severity:
 
-1. Get instances + SLA: get_instance_inventory(environment=X, severity=Y)
+1. Get instances + SLA: get_patch_compliance(environment=X, severity=Y)
    Returns: instances[] + sla_requirement{sla_hours, source, frameworks}
-   Extract instance_ids: [inst["instance_id"] for inst in result["instances"]]
+   Extract instance_ids from result
 
 2. Get maintenance window: get_maintenance_windows(environment=X)
    Returns: next_execution (ISO timestamp string)
@@ -61,8 +60,7 @@ ROLLBACK:
 - Always wait for user confirmation before rollback
 
 TOOLS:
-- get_instance_inventory(instance_ids, package_name, environment, severity, limit)
-- get_patch_compliance(environment, instance_ids): Get patch states (missing, installed, failed counts)
+- get_patch_compliance(environment, instance_ids, severity): Get patch states + SLA (if severity provided)
 - execute_patch_operation(instance_ids, operation, cve_ids)
 - get_command_status(command_id, instance_ids)
 - get_maintenance_windows(environment)
@@ -86,7 +84,6 @@ def patching_operations(context):
         name="patch-manager",
         system_prompt=SYSTEM_PROMPT,
         tools=[
-            get_instance_inventory,
             get_patch_compliance,
             execute_patch_operation,
             get_command_status,

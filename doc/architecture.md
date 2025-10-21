@@ -26,13 +26,12 @@
 **Role**: Security threat analysis and risk assessment
 
 **Tools**:
-- `get_vulnerability_findings()` - Query AWS Inspector
-- `get_instance_inventory()` - Check affected infrastructure with SLA calculation
+- `get_vulnerability_findings(environment)` - Query AWS Inspector with environment filtering
 - `use_aws()` - Fallback for non-security queries
 
 **Behavior**:
 - CVSS scoring and threat classification
-- SLA requirement calculation when analyzing affected instances
+- Environment-based vulnerability filtering via Inspector resourceTags
 - Returns OUT_OF_SCOPE for infrastructure/patching queries
 
 ---
@@ -41,7 +40,7 @@
 **Role**: Infrastructure operations and patch execution
 
 **Tools**:
-- `get_instance_inventory()` - Discover EC2 instances
+- `get_patch_compliance(environment, severity)` - Get patch states + SLA calculation (if severity provided)
 - `execute_patch_operation()` - Execute patches via SSM (async, returns command_id)
 - `get_command_status()` - Check async operation status
 - `check_instance_health()` - Verify SSM connectivity
@@ -78,11 +77,16 @@
 ## SLA-Aware Patching
 
 ### Policy Configuration
-**File**: `agent/config/sla_policy.json`
+**File**: `agent/config/config.json`
 
 **Structure**:
 ```json
 {
+  "environment_aliases": {
+    "dev": ["dev", "development"],
+    "staging": ["staging", "stage"],
+    "prod": ["prod", "production"]
+  },
   "frameworks": {
     "PCI-DSS": {"CRITICAL": 12, "HIGH": 48, "MEDIUM": 168, "LOW": 720},
     "SOC2": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720},
@@ -96,7 +100,7 @@
 - Instance tagging: `ComplianceFrameworks` tag drives SLA calculation
 - Helper function: `_calculate_sla_requirement(frameworks, severity)` returns strictest SLA
 - Decision logic: Compare maintenance window hours vs SLA hours → EMERGENCY or SCHEDULED
-- Tools enhanced: `get_instance_inventory(severity=X)` returns `sla_requirement` dict
+- Tools enhanced: `get_patch_compliance(environment, severity)` returns `sla_requirement` dict when severity provided
 
 ---
 
