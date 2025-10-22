@@ -8,6 +8,7 @@ from tools import (
     create_maintenance_window,
     check_instance_health,
     check_cloudwatch_alarms,
+    verify_and_proceed,
     rollback_patches,
     generate_compliance_report,
     get_resource_dependencies,
@@ -42,8 +43,19 @@ When user requests patching for a CVE with severity:
 4. Execute phased rollout (dev → staging → prod):
    - Patch ONE environment at a time
    - execute_patch_operation() returns command_id (async, takes 5-10 min)
-   - Explain: user can "check status" first (recommended) or "proceed" immediately (assumes success)
-   - When user says "proceed": move to next environment
+   - TWO OPTIONS for proceeding:
+     a) DEMO MODE (default): User says "proceed" → move to next environment immediately
+     b) PRODUCTION MODE (optional): Use verify_and_proceed(command_id, instance_ids, environment)
+        - Blocks until patching completes
+        - Runs health checks automatically
+        - Returns PROCEED/ROLLBACK recommendation
+   - Use verify_and_proceed() when:
+     * User explicitly requests verification ("verify and proceed", "wait for completion")
+     * Patching production environment
+     * User wants automated health verification
+   - Use manual proceed when:
+     * Demo/dev environments (faster flow)
+     * User says "proceed" without "verify"
    - Use memory to track completed environments
 
 HEALTH CHECKS:
@@ -63,6 +75,7 @@ TOOLS:
 - execute_patch_operation(instance_ids, operation, cve_ids)
 - get_command_status(command_id, instance_ids)
 - get_maintenance_windows(environment)
+- verify_and_proceed(command_id, instance_ids, environment, alarm_pattern): OPTIONAL - Automated verification
 - check_instance_health(instance_ids): SSM connectivity check
 - check_cloudwatch_alarms(instance_ids, alarm_name_pattern): Application health via CloudWatch
 - rollback_patches(instance_ids)
@@ -90,6 +103,7 @@ def patching_operations(context):
             create_maintenance_window,
             check_instance_health,
             check_cloudwatch_alarms,
+            verify_and_proceed,
             rollback_patches,
             get_resource_dependencies,
             use_aws

@@ -146,7 +146,7 @@ You: What critical vulnerabilities do we have?
 - **Executive Reporting**: Compliance analyst for CISO/CRO/CTO queries (SLA breaches, team performance, trends)
 - **AWS Config Integration**: Resource dependency tracking and relationship discovery
 - **Error Handling**: Graceful degradation when specialists fail
-- **Observability**: Centralized performance tracking with CloudWatch Logs integration (cache metrics, AWS API timing, query performance)
+- **Observability**: AgentCore native observability with CloudWatch Logs, X-Ray tracing, and GenAI Dashboard
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
@@ -159,6 +159,8 @@ You: What critical vulnerabilities do we have?
 - **Vulnerability Analysis**: CVE assessment with CVSS scoring
 - **Maintenance-Aware Patching**: Risk-based scheduling (scheduled vs emergency modes)
 - **Patch Execution**: Phased deployment with approval gates
+  - Fast mode: User says "proceed" (demo-friendly, 2-3 min per environment)
+  - Production mode: User says "verify and proceed" (automated verification, 10-12 min per environment)
 - **Health Checks**: Post-patch verification
 - **Rollback**: Restore previous package versions
 - **Compliance Reporting**: Automated audit trail with S3 storage
@@ -200,7 +202,6 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   ├── utils/                      # Utilities
 │   │   ├── agent_factory.py        # Common agent creation
 │   │   ├── memory_hooks.py         # AgentCore memory integration
-│   │   ├── observability.py        # Performance tracking & metrics
 │   │   └── globals.py              # Shared state
 │   ├── config/
 │   │   └── config.json             # Patch management configuration
@@ -262,19 +263,39 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 ## Configuration
 
 ### Observability & Performance Monitoring
+
+AgentCore provides native observability out of the box:
+
+**CloudWatch Logs:**
 ```bash
-# View performance metrics
-./view_metrics.py              # Last hour
-./view_metrics.py --hours 24   # Last 24 hours
+aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT --follow
 ```
 
-**What's tracked:**
-- Cache hit rates (target: 60-80%)
-- AWS API call performance
-- Query response times
-- Tool usage statistics
+**GenAI Observability Dashboard:**
+```
+https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#gen-ai-observability/agent-core
+```
 
-**See:** `doc/observability.md` for CloudWatch Insights queries and detailed analysis
+**CloudWatch Insights Queries:**
+```
+# Request performance
+fields @timestamp, @message 
+| filter @message like /Request completed/ 
+| parse @message "Request completed in *ms" as duration
+| stats count() as requests, avg(duration) as avg_ms
+
+# Error tracking
+fields @timestamp, @message 
+| filter @level = "ERROR"
+| stats count() as errors by bin(5m)
+```
+
+**What's tracked automatically:**
+- Request/response times
+- Token usage (input/output)
+- Tool invocations
+- Error rates
+- X-Ray distributed tracing
 
 ### AWS Profile & Runtime
 
@@ -291,7 +312,9 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 
 ## Current Limitations
 
-- **Demo mode behavior** - Agent may proceed between environments without strict status verification to maintain demo flow (5-10 min patching waits). Production use requires verify_and_proceed() tool implementation.
+- **Two demo modes available:**
+  - **Fast mode (default):** User says "proceed" → agent moves to next environment immediately (2-3 min per environment)
+  - **Production mode (optional):** User says "verify and proceed" → agent waits for completion + runs health checks (10-12 min per environment)
 - **Manual approval required** - between each environment in phased rollout
 - **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured (httpd monitoring)
 - **Linux-only** - yum-based rollback for Amazon Linux/RHEL

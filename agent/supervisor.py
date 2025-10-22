@@ -9,7 +9,6 @@ from vulnerability_agent import gather_vulnerabilities
 from patch_manager import patching_operations
 from compliance_analyst import analyze_compliance
 from tools import use_aws
-from observability import get_tracker, track_performance, log_event
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -111,11 +110,10 @@ async def agent_invocation(payload, context):
     """Handler for agent invocation with AgentCore memory integration."""
     from agent_factory import create_agent
     
-    tracker = get_tracker()
     request_start = time.time()
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
-    log_event('request_start', f"New request: {user_message[:100]}", query_length=len(user_message))
+    logger.info(f"New request: {user_message[:100]}")
     
     # Create agent with factory
     agent = create_agent(
@@ -130,16 +128,9 @@ async def agent_invocation(payload, context):
     async for event in stream:
         yield event
     
-    # Record overall query time
+    # Log completion
     total_duration_ms = (time.time() - request_start) * 1000
-    tracker.record_query_time(user_message, total_duration_ms)
-    
-    # Log performance summary periodically (every 5 queries)
-    if len(tracker.metrics['query_times']) % 5 == 0:
-        tracker.log_summary()
-    
-    log_event('request_complete', f"Request completed in {total_duration_ms:.0f}ms", 
-              duration_ms=total_duration_ms)
+    logger.info(f"Request completed in {total_duration_ms:.0f}ms")
 
 if __name__ == "__main__":
     app.run()
