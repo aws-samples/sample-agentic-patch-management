@@ -133,7 +133,7 @@ You: What critical vulnerabilities do we have?
 - **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
 - **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
 - **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying
-- **Fallback Tool**: use_aws for AWS services outside specialist scope (Lambda, S3, CloudWatch, etc.)
+- **Fallback Tool**: use_aws for any AWS service with automatic pagination support
 - **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
 - **Dependency Analysis**: AWS Config-based blast radius assessment with load balancer health tracking
@@ -197,8 +197,7 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   │   ├── vulnerability_agent.py  # Security analysis
 │   │   ├── patch_manager.py        # Patching operations
 │   │   └── compliance_analyst.py   # Reporting & audit
-│   ├── tools/                      # AWS integration
-│   │   └── aws_tools.py            # 12 AWS tools + use_aws fallback
+│   ├── tools.py                     # 12 AWS tools + use_aws fallback
 │   ├── utils/                      # Utilities
 │   │   ├── agent_factory.py        # Common agent creation
 │   │   ├── memory_hooks.py         # AgentCore memory integration

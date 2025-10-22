@@ -1471,15 +1471,18 @@ def use_aws(
 ) -> dict:
     """Call any AWS API operation using boto3.
     
+    For paginated operations, use MaxResults/Limit parameters to control page size,
+    and NextToken/Marker parameters to fetch subsequent pages.
+    
     Args:
-        service_name: AWS service name (e.g., 'ssm', 'inspector2', 'ec2')
-        operation_name: API operation name in snake_case (e.g., 'send_command')
-        parameters: Dictionary of parameters for the operation
+        service_name: AWS service name (e.g., 'lambda', 's3', 'rds', 'cloudwatch')
+        operation_name: API operation name in snake_case (e.g., 'list_functions', 'list_buckets')
+        parameters: Dictionary of parameters for the operation (include NextToken/Marker for pagination)
         region: AWS region (default: 'us-east-1')
         label: Human-readable description of the operation
     
     Returns:
-        dict: API response (limited to first 15 items for list operations)
+        dict: API response with pagination tokens preserved (NextToken, NextMarker, etc.)
     """
     try:
         client = boto3.client(service_name, region_name=region, config=aws_config)
@@ -1492,39 +1495,11 @@ def use_aws(
             }
         
         operation_method = getattr(client, operation_name)
-        
         response = operation_method(**parameters)
         
         # Remove ResponseMetadata for cleaner output
         if 'ResponseMetadata' in response:
             del response['ResponseMetadata']
-        
-        # Limit large list responses to prevent formatting overhead
-        if 'Reservations' in response and len(response['Reservations']) > 0:
-            # EC2 instances - limit to 15
-            total_instances = sum(len(r.get('Instances', [])) for r in response['Reservations'])
-            if total_instances > 15:
-                # Keep first 15 instances
-                count = 0
-                limited_reservations = []
-                for reservation in response['Reservations']:
-                    if count >= 15:
-                        break
-                    instances = reservation.get('Instances', [])
-                    remaining = 15 - count
-                    if len(instances) <= remaining:
-                        limited_reservations.append(reservation)
-                        count += len(instances)
-                    else:
-                        limited_res = reservation.copy()
-                        limited_res['Instances'] = instances[:remaining]
-                        limited_reservations.append(limited_res)
-                        count = 15
-                
-                response['Reservations'] = limited_reservations
-                response['_truncated'] = True
-                response['_total_count'] = total_instances
-                response['_showing'] = 15
         
         return response
         
