@@ -1,53 +1,33 @@
 """Specific tools for patch automation"""
 
 import boto3
+from botocore.config import Config
 import json
 import logging
 import time
 import os
-from functools import lru_cache
 from strands import tool
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from croniter import croniter
-from observability import get_tracker, track_performance, log_event
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Cache TTL: 60 seconds for AWS API responses
-_cache_timestamp = {}
+# AWS client configuration with retry logic
+aws_config = Config(
+    retries={
+        'max_attempts': 3,
+        'mode': 'adaptive'  # Adaptive retry mode for better handling of throttling
+    }
+)
 
-def cache_with_ttl(ttl_seconds=60):
-    """Decorator for caching with TTL"""
-    def decorator(func):
-        cache = {}
-        def wrapper(*args, **kwargs):
-            # Create cache key from function name and args
-            key = f"{func.__name__}:{str(args)}:{str(kwargs)}"
-            now = time.time()
-            
-            # Check if cached and not expired
-            if key in cache:
-                result, timestamp = cache[key]
-                if now - timestamp < ttl_seconds:
-                    logger.info(f"Cache HIT: {func.__name__}")
-                    return result
-            
-            # Call function and cache result
-            logger.info(f"Cache MISS: {func.__name__}")
-            result = func(*args, **kwargs)
-            cache[key] = (result, now)
-            return result
-        return wrapper
-    return decorator
-
-# Initialize AWS clients
-inspector_client = boto3.client('inspector2', region_name='us-east-1')
-ssm_client = boto3.client('ssm', region_name='us-east-1')
-ec2_client = boto3.client('ec2', region_name='us-east-1')
-config_client = boto3.client('config', region_name='us-east-1')
-cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
+# Initialize AWS clients with retry configuration
+inspector_client = boto3.client('inspector2', region_name='us-east-1', config=aws_config)
+ssm_client = boto3.client('ssm', region_name='us-east-1', config=aws_config)
+ec2_client = boto3.client('ec2', region_name='us-east-1', config=aws_config)
+config_client = boto3.client('config', region_name='us-east-1', config=aws_config)
+cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1', config=aws_config)
 
 
 # ============================================================================
@@ -56,7 +36,7 @@ cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
 
 def _get_compliance_bucket_name() -> str:
     """Get S3 bucket name for compliance reports."""
-    sts_client = boto3.client('sts', region_name='us-east-1')
+    sts_client = boto3.client('sts', region_name='us-east-1', config=aws_config)
     account_id = sts_client.get_caller_identity()['Account']
     return f'patch-compliance-reports-{account_id}'
 
@@ -160,9 +140,14 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
             env_value = _normalize_environment(environment)
             filters['resourceTags'] = [{'comparison': 'EQUALS', 'key': 'Environment', 'value': env_value}]
         
+        # Sort by severity (most critical first)
         response = inspector_client.list_findings(
             filterCriteria=filters,
-            maxResults=limit
+            sortCriteria={
+                'field': 'SEVERITY',
+                'sortOrder': 'DESC'
+            },
+            maxResults=min(limit, 100)  # Inspector max is 100
         )
         
         # list_findings returns full finding objects, not just ARNs
@@ -331,24 +316,33 @@ def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
         dict: {'results': list, 'summary': dict, 'overall_status': str}
     """
     try:
-        results = []
-        for instance_id in instance_ids:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def get_instance_status(instance_id):
+            """Helper to get status for single instance"""
             try:
                 response = ssm_client.get_command_invocation(
                     CommandId=command_id,
                     InstanceId=instance_id
                 )
-                results.append({
+                return {
                     'instance_id': instance_id,
                     'status': response['Status'],
                     'output': response.get('StandardOutputContent', '')[:500]
-                })
+                }
             except Exception as e:
-                results.append({
+                return {
                     'instance_id': instance_id,
                     'status': 'Unknown',
                     'output': str(e)
-                })
+                }
+        
+        # Parallel execution with max 10 threads
+        results = []
+        with ThreadPoolExecutor(max_workers=min(10, len(instance_ids))) as executor:
+            futures = {executor.submit(get_instance_status, iid): iid for iid in instance_ids}
+            for future in as_completed(futures):
+                results.append(future.result())
         
         # Calculate summary
         summary = {
@@ -577,6 +571,103 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
 
 
 @tool
+def verify_and_proceed(command_id: str, instance_ids: List[str], 
+                       environment: str, alarm_pattern: Optional[str] = "httpd") -> dict:
+    """Verify patch completion and health before proceeding to next environment.
+    
+    This is an OPTIONAL tool for production-ready verification. Use when:
+    - User explicitly requests verification ("verify and proceed")
+    - Patching production environment (higher safety requirements)
+    - User wants to wait for completion before moving forward
+    
+    For demos/dev environments, users can say "proceed" without verification.
+    
+    Args:
+        command_id: SSM command ID from execute_patch_operation
+        instance_ids: List of instance IDs that were patched
+        environment: Environment name (for logging)
+        alarm_pattern: CloudWatch alarm pattern to check (default: "httpd")
+    
+    Returns:
+        dict: {'status': str, 'recommendation': str, 'details': dict}
+    """
+    try:
+        import time
+        
+        # Poll command status until complete (max 10 minutes)
+        max_attempts = 60  # 10 min with 10s intervals
+        attempt = 0
+        
+        while attempt < max_attempts:
+            status_result = get_command_status(command_id, instance_ids)
+            
+            if status_result.get('status') == 'Success':
+                # Wait 2 minutes for CloudWatch alarm evaluation
+                logger.info("Patching complete. Waiting 2 minutes for alarm evaluation...")
+                time.sleep(120)
+                break
+            elif status_result.get('status') == 'Failed':
+                return {
+                    'status': 'FAILED',
+                    'recommendation': 'ROLLBACK',
+                    'reason': 'Patch command failed',
+                    'details': status_result
+                }
+            
+            # Still in progress
+            attempt += 1
+            if attempt < max_attempts:
+                time.sleep(10)
+        
+        if attempt >= max_attempts:
+            return {
+                'status': 'TIMEOUT',
+                'recommendation': 'INVESTIGATE',
+                'reason': 'Patch command did not complete within 10 minutes',
+                'details': status_result
+            }
+        
+        # Run health checks
+        ssm_health = check_instance_health(instance_ids)
+        alarm_health = check_cloudwatch_alarms(instance_ids, alarm_pattern)
+        
+        # Determine recommendation
+        if ssm_health.get('recommendation') == 'ROLLBACK_RECOMMENDED':
+            return {
+                'status': 'UNHEALTHY',
+                'recommendation': 'ROLLBACK',
+                'reason': 'SSM health check failed',
+                'ssm_health': ssm_health,
+                'alarm_health': alarm_health
+            }
+        
+        if alarm_health.get('recommendation') == 'ROLLBACK_RECOMMENDED':
+            return {
+                'status': 'UNHEALTHY',
+                'recommendation': 'ROLLBACK',
+                'reason': 'CloudWatch alarms firing',
+                'ssm_health': ssm_health,
+                'alarm_health': alarm_health
+            }
+        
+        return {
+            'status': 'HEALTHY',
+            'recommendation': 'PROCEED',
+            'reason': f'{environment} environment verified healthy',
+            'ssm_health': ssm_health,
+            'alarm_health': alarm_health
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in verify_and_proceed: {e}")
+        return {
+            'status': 'ERROR',
+            'recommendation': 'INVESTIGATE',
+            'reason': str(e)
+        }
+
+
+@tool
 def rollback_patches(instance_ids: List[str]) -> dict:
     """Rollback patches on EC2 instances using yum history.
     
@@ -595,6 +686,10 @@ LAST_TRANSACTION=$(yum history list | grep -E '^[[:space:]]*[0-9]+' | head -1 | 
 
 if [ -z "$LAST_TRANSACTION" ]; then
     echo "ERROR: No yum history found"
+    echo "SUGGESTION: Rollback not possible via yum history. Consider:"
+    echo "  1. Restore from AMI/snapshot if available"
+    echo "  2. Manually downgrade packages: yum downgrade <package>"
+    echo "  3. Redeploy instance from known-good configuration"
     exit 1
 fi
 
@@ -606,6 +701,8 @@ if [ $? -eq 0 ]; then
     exit 0
 else
     echo "ERROR: Rollback failed for transaction $LAST_TRANSACTION"
+    echo "SUGGESTION: Check /var/log/yum.log for details"
+    echo "  Manual rollback may be required"
     exit 1
 fi
 """
@@ -624,12 +721,16 @@ fi
             'command_id': response['Command']['CommandId'],
             'instance_count': len(instance_ids),
             'instance_ids': instance_ids,
-            'message': 'Rollback command sent. Use get_command_status to verify completion.'
+            'message': 'Rollback command sent. Use get_command_status to verify completion. If rollback fails, check command output for manual recovery suggestions.'
         }
         
     except Exception as e:
         logger.error(f"Error initiating rollback: {e}")
-        return {"error": str(e), "instance_ids": instance_ids}
+        return {
+            "error": str(e), 
+            "instance_ids": instance_ids,
+            "suggestion": "Rollback command could not be sent. Verify SSM connectivity and instance state."
+        }
 
 
 @tool
@@ -677,7 +778,7 @@ def get_resource_dependencies(resource_id: str) -> dict:
                                      if r['resourceType'] == 'AWS::ElasticLoadBalancingV2::TargetGroup']
         
         if target_group_relationships:
-            elbv2_client = boto3.client('elbv2', region_name='us-east-1')
+            elbv2_client = boto3.client('elbv2', region_name='us-east-1', config=aws_config)
             
             # Batch: Get all target group ARNs at once
             tg_arns = [r['resourceId'] for r in target_group_relationships]
@@ -769,13 +870,10 @@ def get_resource_dependencies(resource_id: str) -> dict:
             },
             'dependencies': {
                 'load_balancers': load_balancers,
-                'infrastructure': infrastructure,
-                'total_relationships': len(relationships)
+                'infrastructure': infrastructure
             },
             'recommendation': recommendation,
-            'summary': f"{blast_radius} blast radius - {impact_description}",
-            'source': 'AWS Config',
-            'config_capture_time': config_item.get('configurationItemCaptureTime')
+            'summary': f"{blast_radius} blast radius - {impact_description}"
         }
         
     except Exception as e:
@@ -1091,7 +1189,7 @@ def generate_compliance_report(
         }
         
         # Try to save to S3
-        s3_client = boto3.client('s3', region_name='us-east-1')
+        s3_client = boto3.client('s3', region_name='us-east-1', config=aws_config)
         bucket_name = _get_compliance_bucket_name()
         
         # Generate S3 key with date-based folder structure
@@ -1190,7 +1288,7 @@ def query_compliance_reports(
         dict: {'reports': list, 'statistics': dict, 'total_count': int}
     """
     try:
-        s3_client = boto3.client('s3', region_name='us-east-1')
+        s3_client = boto3.client('s3', region_name='us-east-1', config=aws_config)
         bucket_name = _get_compliance_bucket_name()
         
         # Check if bucket exists
@@ -1240,23 +1338,50 @@ def query_compliance_reports(
 def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime, 
                            end_date: datetime, severity: Optional[str], 
                            environment: Optional[str], sla_breaches_only: bool) -> list:
-    """Fetch and filter reports from S3 (KISS helper)."""
+    """Fetch and filter reports from S3 with optimized queries."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
     reports = []
     days_diff = (end_date - start_date).days + 1
     
+    # Collect all S3 objects first (with pagination)
+    objects_to_check = []
     for day_offset in range(days_diff):
         check_date = start_date + timedelta(days=day_offset)
         prefix = _get_date_prefix(check_date)
         
         try:
-            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-            for obj in response.get('Contents', []):
-                report = _parse_report_metadata(s3_client, bucket_name, obj)
-                if report and _matches_filters(report, severity, environment, sla_breaches_only):
-                    reports.append(report)
+            # Paginate through list_objects_v2
+            continuation_token = None
+            while True:
+                params = {'Bucket': bucket_name, 'Prefix': prefix}
+                if continuation_token:
+                    params['ContinuationToken'] = continuation_token
+                
+                response = s3_client.list_objects_v2(**params)
+                objects_to_check.extend(response.get('Contents', []))
+                
+                if not response.get('IsTruncated'):
+                    break
+                continuation_token = response.get('NextContinuationToken')
+                
         except Exception as e:
             logger.debug(f"No reports for {prefix}: {e}")
             continue
+    
+    if not objects_to_check:
+        return []
+    
+    # Parallel head_object calls (max 10 concurrent)
+    def fetch_metadata(obj):
+        return _parse_report_metadata(s3_client, bucket_name, obj)
+    
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_metadata, obj): obj for obj in objects_to_check}
+        for future in as_completed(futures):
+            report = future.result()
+            if report and _matches_filters(report, severity, environment, sla_breaches_only):
+                reports.append(report)
     
     return reports
 
@@ -1356,34 +1481,8 @@ def use_aws(
     Returns:
         dict: API response (limited to first 15 items for list operations)
     """
-    tracker = get_tracker()
-    start_time = time.time()
-    
-    # Check if this is a read-only operation (cacheable)
-    read_operations = ['describe', 'list', 'get']
-    is_read_only = any(operation_name.startswith(op) for op in read_operations)
-    
-    # Create cache key for read operations
-    if is_read_only:
-        cache_key = f"{service_name}:{operation_name}:{json.dumps(parameters, sort_keys=True)}:{region}"
-        now = time.time()
-        
-        # Check cache (60s TTL)
-        if hasattr(use_aws, '_cache'):
-            if cache_key in use_aws._cache:
-                result, timestamp = use_aws._cache[cache_key]
-                if now - timestamp < 60:
-                    tracker.record_cache_hit(cache_key)
-                    return result
-        else:
-            use_aws._cache = {}
-    
     try:
-        # Record cache miss if read operation
-        if is_read_only:
-            tracker.record_cache_miss(cache_key)
-        
-        client = boto3.client(service_name, region_name=region)
+        client = boto3.client(service_name, region_name=region, config=aws_config)
         
         if not hasattr(client, operation_name):
             available_ops = [op for op in dir(client) if not op.startswith('_')]
@@ -1394,11 +1493,7 @@ def use_aws(
         
         operation_method = getattr(client, operation_name)
         
-        # Track AWS API call duration
-        api_start = time.time()
         response = operation_method(**parameters)
-        api_duration_ms = (time.time() - api_start) * 1000
-        tracker.record_aws_call(service_name, operation_name, api_duration_ms)
         
         # Remove ResponseMetadata for cleaner output
         if 'ResponseMetadata' in response:
@@ -1430,11 +1525,6 @@ def use_aws(
                 response['_truncated'] = True
                 response['_total_count'] = total_instances
                 response['_showing'] = 15
-        
-        # Cache read-only operations
-        if is_read_only:
-            logger.info(f"Cache MISS: {service_name}.{operation_name}")
-            use_aws._cache[cache_key] = (response, now)
         
         return response
         

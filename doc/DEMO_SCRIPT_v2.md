@@ -19,6 +19,22 @@ cd /Users/bhatprav/Documents/Workspace/ContentCreation/reinvent25-cop407-agentic
 
 ---
 
+## Demo Modes
+
+**FAST MODE (Default):** User says "proceed" → agent moves to next environment immediately
+- Best for: Demos, dev/staging environments
+- Speed: ~2 minutes per environment
+- Use when: Time is limited, showing workflow
+
+**PRODUCTION MODE (Optional):** User says "verify and proceed" → agent waits for completion + health checks
+- Best for: Production environments, safety-critical demos
+- Speed: ~12 minutes per environment (includes 10 min patching + 2 min alarm evaluation)
+- Use when: Showing production-ready behavior, emphasizing safety
+
+**This demo uses FAST MODE by default.** To use production mode, say "verify and proceed" instead of "proceed".
+
+---
+
 ## Opening (30 seconds)
 
 **Say:** "Traditional patching: 15 browser tabs, 3 CLI tools, 45 minutes per CVE. Let me show you intelligent orchestration instead."

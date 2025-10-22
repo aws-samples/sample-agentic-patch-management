@@ -159,6 +159,8 @@ You: What critical vulnerabilities do we have?
 - **Vulnerability Analysis**: CVE assessment with CVSS scoring
 - **Maintenance-Aware Patching**: Risk-based scheduling (scheduled vs emergency modes)
 - **Patch Execution**: Phased deployment with approval gates
+  - Fast mode: User says "proceed" (demo-friendly, 2-3 min per environment)
+  - Production mode: User says "verify and proceed" (automated verification, 10-12 min per environment)
 - **Health Checks**: Post-patch verification
 - **Rollback**: Restore previous package versions
 - **Compliance Reporting**: Automated audit trail with S3 storage
@@ -291,7 +293,9 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 
 ## Current Limitations
 
-- **Demo mode behavior** - Agent may proceed between environments without strict status verification to maintain demo flow (5-10 min patching waits). Production use requires verify_and_proceed() tool implementation.
+- **Two demo modes available:**
+  - **Fast mode (default):** User says "proceed" → agent moves to next environment immediately (2-3 min per environment)
+  - **Production mode (optional):** User says "verify and proceed" → agent waits for completion + runs health checks (10-12 min per environment)
 - **Manual approval required** - between each environment in phased rollout
 - **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured (httpd monitoring)
 - **Linux-only** - yum-based rollback for Amazon Linux/RHEL
