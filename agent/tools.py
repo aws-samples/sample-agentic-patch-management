@@ -318,6 +318,15 @@ def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
+        # Handle empty instance list
+        if not instance_ids:
+            return {
+                'command_id': command_id,
+                'status': 'Unknown',
+                'results': [],
+                'summary': {'success': 0, 'failed': 0, 'in_progress': 0}
+            }
+        
         def get_instance_status(instance_id):
             """Helper to get status for single instance"""
             try:
@@ -1047,218 +1056,161 @@ def get_maintenance_windows(environment: str = None, instance_ids: list = None) 
 @tool
 def generate_compliance_report(
     cve_id: str,
-    severity: str,
+    environment: str,
+    command_id: str,
     decision: str,
-    justification: str,
-    affected_instances: list,
-    execution_results: dict,
-    environment: str = 'unknown',
-    discovered_at: str = None,
-    patched_at: str = None
+    severity: Optional[str] = None,
+    cvss_score: Optional[float] = None,
+    sla_hours: Optional[int] = None,
+    sla_source: Optional[str] = None
 ) -> dict:
-    """Generate compliance report with SLA tracking and save to S3.
+    """Generate minimal compliance report after patching.
+    
+    Call this after patching completes (get_command_status shows Success).
+    Pass data from previous tool calls when available to avoid redundant API calls.
     
     Args:
         cve_id: CVE identifier (e.g., 'CVE-2024-1234')
-        severity: Vulnerability severity (CRITICAL, HIGH, MEDIUM, LOW)
-        decision: Patching decision (EMERGENCY, SCHEDULED, DEFERRED)
-        justification: Reason for the decision
-        affected_instances: List of affected instance IDs
-        execution_results: Results from patch execution
-        environment: Target environment (default: 'unknown')
-        discovered_at: Discovery timestamp (optional)
-        patched_at: Patching timestamp (optional)
+        environment: Target environment (dev, staging, prod)
+        command_id: SSM command ID from execute_patch_operation
+        decision: Patching decision (EMERGENCY, SCHEDULED)
+        severity: Vulnerability severity (from get_vulnerability_findings)
+        cvss_score: CVSS score (from get_vulnerability_findings)
+        sla_hours: SLA requirement hours (from get_patch_compliance)
+        sla_source: SLA source framework (from get_patch_compliance)
     
     Returns:
-        dict: {'report_id': str, 's3_location': str, 'sla_status': str}
+        dict: {'report_id': str, 's3_location': str, 'sla_met': bool}
     """
     try:
-        import json
-        import os
+        # First, get instance IDs from the command
+        try:
+            ssm_response = ssm_client.list_command_invocations(CommandId=command_id, MaxResults=50)
+            instance_ids = [inv['InstanceId'] for inv in ssm_response.get('CommandInvocations', [])]
+        except Exception as e:
+            logger.error(f"Could not fetch command invocations: {e}")
+            return {'error': f'Command not found: {command_id}', 'report_id': None}
         
-        # Generate timestamp
-        timestamp = datetime.utcnow()
-        timestamp_str = timestamp.strftime('%H%M%SZ')
-        date_str = timestamp.strftime('%Y-%m-%d')
+        if not instance_ids:
+            return {'error': 'No instances found for command', 'report_id': None}
         
-        # Generate report ID
-        report_id = f"{cve_id}-{date_str}-{timestamp_str}"
+        # Get command status with instance IDs
+        command_status = get_command_status(command_id, instance_ids)
         
-        # Get instance tags for organizational metadata and compliance frameworks
-        instance_metadata = {}
-        compliance_frameworks = []
-        sla_requirement_hours = None
-        sla_source = None
+        # Get instance tags (only if we need team/product or SLA calculation)
+        team = 'unknown'
+        product = 'unknown'
         
-        if affected_instances:
-            try:
-                ec2_response = ec2_client.describe_instances(InstanceIds=affected_instances[:1])
-                if ec2_response['Reservations']:
-                    instance = ec2_response['Reservations'][0]['Instances'][0]
-                    tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
-                    
-                    # Extract compliance frameworks
+        try:
+            ec2_response = ec2_client.describe_instances(InstanceIds=instance_ids[:1])
+            if ec2_response['Reservations']:
+                tags = {tag['Key']: tag['Value'] for tag in ec2_response['Reservations'][0]['Instances'][0].get('Tags', [])}
+                team = tags.get('Team', 'unknown')
+                product = tags.get('Product', 'unknown')
+                
+                # Calculate SLA if not provided
+                if not (sla_hours and sla_source) and severity:
                     frameworks_str = tags.get('ComplianceFrameworks', '')
                     if frameworks_str:
-                        compliance_frameworks = [f.strip() for f in frameworks_str.split(',') if f.strip()]
-                    
-                    # Calculate SLA requirement using helper function
-                    if compliance_frameworks:
-                        sla_req = _calculate_sla_requirement(compliance_frameworks, severity)
+                        frameworks = [f.strip() for f in frameworks_str.split(',') if f.strip()]
+                        sla_req = _calculate_sla_requirement(frameworks, severity)
                         if sla_req:
-                            sla_requirement_hours = sla_req['sla_hours']
+                            sla_hours = sla_req['sla_hours']
                             sla_source = sla_req['source']
-                    
-                    # Extract organizational metadata
-                    instance_metadata = {
-                        'team': tags.get('Team', 'unknown'),
-                        'product': tags.get('Product', 'unknown'),
-                        'cost_center': tags.get('CostCenter', 'unknown'),
-                        'owner': tags.get('Owner', 'unknown'),
-                        'compliance_frameworks': compliance_frameworks,
-                        'criticality': tags.get('Criticality', 'unknown')
-                    }
-            except Exception as tag_error:
-                logger.warning(f"Could not extract instance metadata: {tag_error}")
+        except Exception as e:
+            logger.warning(f"Could not fetch instance tags: {e}")
         
-        # Calculate SLA metrics if we have timestamps and SLA requirement
-        sla_tracking = None
-        if discovered_at and patched_at and sla_requirement_hours:
-            try:
-                discovered = datetime.fromisoformat(discovered_at.replace('Z', '+00:00'))
-                patched = datetime.fromisoformat(patched_at.replace('Z', '+00:00'))
-                time_to_patch_hours = (patched - discovered).total_seconds() / 3600
-                
-                sla_tracking = {
-                    'severity': severity,
-                    'discovered_at': discovered_at,
-                    'patched_at': patched_at,
-                    'time_to_patch_hours': round(time_to_patch_hours, 2),
-                    'sla_requirement_hours': sla_requirement_hours,
-                    'sla_source': sla_source,
-                    'sla_met': time_to_patch_hours <= sla_requirement_hours,
-                    'sla_breach_hours': max(0, round(time_to_patch_hours - sla_requirement_hours, 2))
-                }
-            except Exception as sla_error:
-                logger.warning(f"Could not calculate SLA metrics: {sla_error}")
+        # Get timestamps from SSM command
+        try:
+            ssm_response = ssm_client.list_command_invocations(CommandId=command_id, MaxResults=1)
+            if ssm_response['CommandInvocations']:
+                invocation = ssm_response['CommandInvocations'][0]
+                discovered_at = invocation['RequestedDateTime']
+                patched_at = invocation.get('ResponseFinishedDateTime', datetime.utcnow())
+                time_to_patch_hours = (patched_at - discovered_at).total_seconds() / 3600
+            else:
+                discovered_at = datetime.utcnow()
+                patched_at = datetime.utcnow()
+                time_to_patch_hours = 0
+        except Exception as e:
+            logger.warning(f"Could not get command timestamps: {e}")
+            discovered_at = datetime.utcnow()
+            patched_at = datetime.utcnow()
+            time_to_patch_hours = 0
         
-        # Build comprehensive report
+        # Build minimal report
+        timestamp = datetime.utcnow()
+        report_id = f"{cve_id}-{environment}-{timestamp.strftime('%Y%m%d%H%M%S')}"
+        
         report = {
-            'report_id': report_id,
-            'report_version': '2.0',
-            'generated_at': timestamp.isoformat() + 'Z',
-            'cve_details': {
-                'cve_id': cve_id,
-                'severity': severity,
-                'cvss_score': execution_results.get('cvss_score'),
-                'description': execution_results.get('description')
+            "report_id": report_id,
+            "timestamp": timestamp.isoformat() + 'Z',
+            
+            "vulnerability": {
+                "cve_id": cve_id,
+                "severity": severity or "UNKNOWN",
+                "cvss_score": cvss_score
             },
-            'decision': {
-                'type': decision,
-                'justification': justification,
-                'decided_at': timestamp.isoformat() + 'Z',
-                'decision_maker': 'intelligent-patch-automation'
+            
+            "scope": {
+                "environment": environment,
+                "instance_count": len(instance_ids),
+                "team": team,
+                "product": product
             },
-            'affected_systems': {
-                'environment': environment,
-                'instance_ids': affected_instances,
-                'instance_count': len(affected_instances),
-                'organizational_context': instance_metadata
+            
+            "compliance": {
+                "sla_hours": sla_hours,
+                "sla_source": sla_source,
+                "time_to_patch_hours": round(time_to_patch_hours, 2),
+                "sla_met": time_to_patch_hours <= sla_hours if sla_hours else None
             },
-            'sla_tracking': sla_tracking,
-            'execution': {
-                'status': execution_results.get('status', 'unknown'),
-                'command_id': execution_results.get('command_id'),
-                'started_at': execution_results.get('started_at'),
-                'completed_at': execution_results.get('completed_at'),
-                'success_count': execution_results.get('success_count', 0),
-                'failure_count': execution_results.get('failure_count', 0),
-                'rollback_performed': execution_results.get('rollback_performed', False)
-            },
-            'metadata': {
-                'report_version': '2.0',
-                'generated_by': 'intelligent-patch-automation',
-                'schema_version': '2.0',
-                'queryable_fields': [
-                    'cve_id', 'severity', 'environment', 'decision.type',
-                    'sla_tracking.sla_met', 'organizational_context.team',
-                    'organizational_context.product', 'organizational_context.compliance_frameworks',
-                    'execution.status', 'organizational_context.criticality'
-                ]
+            
+            "execution": {
+                "decision": decision,
+                "patched_at": patched_at.isoformat() + 'Z' if isinstance(patched_at, datetime) else str(patched_at),
+                "command_id": command_id,
+                "status": command_status.get('status', 'UNKNOWN'),
+                "success_count": command_status.get('summary', {}).get('success', 0),
+                "failure_count": command_status.get('summary', {}).get('failed', 0)
             }
         }
         
-        # Try to save to S3
-        s3_client = boto3.client('s3', region_name='us-east-1', config=aws_config)
+        # Save to S3
+        s3_client = boto3.client('s3', region_name='us-east-1')
         bucket_name = _get_compliance_bucket_name()
         
-        # Generate S3 key with date-based folder structure
+        # Use date-based folder structure
         date_prefix = _get_date_prefix(timestamp)
-        object_key = f"{date_prefix}{cve_id}-{environment}-{timestamp_str}.json"
+        object_key = f"{date_prefix}{report_id}.json"
         
-        try:
-            # Upload to S3
-            s3_client.put_object(
-                Bucket=bucket_name,
-                Key=object_key,
-                Body=json.dumps(report, indent=2),
-                ContentType='application/json',
-                Metadata={
-                    'cve-id': cve_id,
-                    'severity': severity,
-                    'environment': environment,
-                    'decision-type': decision,
-                    'sla-met': str(sla_tracking['sla_met']) if sla_tracking else 'unknown',
-                    'team': instance_metadata.get('team', 'unknown'),
-                    'product': instance_metadata.get('product', 'unknown')
-                }
-            )
-            
-            report_url = f"s3://{bucket_name}/{object_key}"
-            
-            return {
-                'report_id': report_id,
-                'report_url': report_url,
-                'storage': 's3',
-                'summary': {
-                    'cve_id': cve_id,
-                    'severity': severity,
-                    'decision': decision,
-                    'environment': environment,
-                    'affected_instances': len(affected_instances),
-                    'status': execution_results.get('status', 'unknown'),
-                    'sla_met': sla_tracking['sla_met'] if sla_tracking else None,
-                    'sla_requirement_hours': sla_requirement_hours,
-                    'team': instance_metadata.get('team', 'unknown'),
-                    'product': instance_metadata.get('product', 'unknown'),
-                    'compliance_frameworks': compliance_frameworks
-                }
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=object_key,
+            Body=json.dumps(report, indent=2),
+            ContentType='application/json',
+            Metadata={
+                'cve-id': cve_id,
+                'environment': environment,
+                'severity': severity or 'UNKNOWN',
+                'sla-met': str(report['compliance']['sla_met']),
+                'team': team,
+                'product': product
             }
-            
-        except Exception as s3_error:
-            # S3 failed, return report content locally
-            logger.warning(f"Could not save to S3: {s3_error}")
-            
-            return {
-                'report_id': report_id,
-                'storage': 'local',
-                'storage_error': str(s3_error),
-                'report_content': report,
-                'summary': {
-                    'cve_id': cve_id,
-                    'severity': severity,
-                    'decision': decision,
-                    'environment': environment,
-                    'affected_instances': len(affected_instances),
-                    'status': execution_results.get('status', 'unknown'),
-                    'sla_met': sla_tracking['sla_met'] if sla_tracking else None,
-                    'sla_requirement_hours': sla_requirement_hours,
-                    'team': instance_metadata.get('team', 'unknown'),
-                    'product': instance_metadata.get('product', 'unknown'),
-                    'compliance_frameworks': compliance_frameworks
-                }
+        )
+        
+        return {
+            "report_id": report_id,
+            "s3_location": f"s3://{bucket_name}/{object_key}",
+            "sla_met": report['compliance']['sla_met'],
+            "summary": {
+                "cve_id": cve_id,
+                "environment": environment,
+                "status": report['execution']['status'],
+                "instances_patched": report['execution']['success_count']
             }
-            
+        }
+        
     except Exception as e:
         logger.error(f"Error generating compliance report: {e}")
         return {

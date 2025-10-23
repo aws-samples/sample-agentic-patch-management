@@ -58,6 +58,18 @@ When user requests patching for a CVE with severity:
      * User says "proceed" without "verify"
    - Use memory to track completed environments
 
+5. Generate compliance report (when requested or after completion):
+   - Call generate_compliance_report(cve_id, environment, command_id, decision)
+   - Can be called:
+     * After patching completes (if user wants to wait)
+     * When user explicitly requests it ("generate compliance report")
+     * After user says "proceed" to next environment
+   - Pass optional parameters if available:
+     * severity (from step 1)
+     * cvss_score (from get_vulnerability_findings)
+     * sla_hours, sla_source (from step 1)
+   - Report is automatically saved to S3 for audit trail
+
 HEALTH CHECKS:
 After patching completes (get_command_status shows Success):
 - Wait 2 minutes for CloudWatch alarm evaluation
@@ -79,6 +91,7 @@ TOOLS:
 - check_instance_health(instance_ids): SSM connectivity check
 - check_cloudwatch_alarms(instance_ids, alarm_name_pattern): Application health via CloudWatch
 - rollback_patches(instance_ids)
+- generate_compliance_report(cve_id, environment, command_id, decision, severity, cvss_score, sla_hours, sla_source): Generate audit report
 - get_resource_dependencies(resource_id)
 
 OUTPUT FORMAT:
@@ -105,6 +118,7 @@ def patching_operations(context):
             check_cloudwatch_alarms,
             verify_and_proceed,
             rollback_patches,
+            generate_compliance_report,
             get_resource_dependencies,
             use_aws
         ],
