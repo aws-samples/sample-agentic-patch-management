@@ -123,6 +123,6 @@ def patching_operations(context):
             use_aws
         ],
         context=context,
-        max_tokens=8000
+        max_tokens=12000
     )
 

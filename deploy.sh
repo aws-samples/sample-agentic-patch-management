@@ -18,7 +18,30 @@ AWS_REGION="us-east-1"
 PYTHON_VERSION="3.9"
 
 # Parse deployment target
-DEPLOY_TARGET=${1:-all}
+DEPLOY_TARGET=${1:-}
+
+# Show usage if no argument provided
+if [ -z "$DEPLOY_TARGET" ]; then
+    echo -e "${BLUE}🚀 COP407 Fast Deployment${NC}"
+    echo "=================================================="
+    echo ""
+    echo "Usage: $0 <target>"
+    echo ""
+    echo "Available targets:"
+    echo "  ${GREEN}all${NC}       - Deploy everything (env + infra + agent)"
+    echo "  ${GREEN}env${NC}       - Setup Python virtual environment only"
+    echo "  ${GREEN}infra${NC}     - Deploy AWS infrastructure (CDK stacks)"
+    echo "  ${GREEN}agent${NC}     - Deploy AgentCore agent only"
+    echo "  ${GREEN}frontend${NC}  - Deploy frontend (not implemented)"
+    echo "  ${RED}destroy${NC}   - Destroy all infrastructure"
+    echo ""
+    echo "Examples:"
+    echo "  $0 all       # Full deployment"
+    echo "  $0 env       # Setup environment only"
+    echo "  $0 agent     # Deploy agent only"
+    echo ""
+    exit 0
+fi
 
 echo -e "${BLUE}🚀 COP407 Fast Deployment - Target: ${DEPLOY_TARGET}${NC}"
 echo "=================================================="
