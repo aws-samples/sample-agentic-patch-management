@@ -103,11 +103,14 @@ Auto-saved to S3 for audit trail.
 4. **Risk factors** (blast radius, rollback availability)
 5. **Decision required** (specific options: "approve" or "execute now")
 
+**After dispatching patches:** Return command ID, tell user to say "check status" or "proceed"
+
 **Avoid:**
 - Repeating information across sections
 - Generic "Next Steps" that restate the decision
 - Presenting rejected options when recommendation is clear
 - Excessive emojis (use 2-3 for visual hierarchy only)
+- Claiming to monitor/auto-update (not possible between turns)
 
 ## 📝 EXAMPLE
 
