@@ -35,18 +35,18 @@ RESPONSE GUIDELINES (CRITICAL):
 - Target: <500 words per response
 
 ROUTING:
+- AWS services (Lambda, S3, CloudWatch, RDS, DynamoDB, IAM, VPC, billing, cost) → use_aws ONLY
 - Security queries (CVE, vulnerability, CVSS, threat, Inspector) → consult_vulnerability_analyst
 - Infrastructure queries (patch, instance, health, rollback, EC2, SSM, maintenance) → consult_patch_manager
 - Compliance queries (report, SLA, breach, audit, compliance) → consult_compliance_analyst
-- AWS services (Lambda, S3, CloudWatch, RDS, billing, cost) → use_aws
 
 PRIORITY: If query contains "patch", route to consult_patch_manager even if it also mentions compliance/audit
 
 TOOLS:
+- use_aws(service, operation, parameters): Direct AWS API calls
 - consult_vulnerability_analyst(query): CVE analysis, CVSS scoring, security risk assessment
 - consult_patch_manager(query): EC2 patching, health checks, rollback, maintenance windows
 - consult_compliance_analyst(query): Compliance reports, SLA tracking, audit trails
-- use_aws(service, operation, parameters): Direct AWS API calls
 
 OUT_OF_SCOPE HANDLING:
 If specialist response contains "OUT_OF_SCOPE", immediately retry with use_aws tool.
@@ -109,18 +109,25 @@ def consult_compliance_analyst(query: str) -> str:
 async def agent_invocation(payload, context):
     """Handler for agent invocation with AgentCore memory integration."""
     from agent_factory import create_agent
+    from types import SimpleNamespace
     
     request_start = time.time()
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
     logger.info(f"New request: {user_message[:100]}")
     
+    # Create context with memory_id from config
+    agent_context = SimpleNamespace(
+        memory_id="intelligent_patch_automation_mem-La8v5RAIoS",
+        session_id=context.session_id
+    )
+    
     # Create agent with factory
     agent = create_agent(
         name="patch-automation-supervisor",
         system_prompt=SYSTEM_PROMPT,
         tools=[consult_vulnerability_analyst, consult_patch_manager, consult_compliance_analyst, use_aws],
-        context=context
+        context=agent_context
     )
     
     # Stream response

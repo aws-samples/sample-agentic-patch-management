@@ -14,12 +14,14 @@ from croniter import croniter
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# AWS client configuration with retry logic
+# AWS client configuration with retry logic and timeouts
 aws_config = Config(
     retries={
         'max_attempts': 3,
         'mode': 'adaptive'  # Adaptive retry mode for better handling of throttling
-    }
+    },
+    read_timeout=180,
+    connect_timeout=10
 )
 
 # Initialize AWS clients with retry configuration
@@ -129,6 +131,14 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
         dict: {'findings': list, 'total_count': int}
     """
     try:
+        # Require at least one filter to prevent unbounded queries
+        if not any([cve_id, severity, environment]):
+            return {
+                "error": "Must specify at least one filter: cve_id, severity, or environment",
+                "findings": [],
+                "total_count": 0
+            }
+        
         filters = {
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
         }
@@ -181,13 +191,13 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
 # --- Patch Management ---
 
 @tool
-def get_patch_compliance(environment: Optional[str] = None, 
+def get_patch_compliance(environment: str,
                         instance_ids: Optional[List[str]] = None,
                         severity: Optional[str] = None) -> dict:
     """Get patch compliance status from AWS Systems Manager.
     
     Args:
-        environment: Filter by environment (dev, staging, prod)
+        environment: Filter by environment (dev, staging, prod) - REQUIRED
         instance_ids: Specific instance IDs to check
         severity: If provided, includes SLA calculation based on compliance frameworks
     
@@ -808,34 +818,22 @@ def get_resource_dependencies(resource_id: str) -> dict:
                     albs_response = elbv2_client.describe_load_balancers(LoadBalancerArns=list(set(alb_arns)))
                     alb_map = {alb['LoadBalancerArn']: alb['LoadBalancerName'] for alb in albs_response['LoadBalancers']}
                 
-                # Get health for each target group (can't batch this)
+                # Build load balancer list (no health checks - done separately after patching)
                 for tg_arn in tg_arns:
-                    try:
-                        tg = tg_map.get(tg_arn)
-                        if not tg:
-                            continue
-                        
-                        # Get health status
-                        health = elbv2_client.describe_target_health(TargetGroupArn=tg_arn)
-                        healthy = sum(1 for t in health['TargetHealthDescriptions'] 
-                                     if t['TargetHealth']['State'] == 'healthy')
-                        total = len(health['TargetHealthDescriptions'])
-                        
-                        # Get ALB name from map
-                        alb_name = 'unknown'
-                        if tg.get('LoadBalancerArns'):
-                            alb_arn = tg['LoadBalancerArns'][0]
-                            alb_name = alb_map.get(alb_arn, 'unknown')
-                        
-                        load_balancers.append({
-                            'name': alb_name,
-                            'target_group': tg['TargetGroupName'],
-                            'healthy_targets': healthy,
-                            'total_targets': total,
-                            'status': 'HEALTHY' if healthy == total else 'DEGRADED' if healthy > 0 else 'UNHEALTHY'
-                        })
-                    except Exception as e:
-                        logger.warning(f"Could not get health for target group {tg_arn}: {e}")
+                    tg = tg_map.get(tg_arn)
+                    if not tg:
+                        continue
+                    
+                    # Get ALB name from map
+                    alb_name = 'unknown'
+                    if tg.get('LoadBalancerArns'):
+                        alb_arn = tg['LoadBalancerArns'][0]
+                        alb_name = alb_map.get(alb_arn, 'unknown')
+                    
+                    load_balancers.append({
+                        'name': alb_name,
+                        'target_group': tg['TargetGroupName']
+                    })
                         
             except Exception as e:
                 logger.warning(f"Could not query target groups: {e}")
@@ -851,13 +849,6 @@ def get_resource_dependencies(resource_id: str) -> dict:
             elif criticality == 'Medium' or environment == 'staging':
                 blast_radius = 'MEDIUM'
                 impact_description = 'Internal services affected'
-        
-        # Generate recommendation
-        recommendation = 'MONITOR'
-        if load_balancers:
-            degraded = [lb for lb in load_balancers if lb['status'] != 'HEALTHY']
-            if degraded:
-                recommendation = 'ROLLBACK RECOMMENDED - Load balancer health degraded'
         
         # Extract infrastructure relationships
         infrastructure = {
@@ -881,7 +872,6 @@ def get_resource_dependencies(resource_id: str) -> dict:
                 'load_balancers': load_balancers,
                 'infrastructure': infrastructure
             },
-            'recommendation': recommendation,
             'summary': f"{blast_radius} blast radius - {impact_description}"
         }
         
@@ -891,20 +881,16 @@ def get_resource_dependencies(resource_id: str) -> dict:
             'error': str(e),
             'resource_id': resource_id
         }
-        
-    except Exception as e:
-        logger.error(f"Error getting resource dependencies: {e}")
-        return {"error": str(e), "resource_id": resource_id}
 
 
 # --- Compliance & Reporting ---
 
 @tool
-def get_maintenance_windows(environment: str = None, instance_ids: list = None) -> dict:
+def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict:
     """Get maintenance window information and validate instance coverage.
     
     Args:
-        environment: Filter by environment (dev, staging, prod)
+        environment: Filter by environment (dev, staging, prod) - REQUIRED
         instance_ids: Optional list of instance IDs to validate coverage
     
     Returns:

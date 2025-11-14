@@ -21,8 +21,8 @@ agents:
       observability:
         enabled: true
     bedrock_agentcore:
-      agent_id: null
-      agent_arn: null
+      agent_id: intelligent_patch_automation-TzHdGwD6sO
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:runtime/intelligent_patch_automation-TzHdGwD6sO
       agent_session_id: null
     codebuild:
       project_name: bedrock-agentcore-intelligent_patch_automation-builder
@@ -34,7 +34,7 @@ agents:
       memory_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:memory/intelligent_patch_automation_mem-La8v5RAIoS
       memory_name: intelligent_patch_automation_mem
       event_expiry_days: 30
-      first_invoke_memory_check_done: false
+      first_invoke_memory_check_done: true
       was_created_by_toolkit: false
     authorizer_configuration: null
     request_header_configuration: null

@@ -1,4 +1,4 @@
-# Live Demo Script (10 minutes) - v2
+# Live Demo Script (10 minutes)
 
 ## Pre-Demo Setup (5 min before presentation)
 
@@ -19,292 +19,209 @@ cd /Users/bhatprav/Documents/Workspace/ContentCreation/reinvent25-cop407-agentic
 
 ---
 
-## Demo Modes
-
-**FAST MODE (Default):** User says "proceed" → agent moves to next environment immediately
-- Best for: Demos, dev/staging environments
-- Speed: ~2 minutes per environment
-- Use when: Time is limited, showing workflow
-
-**PRODUCTION MODE (Optional):** User says "verify and proceed" → agent waits for completion + health checks
-- Best for: Production environments, safety-critical demos
-- Speed: ~12 minutes per environment (includes 10 min patching + 2 min alarm evaluation)
-- Use when: Showing production-ready behavior, emphasizing safety
-
-**This demo uses FAST MODE by default.** To use production mode, say "verify and proceed" instead of "proceed".
-
----
-
 ## Opening (30 seconds)
 
-**Say:** "Traditional patching: 15 browser tabs, 3 CLI tools, 45 minutes per CVE. Let me show you intelligent orchestration instead."
+**Say:** "Traditional patching means juggling 15 browser tabs, 3 CLI tools, and 45 minutes of manual work per CVE. What if you could just ask an agent to handle it?"
 
 **Show:** Terminal with `./chat.sh` running
 
+**Say:** "This is a multi-agent system that understands your infrastructure, makes risk-based decisions, and executes patches safely. Let me show you."
+
 ---
 
-## Scene 1: Compliance Context (2 minutes)
+## Scene 1: Understanding Your Infrastructure (2 minutes)
 
-**Say:** "First, let's see what we're protecting..."
+**Say:** "First, the agent needs to understand what it's protecting."
 
 **Type:** 
 ```
 Show me prod instances and their compliance frameworks
 ```
 
-**Expected Output:**
-- 🛠️ Consulting Patch Manager...
-- Table with 5 prod instances
-- Compliance frameworks: PCI-DSS, SOC2, HIPAA
-- Instance details
+**What Happens:**
+- Agent routes to Patch Manager specialist
+- Returns table with 5 production instances
+- Shows compliance tags: PCI-DSS, SOC2, HIPAA
 
-**Talking Points:**
-- "These tags drive everything - PCI-DSS has strictest requirements"
-- "Each framework has different SLA requirements for patching"
-- "Agent reads this context automatically - no configuration needed"
+**Say While Results Appear:**
+"The agent reads compliance requirements directly from instance tags. PCI-DSS has the strictest patching SLAs - 48 hours for critical vulnerabilities. These tags drive every decision the agent makes."
 
----
-
-## Scene 2: SLA-Aware Decision Logic (2.5 minutes)
-
-**Say:** "Now watch how compliance requirements drive patching decisions..."
-
-**Type:**
-```
-Check the SLA requirement for prod instances with CRITICAL severity and show me the maintenance window timing
-```
-
-**Expected Output:**
-- Analysis of compliance frameworks
-- "SLA: 12 hours (PCI-DSS - strictest)"
-- Maintenance window timing
-- EMERGENCY vs SCHEDULED decision logic
-
-**Talking Points:**
-- "Agent calculates strictest SLA across all frameworks"
-- "PCI-DSS: 12 hours, SOC2: 24 hours, HIPAA: 24 hours → 12 hours wins"
-- "Compares maintenance window timing vs SLA deadline"
-- "If window is 96 hours away but SLA is 12 hours → EMERGENCY patching"
-- "This is policy-driven - JSON config file, easy to customize"
-
-**Show (if time):** Quick peek at `agent/config/config.json`
+**Key Point:** "No configuration files. No hardcoded policies. Just tags on your existing infrastructure."
 
 ---
 
-## Scene 3: Real Vulnerability Analysis (2 minutes)
+## Scene 2: Discovering Threats (2 minutes)
 
-**Say:** "Let's check what vulnerabilities we actually have..."
+**Say:** "Now let's see what vulnerabilities exist."
+
+**Type:** 
+```
+What are the highest vulnerabilities in my environment?
+```
+
+**What Happens:**
+- Agent routes to Vulnerability Analyst specialist
+- Shows top priority CVE with CVSS score
+- Displays table of top 10 vulnerabilities
+- Data comes from AWS Inspector
+
+**Say While Results Appear:**
+"Notice how the agent leads with what matters most - the highest priority threat. This is real data from AWS Inspector, analyzed and prioritized for you."
+
+**Key Point:** "The agent doesn't just list vulnerabilities. It tells you which one to worry about first."
+
+---
+
+## Scene 3: Making Intelligent Decisions (2.5 minutes)
+
+**Say:** "Here's where it gets interesting. Watch how the agent uses context from our previous conversation."
 
 **Type:**
 ```
-What vulnerabilities do we have in dev environment?
+Build a deployment plan for production for the top 3 CVEs
 ```
 
-**Expected Output:**
-- 🔍 Consulting Vulnerability Analyst...
-- List of findings (or "No critical vulnerabilities")
+**What Happens:**
+- Agent remembers which CVEs you discussed
+- Checks maintenance windows
+- Calculates risk vs SLA requirements
+- Proposes phased rollout: dev → staging → prod
 
-**If vulnerabilities found:**
-- Show CVE details, CVSS scores, affected instances
-- Point out SLA calculation in output
+**Say While Results Appear:**
+"The agent didn't ask 'which CVEs?' - it remembered from our previous message. It's checking maintenance windows right now... and it's comparing the SLA deadline against the next scheduled window."
 
-**If no vulnerabilities:**
-**Say:** "Great! No active vulnerabilities. In a real scenario, you'd see CVE details, CVSS scores, and automatic SLA calculation based on those compliance tags we saw earlier."
+**When Results Show:**
+"See this? The agent decided this is SCHEDULED patching, not emergency. Why? Because the next maintenance window is within the PCI-DSS 48-hour requirement. It's making a risk-based decision."
 
-**Talking Points:**
-- "Agent routes to security specialist automatically"
-- "Real data from AWS Inspector"
-- "SLA appears in output when analyzing affected instances"
+**Key Point:** "This isn't a script following rules. It's an agent reasoning about your specific situation."
 
 ---
 
 ## Scene 4: Intelligent Routing (1.5 minutes)
 
-**Say:** "The supervisor knows when to use specialists vs direct AWS access..."
+**Say:** "The system knows when to use specialists and when to go direct."
 
 **Type:**
 ```
 List my Lambda functions
 ```
 
-**Expected Output:**
-- ⚙️ Querying AWS...
-- List of Lambda functions
+**What Happens:**
+- Agent skips specialists
+- Goes directly to AWS API
+- Returns Lambda function list
 
-**Talking Points:**
-- "Query didn't match security or patching patterns"
-- "Supervisor used fallback tool directly - no specialist needed"
-- "This is keyword-based routing with OUT_OF_SCOPE fallback"
-- "18-36% faster by eliminating wrong specialist calls"
+**Say While Results Appear:**
+"No security keywords, no patching context - the supervisor went straight to AWS. It doesn't waste time routing to specialists when a simple API call will do."
 
----
-
-## Scene 5: Patching Workflow (2 minutes) - OPTIONAL
-
-**Only do this if you have actual vulnerabilities. Otherwise skip to Closing.**
-
-**Say:** "Let me show you the patching workflow..."
-
-**Type:**
-```
-Patch [CVE-ID] in dev environment
-```
-
-**Expected Output:**
-- SLA calculation and decision
-- Patching initiated
-- Command ID
-- Instructions for next steps
-
-**Say:** "In production, patching takes 5-10 minutes. The workflow is:
-1. Agent starts patch → returns command ID
-2. You check status when ready
-3. Agent verifies health (infrastructure + CloudWatch alarms)
-4. You approve proceeding to staging, then prod
-5. Phased rollout with approval gates at each stage"
-
-**Talking Points:**
-- "Asynchronous by design - no timeouts"
-- "Two-layer health checks: SSM connectivity + CloudWatch alarms"
-- "Human approval between environments"
-- "For this demo, I'm showing the workflow without waiting 10 minutes"
+**Key Point:** "Smart routing means faster responses and lower costs."
 
 ---
 
-## Scene 5: Executive Compliance Reporting (2 minutes) - OPTIONAL
+## Scene 5: Safe Execution (2 minutes) - OPTIONAL
 
-**Say:** "Let me show you the compliance analyst - built for CISOs and risk officers..."
+**Only show if you have actual vulnerabilities and want to demonstrate execution.**
 
-**Type:**
-```
-Show me all SLA breaches this month
-```
-
-**Expected Output:**
-- 📊 Consulting Compliance Analyst...
-- Summary: "X reports found, Y SLA breaches (Z%)"
-- Statistics breakdown
-- List of breached reports with details
-
-**Talking Points:**
-- "Compliance analyst queries reports from S3"
-- "Automatic aggregation - breach count, breach rate, team breakdown"
-- "This is what CISOs need for board reporting"
+**Say:** "Let me show you what happens when you actually execute a patch."
 
 **Type:**
 ```
-Which teams have the most SLA breaches?
+Start emergency patching for CVE-2023-52935 in dev
 ```
 
-**Expected Output:**
-- Team breakdown with counts
-- Analysis of which teams need support
-- Recommendations
+**What Happens:**
+- Agent patches dev environment
+- Returns command ID
+- Waits for your approval to continue
 
-**Talking Points:**
-- "Identifies accountability gaps"
-- "Helps with resource allocation decisions"
-- "Shows which teams need training or more resources"
+**Say While Results Appear:**
+"The agent just patched the dev environment. Now it's waiting for me to say 'proceed' before touching staging. This is the approval gate - human in the loop."
 
-**Type:**
-```
-What's our SLA compliance rate this month?
-```
+**Explain (Don't Execute):**
+"In production, this workflow continues:
+- Dev → you approve → Staging → you approve → Production
+- Health checks after each environment
+- Automatic rollback if CloudWatch alarms fire
+- Compliance report saved to S3 when complete
 
-**Expected Output:**
-- Overall compliance percentage
-- Trend analysis (if multiple months of data)
-- Executive summary
+The whole process takes about 30 minutes for all three environments with automated verification."
 
-**Talking Points:**
-- "Board-level metric"
-- "Shows overall security posture"
-- "Tracks improvement over time"
-- "Perfect for quarterly business reviews"
-
-**Say:** "These reports feed into your data lake - Athena queries, QuickSight dashboards, executive reporting. The agent provides the intelligence layer on top of your compliance data."
+**Key Point:** "Safety through phased rollout and approval gates."
 
 ---
 
 ## Closing (1 minute)
 
 **Say:** 
-"This is intelligent orchestration, not just automation:
+"What you just saw:
 
-**Compliance-aware:** Reads PCI-DSS, SOC2, HIPAA requirements from instance tags
-**Risk-based:** Compares maintenance windows vs SLA deadlines
-**Operationally safe:** Phased rollout, health checks, approval gates
+**Conversational** - No rigid commands, just natural language
+**Context-aware** - Agents remember what you discussed
+**Risk-based** - Decisions driven by SLA requirements and maintenance windows
+**Safe** - Phased rollout with approval gates
 
-Built entirely with AWS native services:
+This is built entirely on AWS native services:
 - Bedrock AgentCore for orchestration
 - Systems Manager for patching
 - Inspector for vulnerability data
 - CloudWatch for health monitoring
 
-No new infrastructure. No rigid scripts. Just natural language and intelligent decisions."
+No new infrastructure to manage. No complex integrations. Just intelligent agents working with the AWS services you already use."
+
+**Final Point:** "The future of operations isn't about writing better scripts. It's about having conversations with intelligent agents that understand your infrastructure and make decisions for you."
 
 ---
 
 ## Q&A Preparation
 
-### Q: How does it handle rollbacks?
-**A:** "Two-layer health checks catch issues. If CloudWatch alarms fire, agent recommends rollback. You approve, it executes `yum history undo`, waits for recovery, verifies alarms cleared. Default is rollback only the failed environment - preserves lower environments for comparison."
+### Q: How does the agent remember context?
+**A:** "AgentCore provides conversation memory within a session. When you ask 'build deployment plan for production' after discussing CVEs, the agent knows which CVEs you mean. It's not magic - it's the agent reading previous messages in the conversation."
 
-### Q: What if the agent makes a mistake?
-**A:** "Approval gates between environments. Human in the loop. For production, add circuit breakers - stop if >10% instances fail health checks."
+### Q: What if something goes wrong during patching?
+**A:** "Two-layer health checks catch issues. Infrastructure checks verify SSM connectivity. Application checks monitor CloudWatch alarms. If alarms fire, the agent recommends rollback. You approve, it executes the rollback, and verifies recovery."
 
-### Q: Does it work with Windows?
-**A:** "Demo is Linux with yum. Pattern extends to Windows Update via SSM. Same agent logic, different patching tools."
+### Q: Can this work with Windows?
+**A:** "Absolutely. The demo uses Linux with yum, but the pattern works with Windows Update via Systems Manager. Same agent logic, different patching tools."
 
 ### Q: How much does this cost?
-**A:** "Bedrock AgentCore charges per request. For 1000 instances patched monthly: ~$50/month. Compare to manual: 40 hours × $100/hr = $4000/month. 98% cost reduction."
+**A:** "Bedrock AgentCore charges per request. For patching 1000 instances monthly, you're looking at roughly $50/month in agent costs. Compare that to 40 hours of manual work at $100/hour - that's $4000/month. 98% cost reduction."
 
-### Q: Can it integrate with ITSM tools?
-**A:** "Yes. Agent can be extended with custom tools for ServiceNow, JIRA, PagerDuty. Webhook support for notifications."
-
-### Q: What about multi-cloud?
-**A:** "Agent pattern is cloud-agnostic. Swap the tools layer - same supervisor logic, different cloud APIs. Azure Update Management, Google OS Config."
+### Q: Can it integrate with ServiceNow or JIRA?
+**A:** "Yes. The agent can be extended with custom tools for any ITSM platform. Add a tool that calls ServiceNow's API, and the agent can create tickets, update status, or query existing incidents."
 
 ### Q: Is this production-ready?
-**A:** "This demonstrates production-grade patterns. To productionize: add multi-region support, sophisticated approval workflows, deeper monitoring. Architecture is sound - extend the tool set for your needs."
+**A:** "This demonstrates production-grade patterns. To productionize, you'd add multi-region support, more sophisticated approval workflows, and deeper monitoring. The architecture is sound - extend the tool set for your specific needs."
 
 ### Q: How do you customize SLA policies?
-**A:** "Edit `agent/config/config.json` - simple JSON file. Define hours by framework and severity, plus environment aliases. Agent reads it automatically. No code changes needed."
+**A:** "Edit a simple JSON config file. Define hours by compliance framework and severity. The agent reads it automatically - no code changes needed."
+
+### Q: What about multi-cloud?
+**A:** "The agent pattern is cloud-agnostic. Swap the tools layer - same supervisor logic, different cloud APIs. Azure Update Management, Google OS Config, whatever you need."
 
 ---
 
 ## Troubleshooting
 
 ### No vulnerabilities in environment
-- **Expected:** This is actually good!
-- **Response:** "Great security posture! Let me explain what you'd see..." (describe hypothetically)
-- **Backup:** Show Scene 2 (hypothetical SLA analysis) instead
+- **Response:** "Great security posture! Let me walk you through what you'd see..." (describe hypothetically using Scene 2)
 
 ### Agent times out
-- **Cause:** Complex query, AWS API rate limiting
+- **Cause:** Complex query or AWS API rate limiting
 - **Fix:** Simplify query, check AWS service health
 - **Backup:** Show pre-recorded demo
 
-### Routing fails
-- **Cause:** Supervisor logic issue
-- **Fix:** Enable debug mode: `./chat.sh -d`
-- **Backup:** Explain routing decision tree from architecture
-
 ### Chat client crashes
-- **Cause:** Python dependency issue
-- **Fix:** Reinstall: `pip install -r chatbot-client/requirements.txt`
-- **Backup:** Use direct agentcore invoke
+- **Fix:** `pip install -r chatbot-client/requirements.txt`
+- **Backup:** Use slides with example outputs
 
 ---
 
 ## Backup Plan
 
-**If live demo completely fails:**
-
-1. **Screen recording:** Have pre-recorded successful run ready
-2. **Static examples:** Show example queries/responses in slides
-3. **Architecture walkthrough:** Focus on design patterns
-4. **Code walkthrough:** Show SLA policy JSON, tool implementations
+**If live demo fails:**
+1. Show pre-recorded video
+2. Walk through example outputs in slides
+3. Focus on architecture and design patterns
 
 **Always have:** Backup recording ready to play
 
@@ -312,55 +229,29 @@ No new infrastructure. No rigid scripts. Just natural language and intelligent d
 
 ## Practice Checklist
 
-Before demo day:
-
 - [ ] Run through script 3 times
-- [ ] Time each section (should be ~10 min total)
-- [ ] Check if you have active vulnerabilities (adjust script accordingly)
-- [ ] Test in fresh terminal window
-- [ ] Verify SSM agents are connected
+- [ ] Time each section (~10 min total)
+- [ ] Check for active vulnerabilities (adjust script if none)
+- [ ] Test in fresh terminal
 - [ ] Record backup video
-- [ ] Prepare answers to Q&A
+- [ ] Prepare Q&A answers
 - [ ] Have architecture diagram ready
-- [ ] Print SLA policy JSON for reference
-- [ ] Test with different queries
 
 ---
 
 ## Demo Day Checklist
 
-- [ ] Laptop fully charged + backup power adapter
+- [ ] Laptop charged + backup power
 - [ ] Screen recording ready
-- [ ] Terminal font size increased (audience can read)
-- [ ] Close unnecessary applications
+- [ ] Terminal font size increased
+- [ ] Close unnecessary apps
 - [ ] Disable notifications
 - [ ] Test internet connection
 - [ ] AWS credentials valid
 - [ ] Agent deployed and responding
 - [ ] Chat client tested
-- [ ] Backup laptop ready (if available)
-- [ ] SLA policy JSON printed/accessible
 
 ---
 
-## Key Differences from v1
-
-**Safer:**
-- Doesn't assume vulnerabilities exist
-- No fake CVE IDs
-- Honest about timing (explains workflow vs simulating)
-- Compliance report removed (disconnected from flow)
-
-**More Compelling:**
-- Leads with compliance context (sets up SLA story)
-- Shows decision logic before execution
-- Emphasizes policy-driven approach
-- Better narrative flow
-
-**More Coherent:**
-- Each scene builds on previous
-- Compliance tags → SLA calculation → Decision logic → Routing
-- No disconnected scenes
-
-**Total Time:** 9-10 minutes (flexible based on vulnerabilities)
-**Confidence Level:** High (works even with no vulnerabilities)
+**Total Time:** 10 minutes
+**Focus:** What the audience experiences, not how it was built
