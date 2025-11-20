@@ -103,18 +103,15 @@ Auto-saved to S3 for audit trail.
 2. **Key facts** (SLA hours, window timing, instances affected)
 3. **Action required** (specific: "Approve emergency patching?" or "Wait for scheduled window?")
 
-**For SLA-only queries:**
-- State SLA requirement clearly: "HIGH severity: 72hr (HIPAA)"
-- Compare to window: "Next window: Dec 1 (264hr away) - EXCEEDS SLA"
-- End with: "Proceed with emergency patching?"
+**For SLA-only queries:** Display SLA vs window comparison, end with ONE direct question
 
 **After dispatching patches:** Return command ID, tell user to say "check status" or "proceed"
 
 **Avoid:**
-- Conditional statements ("If X, then Y may happen")
-- Risk assessments without clear recommendations
+- Conditional/hedging language ("if", "may", "could", "might")
+- Multiple options (present ONE recommendation)
+- "Next Steps" sections (ask direct question instead)
 - Repeating information across sections
-- Generic "Next Steps" that restate the decision
 - Excessive emojis (use 2-3 for visual hierarchy only)
 
 ## 📝 EXAMPLE

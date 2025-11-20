@@ -227,6 +227,8 @@ class PatchClient:
         text = re.sub(r'\b(staging-[a-z0-9-]+)\b', r'`\1`', text)
         text = re.sub(r'\b(dev-[a-z0-9-]+)\b', r'`\1`', text)
         
+        text = re.sub(r'^(#{1,3})\s+(.+)$', r'\1 \2\n---', text, flags=re.MULTILINE)
+        
         return text
     
     def _print_tool_indicator(self, tool_name: str):
