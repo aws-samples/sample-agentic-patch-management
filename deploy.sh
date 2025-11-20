@@ -28,17 +28,20 @@ if [ -z "$DEPLOY_TARGET" ]; then
     echo "Usage: $0 <target>"
     echo ""
     echo "Available targets:"
-    echo "  ${GREEN}all${NC}       - Deploy everything (env + infra + agent)"
-    echo "  ${GREEN}env${NC}       - Setup Python virtual environment only"
-    echo "  ${GREEN}infra${NC}     - Deploy AWS infrastructure (CDK stacks)"
-    echo "  ${GREEN}agent${NC}     - Deploy AgentCore agent only"
-    echo "  ${GREEN}frontend${NC}  - Deploy frontend (not implemented)"
-    echo "  ${RED}destroy${NC}   - Destroy all infrastructure"
+    echo "  ${GREEN}all${NC}         - Deploy everything (env + infra + agent)"
+    echo "  ${GREEN}env${NC}         - Setup Python virtual environment only"
+    echo "  ${GREEN}infra${NC}       - Deploy AWS infrastructure (CDK stacks)"
+    echo "  ${GREEN}agent${NC}       - Deploy AgentCore agent only"
+    echo "  ${GREEN}frontend${NC}    - Deploy frontend (not implemented)"
+    echo "  ${RED}destroy${NC}     - Destroy demo stack only (keeps VPC, Security, IAM)"
+    echo "  ${RED}destroy-all${NC} - Destroy ALL infrastructure (complete cleanup)"
     echo ""
     echo "Examples:"
-    echo "  $0 all       # Full deployment"
-    echo "  $0 env       # Setup environment only"
-    echo "  $0 agent     # Deploy agent only"
+    echo "  $0 all          # Full deployment"
+    echo "  $0 env          # Setup environment only"
+    echo "  $0 agent        # Deploy agent only"
+    echo "  $0 destroy      # Remove demo instances (quick cleanup)"
+    echo "  $0 destroy-all  # Remove everything (full cleanup)"
     echo ""
     exit 0
 fi
@@ -143,9 +146,12 @@ deploy_infrastructure() {
     cd ..
 }
 
-# Infrastructure destruction
+# Infrastructure destruction (demo stack only)
 destroy_infrastructure() {
-    echo -e "${RED}🗑️  Destroying infrastructure...${NC}"
+    echo -e "${RED}🗑️  Destroying demo infrastructure...${NC}"
+    echo -e "${YELLOW}Note: Only destroying demo stack (PatchAutomationVulnerabilityDriven)${NC}"
+    echo -e "${YELLOW}Keeping foundational stacks: Networking, Security, AgentCore Permissions${NC}"
+    echo ""
     
     cd infra
     
@@ -154,9 +160,37 @@ destroy_infrastructure() {
         npm ci --silent
     fi
     
-    echo "Destroying CDK stacks..."
+    echo "Destroying demo stack (15 EC2 instances)..."
+    npx cdk destroy PatchAutomationVulnerabilityDriven --force
+    print_status "Demo infrastructure destroyed"
+    print_status "Foundational infrastructure preserved (VPC, Security Groups, IAM Roles)"
+    
+    cd ..
+}
+
+# Complete infrastructure destruction (all stacks)
+destroy_all_infrastructure() {
+    echo -e "${RED}🗑️  Destroying ALL infrastructure...${NC}"
+    echo -e "${RED}⚠️  WARNING: This will destroy ALL stacks including VPC, Security Groups, and IAM Roles${NC}"
+    echo ""
+    
+    # Confirmation prompt
+    read -p "Are you sure you want to destroy ALL infrastructure? (yes/no): " confirm
+    if [ "$confirm" != "yes" ]; then
+        print_warning "Destruction cancelled"
+        exit 0
+    fi
+    
+    cd infra
+    
+    # Fast npm install check
+    if [ ! -d "node_modules" ]; then
+        npm ci --silent
+    fi
+    
+    echo "Destroying all CDK stacks..."
     npx cdk destroy --all --force
-    print_status "Infrastructure destroyed"
+    print_status "All infrastructure destroyed"
     
     cd ..
 }
@@ -213,6 +247,9 @@ main() {
         "destroy")
             destroy_infrastructure
             ;;
+        "destroy-all")
+            destroy_all_infrastructure
+            ;;
         "all")
             setup_environment
             deploy_infrastructure
@@ -220,7 +257,7 @@ main() {
             ;;
         *)
             print_error "Invalid target: $DEPLOY_TARGET"
-            echo "Usage: $0 [all|infra|agent|frontend|env|destroy]"
+            echo "Usage: $0 [all|infra|agent|frontend|env|destroy|destroy-all]"
             exit 1
             ;;
     esac
