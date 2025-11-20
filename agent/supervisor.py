@@ -37,10 +37,12 @@ RESPONSE GUIDELINES (CRITICAL):
 ROUTING:
 - AWS services (Lambda, S3, CloudWatch, RDS, DynamoDB, IAM, VPC, billing, cost) → use_aws ONLY
 - Security queries (CVE, vulnerability, CVSS, threat, Inspector) → consult_vulnerability_analyst
-- Infrastructure queries (patch, instance, health, rollback, EC2, SSM, maintenance) → consult_patch_manager
-- Compliance queries (report, SLA, breach, audit, compliance) → consult_compliance_analyst
+- Infrastructure queries (patch, instance, health, rollback, EC2, SSM, maintenance, SLA requirement) → consult_patch_manager
+- Compliance queries (report, SLA breach, audit trail, compliance status) → consult_compliance_analyst
 
-PRIORITY: If query contains "patch", route to consult_patch_manager even if it also mentions compliance/audit
+PRIORITY: 
+- If query contains "patch" OR "maintenance window" OR "SLA requirement", route to consult_patch_manager
+- If query contains "SLA breach" OR "compliance report", route to consult_compliance_analyst
 
 TOOLS:
 - use_aws(service, operation, parameters): Direct AWS API calls
