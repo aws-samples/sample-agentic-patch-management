@@ -272,11 +272,11 @@ def main():
     client = PatchClient(profile=args.profile)
     console = client.console
     banner_content = (
-        "[bold cyan]🤖 Patch Automation Agent[/bold cyan]\n"
+        "[bold cyan]🤖 Patchy [/bold cyan]\n"
         "[dim]Intelligent vulnerability-driven patch management[/dim]\n\n"
         "[bold yellow]Specialist Agents:[/bold yellow]\n"
-        "  [red]� VulnePrability Analyst[/red] - CVE analysis, threat assessment, CVSS scoring\n"
-        "  [yellow]�️  Piatch Manager[/yellow] - Infrastructure discovery, patching, health checks, rollback\n"
+        "  [red]� Vulnerability Analyst[/red] - CVE analysis, threat assessment, CVSS scoring\n"
+        "  [yellow]�️  Patch Manager[/yellow] - Infrastructure discovery, patching, health checks, rollback\n"
         "  [blue]📊 Compliance Analyst[/blue] - SLA tracking, audit trails, executive reporting\n"
         "  [bright_yellow]⚙️  AWS Services[/bright_yellow] - Lambda, S3, CloudWatch, RDS, and more\n\n"
         "[bold yellow]Example Prompts:[/bold yellow]\n"
