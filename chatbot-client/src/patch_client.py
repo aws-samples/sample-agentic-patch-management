@@ -78,6 +78,9 @@ class PatchClient:
         Returns:
             Complete agent response text including XML tags
         """
+        import time
+        start_time = time.time()
+        
         payload = json.dumps({"prompt": message}).encode()
         
         from botocore.config import Config
@@ -109,41 +112,59 @@ class PatchClient:
         event_stream = response['response']
         
         try:
-            response_body = event_stream.read().decode('utf-8')
-            lines = response_body.split('\n')
+            buffer = b""
+            text_buffer = ""
+            chunk_size = 4096
             
-            for line in lines:
-                line = line.strip()
-                if not line or not line.startswith('data: '):
-                    continue
+            while True:
+                chunk = event_stream.read(chunk_size)
+                if not chunk:
+                    break
                 
-                json_str = line[6:]
+                buffer += chunk
                 
                 try:
-                    data = json.loads(json_str)
+                    decoded = buffer.decode('utf-8')
+                    text_buffer += decoded
+                    buffer = b""
+                except UnicodeDecodeError:
+                    continue
+                
+                while '\n' in text_buffer:
+                    line, text_buffer = text_buffer.split('\n', 1)
+                    line = line.strip()
                     
-                    if not isinstance(data, dict):
+                    if not line or not line.startswith('data: '):
                         continue
                     
-                    if 'event' in data and 'contentBlockStart' in data['event']:
-                        start = data['event']['contentBlockStart'].get('start', {})
-                        if 'toolUse' in start:
-                            tool_name = start['toolUse'].get('name')
-                            if tool_name and tool_name != current_tool:
-                                status.stop()
-                                current_tool = tool_name
-                                self._print_tool_indicator(tool_name)
-                                status = self.console.status("🤔 Thinking...", spinner="dots")
-                                status.start()
+                    json_str = line[6:]
                     
-                    if 'event' in data and 'contentBlockDelta' in data['event']:
-                        delta = data['event']['contentBlockDelta'].get('delta', {})
-                        if 'text' in delta:
-                            text_content = delta['text']
-                            full_text.append(text_content)
-                
-                except json.JSONDecodeError:
-                    pass
+                    try:
+                        data = json.loads(json_str)
+                        
+                        if not isinstance(data, dict):
+                            continue
+                        
+                        if 'event' in data and 'contentBlockStart' in data['event']:
+                            start = data['event']['contentBlockStart'].get('start', {})
+                            if 'toolUse' in start:
+                                tool_name = start['toolUse'].get('name')
+                                if tool_name and tool_name != current_tool:
+                                    status.stop()
+                                    current_tool = tool_name
+                                    self._print_tool_indicator(tool_name)
+                                    status = self.console.status("🤔 Thinking...", spinner="dots")
+                                    status.start()
+                                    first_content = True
+                        
+                        if 'event' in data and 'contentBlockDelta' in data['event']:
+                            delta = data['event']['contentBlockDelta'].get('delta', {})
+                            if 'text' in delta:
+                                text_content = delta['text']
+                                full_text.append(text_content)
+                    
+                    except json.JSONDecodeError:
+                        pass
         
         except Exception as e:
             import sys
@@ -167,10 +188,14 @@ class PatchClient:
             for tag in ['<answer>', '</answer>', '<thinking>', '</thinking>']:
                 display_text = display_text.replace(tag, '')
         
+        display_text = self._highlight_critical_info(display_text)
+        
         if display_text.strip():
             self.console.print("🤖 [bold cyan]Agent:[/bold cyan]")
             self.console.print(Markdown(display_text.strip()))
         
+        elapsed = time.time() - start_time
+        self.console.print(f"[dim]⏱️  Response time: {elapsed:.1f}s[/dim]")
         self.console.print()
         
         self.conversation_history.append({
@@ -180,6 +205,29 @@ class PatchClient:
         })
         
         return result
+    
+    def _highlight_critical_info(self, text: str) -> str:
+        """Apply syntax highlighting to critical information in response text.
+        
+        Highlights CVE IDs, AWS instance IDs, and severity levels for better
+        visual scanning during demos and presentations.
+        
+        Args:
+            text: Raw markdown text from agent response
+            
+        Returns:
+            Text with Rich markup tags for highlighted elements
+        """
+        import re
+        
+        text = re.sub(r'\b(CVE-\d{4}-\d+)\b', r'**`\1`**', text)
+        text = re.sub(r'\b(i-[a-f0-9]{17})\b', r'`\1`', text)
+        text = re.sub(r'\b(CRITICAL|HIGH|MEDIUM|LOW)\b', r'**\1**', text)
+        text = re.sub(r'\b(prod-[a-z0-9-]+)\b', r'`\1`', text)
+        text = re.sub(r'\b(staging-[a-z0-9-]+)\b', r'`\1`', text)
+        text = re.sub(r'\b(dev-[a-z0-9-]+)\b', r'`\1`', text)
+        
+        return text
     
     def _print_tool_indicator(self, tool_name: str):
         """Display styled indicator when agent invokes a specialist tool.
@@ -197,9 +245,9 @@ class PatchClient:
             'use_aws': ('⚙️  Consulting AWS Services', 'bright_yellow')
         }
         
-        label, color = indicators.get(tool_name, (f'🔧 Consulting {tool_name}', 'white'))
+        label, color = indicators.get(tool_name, (f'🔧 Consulting {tool_name}...', 'white'))
         
-        with self.console.status(f"[bold {color}]{label}...[/bold {color}]", spinner="dots"):
+        with self.console.status(f"[bold {color}]{label}[/bold {color}]", spinner="dots"):
             import time
             time.sleep(0.5)
         
