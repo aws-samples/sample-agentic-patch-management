@@ -54,11 +54,10 @@ class PatchClient:
         
         full_text = []
         current_tool = None
-        buffer = ""
         first_content = True
         status = console.status("[bold cyan]🤔 Thinking...[/bold cyan]", spinner="dots")
         status.start()
-        tool_called = False
+        buffer = ""  # Buffer to handle split XML tags
         
         for line in response['response'].iter_lines():
             if not line:
@@ -84,8 +83,7 @@ class PatchClient:
                             status.stop()
                             current_tool = tool_name
                             self._print_tool_indicator(tool_name)
-                            tool_called = True
-                            # Restart spinner after tool indicator with thinking emoji
+                            # Restart spinner after tool indicator
                             status = console.status("🤔 Thinking...", spinner="dots")
                             status.start()
                 
@@ -102,24 +100,34 @@ class PatchClient:
                         full_text.append(text_content)
                         buffer += text_content
                         
-                        # Strip XML tags
+                        # Check if buffer might contain incomplete XML tag
+                        # Tags can be split like: '<answer' + '>' or '</' + 'answer>'
+                        incomplete_tag_patterns = ['<answer', '</answer', '<thinking', '</thinking', '<', '</']
+                        has_incomplete_tag = any(buffer.endswith(pattern) for pattern in incomplete_tag_patterns)
+                        
+                        if has_incomplete_tag:
+                            # Wait for more chunks to complete the tag
+                            continue
+                        
+                        # Strip complete XML tags from buffer
                         display = buffer
                         for tag in ['<answer>', '</answer>', '<thinking>', '</thinking>']:
                             display = display.replace(tag, '')
                         
-                        # Flush buffer
-                        if len(buffer) > 20 or (display.strip() and not any(t in buffer for t in ['<answer', '</answer', '<thinking', '</thinking'])):
-                            if display.strip():
-                                console.print(display, end='', style="cyan")
-                            buffer = ""
+                        # Print if there's actual content (check stripped, but print original with spaces)
+                        if display.strip():
+                            console.print(display, end='', style="cyan")
+                        
+                        # Clear buffer after printing
+                        buffer = ""
             
             except json.JSONDecodeError:
                 pass
         
         status.stop()
         
-        # Flush remaining
-        if buffer.strip():
+        # Flush any remaining buffer
+        if buffer:
             display = buffer
             for tag in ['<answer>', '</answer>', '<thinking>', '</thinking>']:
                 display = display.replace(tag, '')
@@ -127,6 +135,7 @@ class PatchClient:
                 console.print(display, end='', style="cyan")
         
         console.print()
+        
         result = ''.join(full_text)
         
         self.conversation_history.append({
