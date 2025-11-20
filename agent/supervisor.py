@@ -31,6 +31,8 @@ RESPONSE GUIDELINES (CRITICAL):
 - Maximum 3 columns in tables (ID, Name, Key Info)
 - NO verbose descriptions - be direct
 - NO "Common Attributes" sections - put in table
+- NO conditional statements ("If X, then Y may happen")
+- NO risk assessments without clear recommendations
 - If data is truncated (_truncated: true), just say "Showing X of Y"
 - Target: <500 words per response
 
