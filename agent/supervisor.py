@@ -5,10 +5,10 @@ import time
 import logging
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import tool
+from strands_tools import use_aws
 from vulnerability_agent import gather_vulnerabilities
 from patch_manager import patching_operations
 from compliance_analyst import analyze_compliance
-from tools import use_aws
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -77,7 +77,7 @@ OUTPUT FORMAT:
 def consult_vulnerability_analyst(query: str) -> str:
     """Get vulnerability analysis from security specialist."""
     # Create context object from globals
-    import globals
+    from helper import globals
     from types import SimpleNamespace
     context = SimpleNamespace(memory_id=globals.MEMORY_ID, session_id=globals.SESSION_ID)
     
@@ -89,7 +89,7 @@ def consult_vulnerability_analyst(query: str) -> str:
 def consult_patch_manager(query: str) -> str:
     """Get patch deployment plan from infrastructure specialist."""
     # Create context object from globals
-    import globals
+    from helper import globals
     from types import SimpleNamespace
     context = SimpleNamespace(memory_id=globals.MEMORY_ID, session_id=globals.SESSION_ID)
     
@@ -101,7 +101,7 @@ def consult_patch_manager(query: str) -> str:
 def consult_compliance_analyst(query: str) -> str:
     """Get compliance reporting and audit trail analysis."""
     # Create context object from globals
-    import globals
+    from helper import globals
     from types import SimpleNamespace
     context = SimpleNamespace(memory_id=globals.MEMORY_ID, session_id=globals.SESSION_ID)
     
@@ -112,7 +112,7 @@ def consult_compliance_analyst(query: str) -> str:
 @app.entrypoint
 async def agent_invocation(payload, context):
     """Handler for agent invocation with AgentCore memory integration."""
-    from agent_factory import create_agent
+    from helper.agent_factory import create_agent
     from types import SimpleNamespace
     
     request_start = time.time()

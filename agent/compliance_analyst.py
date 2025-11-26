@@ -1,6 +1,6 @@
 """Compliance Analyst - Reporting and Audit Trail Specialist"""
 
-from tools import query_compliance_reports, use_aws
+from helper.tools import query_compliance_reports
 
 
 SYSTEM_PROMPT = """You are a Compliance Analyst specializing in audit trails and SLA tracking.
@@ -81,12 +81,12 @@ Query: "Show SLA breaches this week"
 
 def analyze_compliance(context):
     """Create compliance analyst agent using factory."""
-    from agent_factory import create_agent
+    from helper.agent_factory import create_agent
     
     return create_agent(
         name="compliance-analyst",
         system_prompt=SYSTEM_PROMPT,
-        tools=[query_compliance_reports, use_aws],
+        tools=[query_compliance_reports],
         context=context,
         max_tokens=6000
     )

@@ -1,6 +1,6 @@
 """Patch Manager - Infrastructure Assessment and Patch Execution"""
 
-from tools import (
+from helper.tools import (
     get_patch_compliance,
     execute_patch_operation,
     get_command_status,
@@ -11,8 +11,7 @@ from tools import (
     verify_and_proceed,
     rollback_patches,
     generate_compliance_report,
-    get_resource_dependencies,
-    use_aws
+    get_resource_dependencies
 )
 
 SYSTEM_PROMPT = """You are a patch management coordinator for EC2 infrastructure.
@@ -149,7 +148,7 @@ Query: "Patch CVE-2024-1234 in dev"
 
 def patching_operations(context):
     """Create patch manager agent using factory."""
-    from agent_factory import create_agent
+    from helper.agent_factory import create_agent
     
     return create_agent(
         name="patch-manager",
@@ -165,8 +164,7 @@ def patching_operations(context):
             verify_and_proceed,
             rollback_patches,
             generate_compliance_report,
-            get_resource_dependencies,
-            use_aws
+            get_resource_dependencies
         ],
         context=context,
         max_tokens=12000
