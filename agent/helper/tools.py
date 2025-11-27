@@ -61,7 +61,8 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
         dict with {sla_hours, source, frameworks, severity} or None if calculation fails
     """
     try:
-        config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.json')
+        # Config is in parent directory: agent/config/config.json
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'config.json')
         with open(config_path, 'r') as f:
             sla_policy = json.load(f)
         
@@ -94,7 +95,8 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
 
 def _normalize_environment(user_input: str) -> str:
     """Map user input to canonical environment tag value."""
-    config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.json')
+    # Config is in parent directory: agent/config/config.json
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'config.json')
     with open(config_path, 'r') as f:
         config = json.load(f)
     
