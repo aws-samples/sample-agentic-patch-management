@@ -84,7 +84,12 @@ def consult_vulnerability_analyst(query: str) -> str:
     context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
     
     # Augment query with context if available
-    enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}" if context_str else query
+    if context_str:
+        logger.info(f"✓ Passing {len(context_str)} chars of context to vulnerability analyst")
+        enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
+    else:
+        logger.info("No context available for vulnerability analyst")
+        enhanced_query = query
     
     # Create stateless agent (no memory)
     context = SimpleNamespace(memory_id=None, session_id=globals.SESSION_ID)
@@ -103,7 +108,12 @@ def consult_patch_manager(query: str) -> str:
     context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
     
     # Augment query with context if available
-    enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}" if context_str else query
+    if context_str:
+        logger.info(f"✓ Passing {len(context_str)} chars of context to patch manager")
+        enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
+    else:
+        logger.info("No context available for patch manager")
+        enhanced_query = query
     
     # Create stateless agent (no memory)
     context = SimpleNamespace(memory_id=None, session_id=globals.SESSION_ID)
@@ -122,7 +132,12 @@ def consult_compliance_analyst(query: str) -> str:
     context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
     
     # Augment query with context if available
-    enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}" if context_str else query
+    if context_str:
+        logger.info(f"✓ Passing {len(context_str)} chars of context to compliance analyst")
+        enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
+    else:
+        logger.info("No context available for compliance analyst")
+        enhanced_query = query
     
     # Create stateless agent (no memory)
     context = SimpleNamespace(memory_id=None, session_id=globals.SESSION_ID)
@@ -135,22 +150,19 @@ async def agent_invocation(payload, context):
     """Handler for agent invocation with AgentCore memory integration."""
     from helper.agent_factory import create_agent
     from types import SimpleNamespace
-    import yaml
-    import os
     
     request_start = time.time()
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
     logger.info(f"New request: {user_message[:100]}")
     
-    # Load memory_id from config
-    config_path = os.path.join(os.path.dirname(__file__), '.bedrock_agentcore.yaml')
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    # Hardcoded memory_id (updated by reset_memory.py script)
+    memory_id = "intelligent_patch_automation_mem_20251201082153-7vnwoX2u3G"
     
-    memory_id = config['agents']['intelligent_patch_automation']['memory']['memory_id']
+    logger.info(f"✓ Memory enabled: {memory_id}")
+    logger.info(f"Session ID: {context.session_id}")
     
-    # Create context with memory_id from config
+    # Create context with memory_id
     agent_context = SimpleNamespace(
         memory_id=memory_id,
         session_id=context.session_id
