@@ -76,37 +76,58 @@ OUTPUT FORMAT:
 @tool
 def consult_vulnerability_analyst(query: str) -> str:
     """Get vulnerability analysis from security specialist."""
-    # Create context object from globals
     from helper import globals
+    from helper.context_helper import get_relevant_context
     from types import SimpleNamespace
-    context = SimpleNamespace(memory_id=globals.MEMORY_ID, session_id=globals.SESSION_ID)
     
+    # Get recent context from supervisor's memory
+    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
+    
+    # Augment query with context if available
+    enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}" if context_str else query
+    
+    # Create stateless agent (no memory)
+    context = SimpleNamespace(memory_id=None, session_id=globals.SESSION_ID)
     vuln_agent = gather_vulnerabilities(context)
-    result = vuln_agent(query)
+    result = vuln_agent(enhanced_query)
     return result.message['content'][0]['text']
 
 @tool
 def consult_patch_manager(query: str) -> str:
     """Get patch deployment plan from infrastructure specialist."""
-    # Create context object from globals
     from helper import globals
+    from helper.context_helper import get_relevant_context
     from types import SimpleNamespace
-    context = SimpleNamespace(memory_id=globals.MEMORY_ID, session_id=globals.SESSION_ID)
     
+    # Get recent context from supervisor's memory
+    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
+    
+    # Augment query with context if available
+    enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}" if context_str else query
+    
+    # Create stateless agent (no memory)
+    context = SimpleNamespace(memory_id=None, session_id=globals.SESSION_ID)
     patch_agent = patching_operations(context)
-    result = patch_agent(query)
+    result = patch_agent(enhanced_query)
     return result.message['content'][0]['text']
 
 @tool
 def consult_compliance_analyst(query: str) -> str:
     """Get compliance reporting and audit trail analysis."""
-    # Create context object from globals
     from helper import globals
+    from helper.context_helper import get_relevant_context
     from types import SimpleNamespace
-    context = SimpleNamespace(memory_id=globals.MEMORY_ID, session_id=globals.SESSION_ID)
     
+    # Get recent context from supervisor's memory
+    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
+    
+    # Augment query with context if available
+    enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}" if context_str else query
+    
+    # Create stateless agent (no memory)
+    context = SimpleNamespace(memory_id=None, session_id=globals.SESSION_ID)
     compliance_agent = analyze_compliance(context)
-    result = compliance_agent(query)
+    result = compliance_agent(enhanced_query)
     return result.message['content'][0]['text']
 
 @app.entrypoint
@@ -114,15 +135,24 @@ async def agent_invocation(payload, context):
     """Handler for agent invocation with AgentCore memory integration."""
     from helper.agent_factory import create_agent
     from types import SimpleNamespace
+    import yaml
+    import os
     
     request_start = time.time()
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
     logger.info(f"New request: {user_message[:100]}")
     
+    # Load memory_id from config
+    config_path = os.path.join(os.path.dirname(__file__), '.bedrock_agentcore.yaml')
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    memory_id = config['agents']['intelligent_patch_automation']['memory']['memory_id']
+    
     # Create context with memory_id from config
     agent_context = SimpleNamespace(
-        memory_id="intelligent_patch_automation_mem-La8v5RAIoS",
+        memory_id=memory_id,
         session_id=context.session_id
     )
     
