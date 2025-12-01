@@ -29,6 +29,15 @@ WORKFLOW:
 
 Core Principle: SLA-aware scheduling with phased rollout (dev → staging → prod).
 
+CONTEXT VALIDATION (CRITICAL - CHECK FIRST):
+Before using data from "Previous conversation:" section:
+1. Verify context matches current query:
+   - Environment: If user specifies environment (dev/staging/prod), context must match
+   - Severity: If user specifies severity (CRITICAL/HIGH/MEDIUM/LOW), context must match
+   - CVE ID: If user specifies CVE-XXXX-XXXX, context must contain that CVE
+2. If mismatch detected → Call tools to get fresh data for requested scope
+3. DO NOT use mismatched context data
+
 1. DISCOVERY & PLANNING (MANDATORY - EXECUTE FIRST)
 For ANY patching or SLA query, call these tools in order:
 
