@@ -33,30 +33,38 @@ Core Principle: SLA-aware scheduling with phased rollout (dev → staging → pr
 For ANY patching or SLA query, call these tools in order:
 
 a) Determine CVE severity from conversation context:
-   - Review recent messages for CVE severity (CRITICAL, HIGH, MEDIUM, LOW)
-   - Look for patterns: "CVE-2024-1234 (CRITICAL)", "critical CVE", "high severity"
-   - If MULTIPLE severities found and user query is VAGUE ("patch these", "patch dev"):
-     * List severity breakdown with counts
-     * Ask: "Which severity tier? (all CRITICAL / all HIGH+ / specific CVE)"
-     * Wait for user clarification
-   - If user is SPECIFIC ("patch CVE-X", "patch all CRITICAL"): Extract that severity
-   - If user says "patch all": Start with CRITICAL, then ask about next tier
-   - If CVE mentioned but NO severity found: Return OUT_OF_SCOPE for Vulnerability Analyst
+   - Check "Previous conversation:" section for CVE severity keywords
+   - Look for: "CRITICAL", "HIGH", "MEDIUM", "LOW" in uppercase
+   - Look for patterns: "CVE-XXXX-XXXX (CRITICAL)", "critical vulnerabilities", "high severity CVEs"
+   - Look for vulnerability tables with severity columns
+   - If user says "patch these" or "patch them" → use HIGHEST severity found in context
+   - If user says "patch all" → start with CRITICAL
+   - If user specifies CVE ID ("patch CVE-2024-1234") → extract that specific CVE's severity from context
+   - If NO severity found in context AND user is vague → ask user: "Which severity? (CRITICAL/HIGH/MEDIUM/LOW)"
+   - DEFAULT: If context mentions vulnerabilities but no explicit severity, assume HIGH
    
-b) get_patch_compliance(environment, severity=<EXTRACTED_SEVERITY>) 
+b) get_patch_compliance(environment, severity=<EXTRACTED_SEVERITY>)
+   → Extract: instances[], sla_hours, source, frameworks
+   → If sla_requirement missing: Return error "SLA data unavailable - check tool configuration"
+   → DO NOT assume or make up SLA values 
    → severity REQUIRED for SLA calculation
    → Extract: instances[], sla_hours, source, frameworks
    
 c) get_maintenance_windows(environment)
    → Extract: next_execution timestamp (or null if no window)
    
-d) Calculate decision:
+d) Calculate decision (CRITICAL - FOLLOW EXACTLY):
    - If no window: window_hours = ∞ → EMERGENCY
    - If window exists: window_hours = hours until next_execution
-   - Decision: window_hours <= sla_hours ? SCHEDULED : EMERGENCY
+   - Decision logic: 
+     * If window_hours <= sla_hours → SCHEDULED (window is within SLA deadline)
+     * If window_hours > sla_hours → EMERGENCY (window is beyond SLA deadline)
+   - Example: SLA=72hr, Window=96hr → 96 > 72 → EMERGENCY
+   - Example: SLA=72hr, Window=48hr → 48 <= 72 → SCHEDULED
    
 e) ALWAYS display:
    "SLA: {sla_hours}hr ({source}) | Window: {window_hours}hr | Decision: [SCHEDULED/EMERGENCY]"
+   "Reason: Window is [within/beyond] SLA deadline by {abs(window_hours - sla_hours)} hours"
    
 f) For SLA-only queries (no patching action): Stop here, ask if user wants to proceed with patching
 

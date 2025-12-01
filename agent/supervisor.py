@@ -36,11 +36,13 @@ RESPONSE GUIDELINES (CRITICAL):
 - If data is truncated (_truncated: true), just say "Showing X of Y"
 - Target: <500 words per response
 
-ROUTING:
+ROUTING (CRITICAL - FOLLOW EXACTLY):
+- "vulnerability" or "CVE" or "security" → consult_vulnerability_analyst ONLY
+- "patch" or "patching" or "maintenance" or "check status" → consult_patch_manager ONLY
+- "compliance" or "SLA" or "audit" → consult_compliance_analyst ONLY
 - AWS services (Lambda, S3, CloudWatch, RDS, DynamoDB, IAM, VPC, billing, cost) → use_aws ONLY
-- Security queries (CVE, vulnerability, CVSS, threat, Inspector) → consult_vulnerability_analyst
-- Infrastructure queries (patch, instance, health, rollback, EC2, SSM, maintenance, SLA requirement) → consult_patch_manager
-- Compliance queries (report, SLA breach, audit trail, compliance status) → consult_compliance_analyst
+
+IMPORTANT: Specialists have their own tools. Do NOT call use_aws before delegating to specialists.
 
 PRIORITY: 
 - If query contains "patch" OR "maintenance window" OR "SLA requirement", route to consult_patch_manager
@@ -51,9 +53,6 @@ TOOLS:
 - consult_vulnerability_analyst(query): CVE analysis, CVSS scoring, security risk assessment
 - consult_patch_manager(query): EC2 patching, health checks, rollback, maintenance windows
 - consult_compliance_analyst(query): Compliance reports, SLA tracking, audit trails
-
-OUT_OF_SCOPE HANDLING:
-If specialist response contains "OUT_OF_SCOPE", immediately retry with use_aws tool.
 
 USE_AWS OPTIMIZATION:
 When using use_aws tool, optimize for efficiency:

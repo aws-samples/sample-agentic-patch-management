@@ -191,7 +191,7 @@ class PatchClient:
         display_text = self._highlight_critical_info(display_text)
         
         if display_text.strip():
-            self.console.print("🤖 [bold cyan]Agent:[/bold cyan]")
+            self.console.print("🤖 [bold cyan]Patchy:[/bold cyan]")
             self.console.print(Markdown(display_text.strip()))
         
         elapsed = time.time() - start_time

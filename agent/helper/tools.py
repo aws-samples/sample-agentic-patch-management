@@ -61,8 +61,11 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
         dict with {sla_hours, source, frameworks, severity} or None if calculation fails
     """
     try:
+        logger.info(f"Calculating SLA for frameworks={frameworks}, severity={severity}")
         # Config is in parent directory: agent/config/config.json
         config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'config.json')
+        logger.info(f"Reading config from: {config_path}")
+        
         with open(config_path, 'r') as f:
             sla_policy = json.load(f)
         
@@ -74,6 +77,7 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
             for framework in frameworks:
                 if framework in sla_policy.get('frameworks', {}):
                     framework_sla = sla_policy['frameworks'][framework].get(severity.upper())
+                    logger.info(f"Framework {framework} has SLA: {framework_sla} hours for {severity}")
                     if framework_sla and (sla_hours is None or framework_sla < sla_hours):
                         sla_hours = framework_sla
                         source_framework = framework
@@ -82,15 +86,18 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
         if sla_hours is None:
             sla_hours = sla_policy.get('default', {}).get(severity.upper(), 24)
             source_framework = "default"
+            logger.info(f"Using default SLA: {sla_hours} hours for {severity}")
         
-        return {
+        result = {
             "sla_hours": sla_hours,
             "frameworks": frameworks,
             "source": source_framework,
             "severity": severity.upper()
         }
+        logger.info(f"SLA calculation result: {result}")
+        return result
     except Exception as e:
-        logger.warning(f"Could not calculate SLA: {e}")
+        logger.error(f"Could not calculate SLA: {e}", exc_info=True)
         return None
 
 def _normalize_environment(user_input: str) -> str:
