@@ -36,31 +36,39 @@ RESPONSE GUIDELINES (CRITICAL):
 - If data is truncated (_truncated: true), just say "Showing X of Y"
 - Target: <500 words per response
 
-ROUTING (CRITICAL - FOLLOW EXACTLY):
-- "vulnerability" or "CVE" or "security" → consult_vulnerability_analyst ONLY
-- "patch" or "patching" or "maintenance" or "check status" → consult_patch_manager ONLY
-- "SLA" or "audit" → consult_compliance_analyst ONLY
-- "compliance framework" or AWS services (Lambda, S3, CloudWatch, RDS, DynamoDB, IAM, VPC, billing, cost) → use_aws ONLY
+ROUTING PRIORITY:
+1. FIRST: Identify user's primary intent from current query
+2. SECOND: Check conversation history for supporting context as long as it doesn't cause conflict of information like mismatched environment
+3. Route to specialist based on intent (not just context availability): 
 
-CONTEXT AWARENESS:
-If user says "patch these/those" or "these CVEs" and mentions a DIFFERENT environment than in recent context:
-- Ask for clarification: "I see vulnerabilities from [environment Y] in our conversation. Do you want to:
-  1. Patch those same CVEs in [environment X], or
-  2. Get [environment X]'s current vulnerabilities first?"
-- Wait for user response before proceeding
-Example: Context has prod CVEs, user says "patch these in dev" → ask which option they want
+consult_vulnerability_analyst:
+- Analyze security vulnerabilities, CVEs, CVSS scores
+- Assess risk and blast radius
+- Identify affected instances
 
-IMPORTANT: Specialists have their own tools. Do NOT call use_aws before delegating to specialists.
+consult_patch_manager:
+- Plan or execute patching operations
+- Check maintenance windows and SLA requirements
+- Verify instance health, rollback patches
+- Determine when to patch
+- Handle "yes/proceed/continue" after patch recommendations
 
-PRIORITY: 
-- If query contains "patch" OR "maintenance window" OR "SLA requirement", route to consult_patch_manager
-- If query contains "SLA breach" OR "compliance report", route to consult_compliance_analyst
+consult_compliance_analyst:
+- Review compliance reports and audit trails
+- Analyze SLA breaches and trends
+- Generate executive summaries
 
-TOOLS:
-- use_aws(service, operation, parameters): Direct AWS API calls
+use_aws:
+- Direct AWS service queries (Lambda, S3, billing, etc.)
+- ONLY when query is NOT about vulnerabilities, patching, or compliance
+
+Rule: If query involves vulnerabilities/patching/compliance, delegate to specialist even if AWS services mentioned.
+
+TOOLS (specialists automatically receive conversation context):
 - consult_vulnerability_analyst(query): CVE analysis, CVSS scoring, security risk assessment
-- consult_patch_manager(query): EC2 patching, health checks, rollback, maintenance windows
+- consult_patch_manager(query): EC2 patching, health checks, rollback, maintenance windows (receives vulnerability context)
 - consult_compliance_analyst(query): Compliance reports, SLA tracking, audit trails
+- use_aws(service, operation, parameters): Direct AWS API calls
 
 USE_AWS OPTIMIZATION:
 When using use_aws tool, optimize for efficiency:
@@ -70,9 +78,7 @@ When using use_aws tool, optimize for efficiency:
 - Example: describe_instances with Filters instead of multiple describe_instances calls
 
 EXECUTION:
-- Call one tool at a time
 - Trust specialist responses
-- For "proceed" or "continue" commands, delegate to patch_manager (handles phased rollout state)
 
 OUTPUT FORMAT:
 - Lead with status/summary in CAPS or with emoji (✅ ⚠️ ❌)
@@ -164,7 +170,7 @@ async def agent_invocation(payload, context):
     logger.info(f"New request: {user_message[:100]}")
     
     # Hardcoded memory_id (updated by reset_memory.py script)
-    memory_id = "intelligent_patch_automation_mem_20251201082153-7vnwoX2u3G"
+    memory_id = "intelligent_patch_automation_mem_20251201144427-55J3BSGwvF"
     
     logger.info(f"✓ Memory enabled: {memory_id}")
     logger.info(f"Session ID: {context.session_id}")

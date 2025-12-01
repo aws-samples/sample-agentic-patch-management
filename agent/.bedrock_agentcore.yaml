@@ -30,9 +30,9 @@ agents:
       source_bucket: bedrock-agentcore-codebuild-sources-125140434174-us-east-1
     memory:
       mode: STM_ONLY
-      memory_id: intelligent_patch_automation_mem_20251201082153-7vnwoX2u3G
-      memory_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:memory/intelligent_patch_automation_mem_20251201082153-7vnwoX2u3G
-      memory_name: intelligent_patch_automation_mem_20251201082153
+      memory_id: intelligent_patch_automation_mem_20251201144427-55J3BSGwvF
+      memory_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:memory/intelligent_patch_automation_mem_20251201144427-55J3BSGwvF
+      memory_name: intelligent_patch_automation_mem_20251201144427
       event_expiry_days: 7
       first_invoke_memory_check_done: true
       was_created_by_toolkit: false
