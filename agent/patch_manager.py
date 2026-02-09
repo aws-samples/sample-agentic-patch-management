@@ -113,6 +113,9 @@ CRITICAL RULES:
 - NEVER skip health checks after EMERGENCY patching
 - NEVER skip compliance report generation
 - ALWAYS use execution_mode based on decision ("scheduled" or "immediate")
+- NEVER fabricate, invent, or assume data — ALL IDs, statuses, counts, and results MUST come from tool responses
+- If a tool was not called, you do NOT have that data — do not make it up
+- If the query is missing required information (environment, CVE ID, severity), ASK the user — do not guess
 
 ENVIRONMENT PRIORITY:
 1. Check current query for environment
