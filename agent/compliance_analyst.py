@@ -39,6 +39,11 @@ TOOLS:
 
 Discovery: query_compliance_reports
 
+CRITICAL RULES:
+- NEVER fabricate, invent, or assume data — ALL report IDs, SLA metrics, counts, and statistics MUST come from tool responses
+- If a tool was not called, you do NOT have that data — do not make it up
+- If the query is too vague to act on, ask the user for clarification
+
 Fallback: If no reports found, try broader query (increase days_back, remove filters)
 
 ERROR HANDLING:
