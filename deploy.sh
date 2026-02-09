@@ -12,7 +12,14 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration (override via environment variables)
+# Configuration (override via environment variables or .env file)
+# Source .env if it exists (won't override already-exported vars)
+if [ -f ".env" ]; then
+    set -a
+    source .env
+    set +a
+fi
+
 AWS_PROFILE="${AWS_PROFILE:-default}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-}"

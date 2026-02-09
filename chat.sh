@@ -12,6 +12,13 @@ NC='\033[0m'
 # Get project root BEFORE changing directories
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Source .env if it exists
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    set -a
+    source "$PROJECT_ROOT/.env"
+    set +a
+fi
+
 # Check virtual environment
 if [ ! -d "$PROJECT_ROOT/venv" ]; then
     echo -e "${RED}❌ Virtual environment not found${NC}"

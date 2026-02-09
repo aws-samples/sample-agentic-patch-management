@@ -88,26 +88,37 @@ When a critical vulnerability is discovered, this system automatically:
 git clone <repository-url>
 cd reinvent25-cop407-agentic-patch-management
 
-# 2. Configure environment
-export AWS_PROFILE=<your-profile>
-export AWS_REGION=us-east-1
+# 2. Create your .env file
+cp .env.example .env
+# Edit .env — set AWS_PROFILE and AWS_REGION
 
-# 3. Deploy infrastructure (first time only — see Deployment section below)
-export AGENTCORE_ROLE_ARN=<your-agentcore-role-arn>
-./deploy.sh infra
-
-# 4. Deploy agent
+# 3. Deploy agent first (creates the AgentCore role)
 ./deploy.sh agent
 
-# 5. Chat with the agent
+# 4. Get your AgentCore role ARN and add it to .env
+aws iam list-roles \
+  --query 'Roles[?starts_with(RoleName,`AmazonBedrockAgentCoreSDKRuntime`)].Arn' \
+  --output text
+# Paste the ARN into .env as AGENTCORE_ROLE_ARN=...
+
+# 5. Deploy infrastructure
+./deploy.sh infra
+
+# 6. Chat with the agent
 ./chat.sh
 ```
 
 ## Deployment
 
-### Environment Variables
+### Configuration via .env
 
-The solution uses environment variables instead of hardcoded values. Set these before deploying:
+Both `deploy.sh` and `chat.sh` auto-source a `.env` file from the project root — no manual exports needed.
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your values:
 
 | Variable | Required For | How to Get It |
 |----------|-------------|---------------|
@@ -115,7 +126,9 @@ The solution uses environment variables instead of hardcoded values. Set these b
 | `AWS_REGION` | All commands | Defaults to `us-east-1` if not set |
 | `AGENTCORE_ROLE_ARN` | `./deploy.sh infra` | See below |
 
-**Account ID and region are auto-discovered** at runtime via `sts:GetCallerIdentity` and CDK environment resolution — you never need to set them explicitly.
+Environment variables still work as overrides — `export AWS_PROFILE=foo` takes precedence over `.env`.
+
+**Account ID is auto-discovered** at runtime via `sts:GetCallerIdentity` — you never set it.
 
 ### Finding Your AgentCore Role ARN
 
@@ -134,8 +147,7 @@ If you haven't deployed the agent yet, deploy the agent first (`./deploy.sh agen
 Deploys 4 stacks: Networking (VPC), Security (IAM, SGs, S3, Config), AgentCore Permissions, and Sample Environment (15 EC2 instances).
 
 ```bash
-export AWS_PROFILE=<your-profile>
-export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/AmazonBedrockAgentCoreSDKRuntime-<region>-<suffix>
+# Ensure AGENTCORE_ROLE_ARN is set in .env
 ./deploy.sh infra
 ```
 
@@ -146,15 +158,13 @@ The `AGENTCORE_ROLE_ARN` is needed so CDK can grant the AgentCore runtime S3 wri
 Builds and deploys the agent container via CodeBuild (ARM64). No local Docker required.
 
 ```bash
-export AWS_PROFILE=<your-profile>
 ./deploy.sh agent
 ```
 
 ### Deploy Everything
 
 ```bash
-export AWS_PROFILE=<your-profile>
-export AGENTCORE_ROLE_ARN=<your-agentcore-role-arn>
+# Ensure AGENTCORE_ROLE_ARN is set in .env
 ./deploy.sh all
 ```
 
@@ -172,11 +182,12 @@ S3 buckets have `removalPolicy: RETAIN` — they persist after stack deletion to
 
 ### Recommended First-Time Deploy Order
 
-1. `./deploy.sh agent` — creates the AgentCore runtime and role
-2. Get the role ARN: `aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text`
-3. `export AGENTCORE_ROLE_ARN=<arn-from-step-2>`
-4. `./deploy.sh infra` — deploys VPC, security, permissions, and sample EC2 instances
-5. `./chat.sh` — start chatting
+1. `cp .env.example .env` — set `AWS_PROFILE` and `AWS_REGION`
+2. `./deploy.sh agent` — creates the AgentCore runtime and role
+3. Get the role ARN: `aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text`
+4. Add `AGENTCORE_ROLE_ARN=<arn>` to `.env`
+5. `./deploy.sh infra` — deploys VPC, security, permissions, and sample EC2 instances
+6. `./chat.sh` — start chatting
 
 ## Chat Client
 
