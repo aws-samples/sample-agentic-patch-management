@@ -73,6 +73,14 @@ When a critical vulnerability is discovered, this system automatically:
 - **Compliance Reporting**: Automated audit trails with SLA tracking stored in S3
 - **Natural Language**: No rigid commands, just conversational queries
 
+## Prerequisites
+
+- Python 3.9+
+- Node.js 18+ (for CDK infrastructure)
+- AWS CLI v2 configured with a named profile
+- Bedrock AgentCore CLI (`pip install bedrock-agentcore`)
+- AWS account with Bedrock model access enabled (Claude Sonnet 4.5)
+
 ## Quick Start
 
 ```bash
@@ -80,24 +88,95 @@ When a critical vulnerability is discovered, this system automatically:
 git clone <repository-url>
 cd reinvent25-cop407-agentic-patch-management
 
-# 2. Configure AWS profile
+# 2. Configure environment
 export AWS_PROFILE=<your-profile>
+export AWS_REGION=us-east-1
 
-# 3. Deploy infrastructure (first time only)
+# 3. Deploy infrastructure (first time only — see Deployment section below)
+export AGENTCORE_ROLE_ARN=<your-agentcore-role-arn>
 ./deploy.sh infra
 
 # 4. Deploy agent
 ./deploy.sh agent
 
-# 5. Use the chat client (recommended)
+# 5. Chat with the agent
 ./chat.sh
-
-# 6. Or invoke directly
-cd agent
-agentcore invoke '{"prompt": "How many EC2 instances do I have?"}'
 ```
 
-**Prerequisites**: Python 3.9+, AWS CLI, Bedrock AgentCore CLI, AWS account with SSM-managed instances
+## Deployment
+
+### Environment Variables
+
+The solution uses environment variables instead of hardcoded values. Set these before deploying:
+
+| Variable | Required For | How to Get It |
+|----------|-------------|---------------|
+| `AWS_PROFILE` | All commands | `aws configure --profile <name>` |
+| `AWS_REGION` | All commands | Defaults to `us-east-1` if not set |
+| `AGENTCORE_ROLE_ARN` | `./deploy.sh infra` | See below |
+
+**Account ID and region are auto-discovered** at runtime via `sts:GetCallerIdentity` and CDK environment resolution — you never need to set them explicitly.
+
+### Finding Your AgentCore Role ARN
+
+The AgentCore role is created when you first run `agentcore launch`. If you've already deployed the agent once:
+
+```bash
+aws iam list-roles \
+  --query 'Roles[?starts_with(RoleName,`AmazonBedrockAgentCoreSDKRuntime`)].Arn' \
+  --output text --profile <your-profile>
+```
+
+If you haven't deployed the agent yet, deploy the agent first (`./deploy.sh agent`), then get the role ARN and deploy infra.
+
+### Deploy Infrastructure (CDK)
+
+Deploys 4 stacks: Networking (VPC), Security (IAM, SGs, S3, Config), AgentCore Permissions, and Sample Environment (15 EC2 instances).
+
+```bash
+export AWS_PROFILE=<your-profile>
+export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/AmazonBedrockAgentCoreSDKRuntime-<region>-<suffix>
+./deploy.sh infra
+```
+
+The `AGENTCORE_ROLE_ARN` is needed so CDK can grant the AgentCore runtime S3 write access (compliance reports) and attach the patch automation IAM policy.
+
+### Deploy Agent (AgentCore)
+
+Builds and deploys the agent container via CodeBuild (ARM64). No local Docker required.
+
+```bash
+export AWS_PROFILE=<your-profile>
+./deploy.sh agent
+```
+
+### Deploy Everything
+
+```bash
+export AWS_PROFILE=<your-profile>
+export AGENTCORE_ROLE_ARN=<your-agentcore-role-arn>
+./deploy.sh all
+```
+
+### Tear Down
+
+```bash
+# Destroy demo instances only (keeps VPC, IAM, S3)
+./deploy.sh destroy
+
+# Destroy everything (full cleanup)
+./deploy.sh destroy-all
+```
+
+S3 buckets have `removalPolicy: RETAIN` — they persist after stack deletion to preserve compliance data.
+
+### Recommended First-Time Deploy Order
+
+1. `./deploy.sh agent` — creates the AgentCore runtime and role
+2. Get the role ARN: `aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text`
+3. `export AGENTCORE_ROLE_ARN=<arn-from-step-2>`
+4. `./deploy.sh infra` — deploys VPC, security, permissions, and sample EC2 instances
+5. `./chat.sh` — start chatting
 
 ## Chat Client
 
@@ -399,7 +478,9 @@ Stored in CloudWatch (real-time) and S3 (`decisions/YYYY/MM/DD/{agent}/{uuid}.js
 Query with CloudWatch Insights, Athena, or your existing tools (Splunk, Datadog).  
 See `doc/observability.md` for query examples.
 
----### AWS Profile & Runtime
+---
+
+### AWS Profile & Runtime
 
 **AWS Profile**: Configure with `aws configure --profile <your-profile>`
 
