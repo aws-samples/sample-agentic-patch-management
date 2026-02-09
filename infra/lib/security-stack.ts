@@ -267,20 +267,12 @@ export class SecurityStack extends cdk.Stack {
     });
 
     // Grant AgentCore write access to compliance reports bucket
-    // Note: Update this ARN to match your AgentCore runtime role after deployment
-    // You can find it via: aws iam list-roles --query "Roles[?contains(RoleName, 'AgentCore')]"
+    // Uses IAM role grant instead of bucket policy to avoid "policy already exists" errors on redeploy
     const agentCoreRoleArn = this.node.tryGetContext('agentCoreRoleArn') 
-      || `arn:aws:iam::${cdk.Stack.of(this).account}:role/AmazonBedrockAgentCoreSDKRuntime-${cdk.Stack.of(this).region}-*`;
+      || `arn:aws:iam::${cdk.Stack.of(this).account}:role/AmazonBedrockAgentCoreSDKRuntime-${cdk.Stack.of(this).region}-a154b39750`;
     
-    complianceReportsBucket.addToResourcePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      principals: [new iam.ArnPrincipal(agentCoreRoleArn)],
-      actions: ['s3:PutObject', 's3:GetObject', 's3:ListBucket'],
-      resources: [
-        complianceReportsBucket.bucketArn,
-        `${complianceReportsBucket.bucketArn}/*`
-      ]
-    }));
+    const agentCoreRole = iam.Role.fromRoleArn(this, 'AgentCoreRuntimeRole', agentCoreRoleArn);
+    complianceReportsBucket.grantReadWrite(agentCoreRole);
 
     new cdk.CfnOutput(this, 'ComplianceReportsBucketName', {
       value: complianceReportsBucket.bucketName,

@@ -25,52 +25,36 @@ class DecisionLogger:
         
         Args:
             agent_name: Name of the agent making decisions
-            s3_bucket: S3 bucket for audit trail (optional, will try to discover)
+            s3_bucket: S3 bucket for audit trail (optional, will use compliance reports bucket)
         """
         self.agent_name = agent_name
-        self.s3_client = boto3.client('s3')
+        self.s3_client = boto3.client('s3', region_name='us-east-1')
         
-        # Try to discover S3 bucket if not provided
+        # Use provided bucket or discover the compliance reports bucket
         if s3_bucket:
             self.s3_bucket = s3_bucket
         else:
-            self.s3_bucket = self._discover_audit_bucket()
+            self.s3_bucket = self._discover_compliance_bucket()
     
-    def _discover_audit_bucket(self) -> Optional[str]:
+    def _discover_compliance_bucket(self) -> Optional[str]:
         """
-        Discover the audit bucket from CloudFormation exports or tags.
+        Discover the compliance reports bucket using the same logic as tools.py.
         
         Returns:
             Bucket name or None if not found
         """
         try:
-            # Try to find bucket with specific tag
-            s3 = boto3.client('s3')
-            response = s3.list_buckets()
+            sts_client = boto3.client('sts', region_name='us-east-1')
+            account_id = sts_client.get_caller_identity()['Account']
+            bucket_name = f'patch-compliance-reports-{account_id}'
             
-            for bucket in response['Buckets']:
-                bucket_name = bucket['Name']
-                try:
-                    tags = s3.get_bucket_tagging(Bucket=bucket_name)
-                    for tag in tags.get('TagSet', []):
-                        if tag['Key'] == 'Purpose' and tag['Value'] == 'AgentDecisionAudit':
-                            logger.info(f"Discovered audit bucket: {bucket_name}")
-                            return bucket_name
-                except ClientError:
-                    # Bucket doesn't have tags, skip
-                    continue
-            
-            # Fallback: look for bucket with 'decision' in name
-            for bucket in response['Buckets']:
-                if 'decision' in bucket['Name'].lower() or 'audit' in bucket['Name'].lower():
-                    logger.info(f"Using fallback audit bucket: {bucket['Name']}")
-                    return bucket['Name']
-            
-            logger.warning("No audit bucket found. S3 logging disabled.")
-            return None
+            # Verify bucket exists
+            self.s3_client.head_bucket(Bucket=bucket_name)
+            logger.info(f"Using compliance reports bucket for decisions: {bucket_name}")
+            return bucket_name
             
         except Exception as e:
-            logger.warning(f"Failed to discover audit bucket: {e}")
+            logger.warning(f"Could not find compliance reports bucket: {e}. S3 decision logging disabled.")
             return None
     
     def log_decision(
@@ -130,8 +114,8 @@ class DecisionLogger:
             dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
             date_path = dt.strftime('%Y/%m/%d')
             
-            # S3 key: decisions/YYYY/MM/DD/{decision_id}.json
-            s3_key = f"decisions/{date_path}/{log_entry['decision_id']}.json"
+            # S3 key: decisions/YYYY/MM/DD/{agent}/{decision_id}.json
+            s3_key = f"decisions/{date_path}/{log_entry['agent']}/{log_entry['decision_id']}.json"
             
             self.s3_client.put_object(
                 Bucket=self.s3_bucket,

@@ -64,10 +64,12 @@ When a critical vulnerability is discovered, this system automatically:
 
 - **SLA-Aware Patching**: Automatic compliance-based decisions (PCI-DSS, SOC2, HIPAA)
 - **Risk-Based Scheduling**: EMERGENCY vs SCHEDULED patching based on maintenance windows
+- **Policy Enforcement**: Customer-configurable constraints (time windows, batch limits, approval requirements)
 - **Intelligent Routing**: Keyword-based specialist selection with fallback logic
 - **Phased Rollout**: dev → staging → prod with approval gates
 - **Health Monitoring**: Two-layer checks (infrastructure + application via CloudWatch alarms)
 - **Automated Rollback**: User-approved rollback with health verification
+- **Decision Transparency**: All decisions logged to CloudWatch + S3 for audit
 - **Compliance Reporting**: Automated audit trails with SLA tracking stored in S3
 - **Natural Language**: No rigid commands, just conversational queries
 
@@ -96,13 +98,13 @@ Lightweight Python client using boto3 to communicate directly with the Bedrock A
 ### Interactive Mode
 ```bash
 ./chat.sh                    # Start interactive chat
-./chat.sh -p ri25-demo       # Use specific AWS profile
+./chat.sh -p <your-profile>  # Use specific AWS profile
 ```
 
 ### Single Message Mode
 ```bash
 ./chat.sh -m "What vulnerabilities do we have?"
-./chat.sh -m "Handle CVE-2025-38527" -p ri25-demo
+./chat.sh -m "Handle CVE-2025-38527" -p <your-profile>
 ```
 
 ### Features
@@ -132,7 +134,7 @@ You: What critical vulnerabilities do we have?
 ### ✅ Core Capabilities
 - **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
 - **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
-- **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying
+- **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying — all with structured error responses
 - **Fallback Tool**: use_aws for any AWS service with automatic pagination support
 - **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
@@ -145,13 +147,14 @@ You: What critical vulnerabilities do we have?
 - **Compliance Reporting**: Automated audit trail generation with S3 storage and queryable reports
 - **Executive Reporting**: Compliance analyst for CISO/CRO/CTO queries (SLA breaches, team performance, trends)
 - **AWS Config Integration**: Resource dependency tracking and relationship discovery
-- **Error Handling**: Graceful degradation when specialists fail
+- **Structured Error Recovery**: Classified error responses (RETRYABLE, SKIP, ABORT) with agent-driven recovery
+- **Decision Audit Trail**: Every routing, SLA, and error recovery decision logged to CloudWatch + S3
 - **Observability**: AgentCore native observability with CloudWatch Logs, X-Ray tracing, and GenAI Dashboard
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
 - **Security Stack**: Security groups, IAM roles, AWS Config, S3 compliance reports bucket
-- **Demo Stack**: 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows
+- **Sample Environment**: 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows for testing
 - **Permissions Stack**: AgentCore IAM policies (EC2, SSM, Inspector, Config, S3)
 
 ### ✅ Workflows
@@ -159,8 +162,8 @@ You: What critical vulnerabilities do we have?
 - **Vulnerability Analysis**: CVE assessment with CVSS scoring
 - **Maintenance-Aware Patching**: Risk-based scheduling (scheduled vs emergency modes)
 - **Patch Execution**: Phased deployment with approval gates
-  - Fast mode: User says "proceed" (demo-friendly, 2-3 min per environment)
-  - Production mode: User says "verify and proceed" (automated verification, 10-12 min per environment)
+  - Fast mode: User says "proceed" (quick progression, 2-3 min per environment)
+  - Verification mode: User says "verify and proceed" (automated verification, 10-12 min per environment)
 - **Health Checks**: Post-patch verification
 - **Rollback**: Restore previous package versions
 - **Compliance Reporting**: Automated audit trail with S3 storage
@@ -192,18 +195,19 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 
 ```
 ├── agent/                          # Strands agents
-│   ├── agents/                     # Agent implementations
-│   │   ├── supervisor.py           # Orchestration
-│   │   ├── vulnerability_agent.py  # Security analysis
-│   │   ├── patch_manager.py        # Patching operations
-│   │   └── compliance_analyst.py   # Reporting & audit
-│   ├── tools.py                     # 12 AWS tools + use_aws fallback
-│   ├── utils/                      # Utilities
+│   ├── supervisor.py               # Orchestration + routing
+│   ├── vulnerability_agent.py      # Security analysis
+│   ├── patch_manager.py            # Patching operations
+│   ├── compliance_analyst.py       # Reporting & audit
+│   ├── helper/                     # Shared utilities
+│   │   ├── tools.py                # 12 AWS tools + structured error handling
+│   │   ├── error_handling.py       # Error classification (RETRYABLE/SKIP/ABORT)
+│   │   ├── decision_logger.py      # Decision audit trail (CloudWatch + S3)
 │   │   ├── agent_factory.py        # Common agent creation
 │   │   ├── memory_hooks.py         # AgentCore memory integration
 │   │   └── globals.py              # Shared state
 │   ├── config/
-│   │   └── config.json             # Patch management configuration
+│   │   └── config.json             # SLA policies, environment aliases
 │   └── .bedrock_agentcore.yaml     # AgentCore config
 ├── infra/                          # AWS CDK infrastructure
 │   ├── lib/
@@ -212,11 +216,15 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   │   ├── agentcore-permissions-stack.ts
 │   │   └── vulnerability-driven-patching-stack.ts
 │   └── bin/app.ts
+├── chatbot-client/                 # Chat client (boto3 + SSE streaming)
 ├── doc/                            # Documentation
-│   ├── new-patching-flow.md        # Maintenance window integration plan
-│   ├── updated_idea.md             # Enhanced workflow design
-│   └── testing guides...
+│   ├── architecture.md             # Technical architecture
+│   ├── observability.md            # Decision log queries (CloudWatch, Athena, Splunk)
+│   ├── PRESENTATION_GUIDE.md       # Live presentation script
+│   ├── code_talk.md                # Technical deep-dive talk
+│   └── troubleshooting.md          # Operational troubleshooting
 ├── deploy.sh                       # One-command deployment
+├── chat.sh                         # Chat client wrapper
 └── README.md                       # This file
 ```
 
@@ -261,6 +269,77 @@ agentcore invoke '{"prompt": "Rollback dev patches"}'
 
 ## Configuration
 
+### SLA Policies (`agent/config/config.json`)
+
+Define SLA requirements by compliance framework:
+
+```json
+{
+  "frameworks": {
+    "PCI-DSS": {"CRITICAL": 12, "HIGH": 48, "MEDIUM": 168, "LOW": 720},
+    "SOC2": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720},
+    "HIPAA": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720}
+  }
+}
+```
+
+Tag instances with `ComplianceFrameworks` to apply SLA policies automatically.
+
+---
+
+### Maintenance Windows (SSM)
+
+The agent **respects** SSM maintenance windows through intelligent decision-making:
+
+**SCHEDULED patching** (window within SLA):
+- Agent registers task with maintenance window
+- SSM executes during window automatically
+- No immediate action
+
+**EMERGENCY patching** (window exceeds SLA):
+- Agent patches immediately via send_command
+- Bypasses maintenance window
+- Logged as emergency action
+
+**Decision logic**:
+```
+IF hours_until_window <= sla_hours:
+  → SCHEDULED (register with maintenance window)
+ELSE:
+  → EMERGENCY (patch immediately)
+```
+
+**Example**:
+- SLA: 12hr (CRITICAL PCI-DSS)
+- Window: 8hr away
+- Decision: SCHEDULED (8 < 12)
+- Action: Register with window
+
+---
+
+### Deterministic Workflow
+
+The agent follows a **mandatory 7-step workflow** enforced through system prompt:
+
+```
+Step 1: get_patch_compliance(environment, severity)
+Step 2: get_maintenance_windows(environment)
+Step 3: Calculate decision (SCHEDULED vs EMERGENCY)
+Step 4: execute_patch_operation(execution_mode, ...)
+Step 5: check_instance_health() [if EMERGENCY]
+Step 6: check_cloudwatch_alarms() [if EMERGENCY]
+Step 7: generate_compliance_report() [always]
+```
+
+**No external validation needed** - workflow is built into the prompt.
+
+**Controls are in SSM**:
+- Maintenance windows define when
+- Patch baselines define what
+- Agent respects both automatically
+
+---
+
 ### Observability & Performance Monitoring
 
 AgentCore provides native observability out of the box:
@@ -295,14 +374,30 @@ fields @timestamp, @message
 - Tool invocations
 - Error rates
 - X-Ray distributed tracing
+- **Agent decisions** (logged to CloudWatch + S3 for audit)
 
-### AWS Profile & Runtime
+**Decision Logs:**
+Every agent decision is logged with full context:
+```json
+{
+  "decision_type": "sla_calculation",
+  "decision": "EMERGENCY",
+  "reasoning": "Window (36hr) exceeds SLA (12hr) by 24 hours",
+  "context": {"cve_id": "CVE-2024-1234", "severity": "CRITICAL", ...}
+}
+```
 
-**AWS Profile**: `ri25-demo` (configure with `aws configure --profile ri25-demo`)
+Stored in CloudWatch (real-time) and S3 (`decisions/YYYY/MM/DD/{agent}/{uuid}.json`) for long-term audit.  
+Query with CloudWatch Insights, Athena, or your existing tools (Splunk, Datadog).  
+See `doc/observability.md` for query examples.
+
+---### AWS Profile & Runtime
+
+**AWS Profile**: Configure with `aws configure --profile <your-profile>`
 
 **Agent Runtime**: Deployed to Amazon Bedrock AgentCore in `us-east-1`
 
-**Demo Instances**: 15 EC2 instances tagged by environment (dev/staging/prod)
+**Sample Instances**: 15 EC2 instances tagged by environment (dev/staging/prod) for testing
 
 **Maintenance Windows**: 
 - dev-daily-patching: Daily at 1 AM UTC
@@ -311,12 +406,12 @@ fields @timestamp, @message
 
 ## Current Limitations
 
-- **Two demo modes available:**
+- **Two execution modes available:**
   - **Fast mode (default):** User says "proceed" → agent moves to next environment immediately (2-3 min per environment)
-  - **Production mode (optional):** User says "verify and proceed" → agent waits for completion + runs health checks (10-12 min per environment)
-- **Manual approval required** - between each environment in phased rollout
-- **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured (httpd monitoring)
-- **Linux-only** - yum-based rollback for Amazon Linux/RHEL
+  - **Verification mode (recommended):** User says "verify and proceed" → agent waits for completion + runs health checks (10-12 min per environment)
+- **Manual approval required** - between each environment in phased rollout for safety
+- **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured
+- **Linux-only rollback** - yum-based rollback for Amazon Linux/RHEL (Windows patching supported, rollback in development)
 
 ## Monitoring
 

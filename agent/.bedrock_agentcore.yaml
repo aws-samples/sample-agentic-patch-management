@@ -23,7 +23,7 @@ agents:
     bedrock_agentcore:
       agent_id: intelligent_patch_automation-TzHdGwD6sO
       agent_arn: arn:aws:bedrock-agentcore:us-east-1:125140434174:runtime/intelligent_patch_automation-TzHdGwD6sO
-      agent_session_id: null
+      agent_session_id: test-verify-compliance-report-gen-1770611075
     codebuild:
       project_name: bedrock-agentcore-intelligent_patch_automation-builder
       execution_role: arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-a154b39750

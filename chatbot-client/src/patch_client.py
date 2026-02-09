@@ -23,10 +23,11 @@ class PatchClient:
     and formatted markdown output.
     """
     
-    def __init__(self, profile: str = 'ri25-demo'):
+    def __init__(self, profile: str = 'default'):
         """Initialize patch automation client.
         
         Args:
+            profile: AWS profile name (default: 'default')
             profile: AWS profile name for authentication
         """
         self.profile = profile
@@ -210,7 +211,7 @@ class PatchClient:
         """Apply syntax highlighting to critical information in response text.
         
         Highlights CVE IDs, AWS instance IDs, and severity levels for better
-        visual scanning during demos and presentations.
+        visual scanning during operations and presentations.
         
         Args:
             text: Raw markdown text from agent response

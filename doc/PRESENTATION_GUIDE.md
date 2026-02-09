@@ -1,9 +1,9 @@
-# Live Demo Script (10 minutes)
+# Solution Presentation Guide (10 minutes)
 
-## Pre-Demo Setup (5 min before presentation)
+## Pre-Presentation Setup (5 min before)
 
 ```bash
-cd /Users/bhatprav/Documents/Workspace/ContentCreation/reinvent25-cop407-agentic-patch-management
+cd /path/to/reinvent25-cop407-agentic-patch-management
 
 # Verify deployment
 ./deploy.sh agent
@@ -40,7 +40,7 @@ Show me prod instances and their compliance frameworks
 
 **What Happens:**
 - Agent routes to Patch Manager specialist
-- Returns table with 5 production instances
+- Returns table with production instances
 - Shows compliance tags: PCI-DSS, SOC2, HIPAA
 
 **Say While Results Appear:**
@@ -138,7 +138,7 @@ Start emergency patching for CVE-2023-52935 in dev
 "The agent just patched the dev environment. Now it's waiting for me to say 'proceed' before touching staging. This is the approval gate - human in the loop."
 
 **Explain (Don't Execute):**
-"In production, this workflow continues:
+"In a full workflow, this continues:
 - Dev → you approve → Staging → you approve → Production
 - Health checks after each environment
 - Automatic rollback if CloudWatch alarms fire
@@ -181,7 +181,7 @@ No new infrastructure to manage. No complex integrations. Just intelligent agent
 **A:** "Two-layer health checks catch issues. Infrastructure checks verify SSM connectivity. Application checks monitor CloudWatch alarms. If alarms fire, the agent recommends rollback. You approve, it executes the rollback, and verifies recovery."
 
 ### Q: Can this work with Windows?
-**A:** "Absolutely. The demo uses Linux with yum, but the pattern works with Windows Update via Systems Manager. Same agent logic, different patching tools."
+**A:** "Absolutely. The solution uses Linux with yum for rollback, but the pattern works with Windows Update via Systems Manager. Same agent logic, different patching tools. Windows rollback is on the roadmap."
 
 ### Q: How much does this cost?
 **A:** "Bedrock AgentCore charges per request. For patching 1000 instances monthly, you're looking at roughly $50/month in agent costs. Compare that to 40 hours of manual work at $100/hour - that's $4000/month. 98% cost reduction."
@@ -190,7 +190,7 @@ No new infrastructure to manage. No complex integrations. Just intelligent agent
 **A:** "Yes. The agent can be extended with custom tools for any ITSM platform. Add a tool that calls ServiceNow's API, and the agent can create tickets, update status, or query existing incidents."
 
 ### Q: Is this production-ready?
-**A:** "This demonstrates production-grade patterns. To productionize, you'd add multi-region support, more sophisticated approval workflows, and deeper monitoring. The architecture is sound - extend the tool set for your specific needs."
+**A:** "The architecture and patterns are production-grade. For enterprise deployment, you'd want to add multi-region support, enhanced approval workflows, and deeper monitoring. The solution is designed to be extended for your specific requirements."
 
 ### Q: How do you customize SLA policies?
 **A:** "Edit a simple JSON config file. Define hours by compliance framework and severity. The agent reads it automatically - no code changes needed."
@@ -208,7 +208,7 @@ No new infrastructure to manage. No complex integrations. Just intelligent agent
 ### Agent times out
 - **Cause:** Complex query or AWS API rate limiting
 - **Fix:** Simplify query, check AWS service health
-- **Backup:** Show pre-recorded demo
+- **Backup:** Show pre-recorded walkthrough
 
 ### Chat client crashes
 - **Fix:** `pip install -r chatbot-client/requirements.txt`
@@ -218,7 +218,7 @@ No new infrastructure to manage. No complex integrations. Just intelligent agent
 
 ## Backup Plan
 
-**If live demo fails:**
+**If live presentation fails:**
 1. Show pre-recorded video
 2. Walk through example outputs in slides
 3. Focus on architecture and design patterns
@@ -239,7 +239,7 @@ No new infrastructure to manage. No complex integrations. Just intelligent agent
 
 ---
 
-## Demo Day Checklist
+## Presentation Day Checklist
 
 - [ ] Laptop charged + backup power
 - [ ] Screen recording ready

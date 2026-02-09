@@ -94,8 +94,18 @@ Step 6: VERIFY HEALTH (if EMERGENCY)
   d) If failures: Recommend rollback, DO NOT proceed
 
 Step 7: GENERATE REPORT (MANDATORY)
-  generate_compliance_report(cve_id, environment, command_id_or_window_task_id, decision)
+  generate_compliance_report(
+    cve_id=cve_id,
+    environment=environment,
+    command_id=command_id_or_window_task_id,
+    decision=decision,
+    severity=severity,          ← from vulnerability findings (CRITICAL/HIGH/MEDIUM/LOW)
+    cvss_score=cvss_score,      ← from vulnerability findings (float)
+    sla_hours=sla_hours,        ← from Step 1 sla_requirement
+    sla_source=sla_source       ← from Step 1 sla_requirement (e.g., "PCI-DSS")
+  )
   → Always execute, even if patching failed
+  → MUST pass severity and sla_hours from earlier steps — do NOT omit optional parameters
 
 CRITICAL RULES:
 - NEVER skip steps 1-3 (discovery, window check, decision)

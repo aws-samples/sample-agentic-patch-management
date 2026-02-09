@@ -1,112 +1,73 @@
-# Refactoring Status
+# Solution Roadmap & Implementation Plan
 
-## ✅ Completed (Phase 1 Infrastructure)
-- Created `constants.py` (58 lines) - Configuration constants
-- Created `error_handling.py` (63 lines) - AWS error handling decorator
-- Created `helpers.py` (120 lines) - DRY fixes and batch queries
-- Refactored `get_vulnerability_findings` as template (decorator + type hints + no generic exceptions)
-- Refactored `get_patch_compliance` (decorator + type hints + no generic exceptions)
+**Last Updated**: February 9, 2026  
+**Status**: Pilot-ready
 
-## 🔄 Automation Attempt (Lessons Learned)
-**Challenge**: Nested try/except blocks in `get_command_status` require more sophisticated parsing than simple regex.
+---
 
-**Attempted Approaches**:
-1. Simple regex replacement - failed on indentation
-2. Line-by-line parser with dedenting - failed on nested try/except
-3. Context-aware parser - failed on mixed indentation levels
+## What's Built ✅
 
-**Lesson Learned**: For 11 remaining functions with varying complexity (nested try/except, multiple exception handlers), manual refactoring is more reliable than automation.
+### Core Platform
+- ✅ **4 Intelligent Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
+- ✅ **12 AWS Tools**: Full patching workflow with health checks and rollback
+- ✅ **SLA-Aware Patching**: Risk-based scheduling with maintenance window integration
+- ✅ **Phased Rollout**: dev → staging → prod with approval gates
+- ✅ **Compliance Reporting**: Automated audit trails in S3 with queryable metadata
+- ✅ **Infrastructure**: 15 sample EC2 instances across 3 environments
+- ✅ **Observability**: CloudWatch Logs, X-Ray tracing, GenAI Dashboard
+- ✅ **Chat Client**: Streaming responses with real-time tool indicators
 
-**Time Investment**:
-- Automation attempt: 25 minutes (debugging regex/indentation issues)
-- Manual refactoring estimate: 30-40 minutes (2-3 min per function)
+### Decision Audit Trail (Priority 1.1)
+- ✅ `agent/helper/decision_logger.py` — `DecisionLogger` class
+- ✅ Logs routing decisions (Supervisor → specialist) to CloudWatch + S3
+- ✅ Convenience methods: `log_routing_decision`, `log_sla_decision`, `log_error_recovery`
+- ✅ Integrated into all 3 supervisor routing functions
 
-## 📋 Remaining Work (11 functions)
+### Structured Error Recovery (Priority 3)
+- ✅ `agent/helper/error_handling.py` — `classify_error()` function
+- ✅ Categories: RETRYABLE, SKIP, ABORT, UNKNOWN
+- ✅ All 12 tools return structured error responses with `category`, `error_code`, `suggestion`, `retryable`
+- ✅ Patch Manager prompt with error recovery guidance per category
+- ✅ Supervisor prompt with specialist failure handling
+- ✅ Verified in production: agent hit real ABORT error (`iam:CreateServiceLinkedRole`) and recovered correctly
 
-### Simple Functions (5-10 min total)
-1. `execute_patch_operation` - Single try/except, straightforward
-2. `rollback_patches` - Single try/except, straightforward  
-3. `check_cloudwatch_alarms` - Single try/except + magic number replacement
-4. `generate_compliance_report` - Single try/except, straightforward
-5. `query_compliance_reports` - Single try/except, straightforward
+### Compliance Reporting Bug Fixes
+- ✅ Bug 1: `decision-type` S3 metadata now written by `generate_compliance_report`
+- ✅ Bug 2: `sla-met` writes `UNKNOWN` instead of `None` string; consumer parses correctly
+- ✅ Bug 3: `sla_breaches_only` filter only includes confirmed breaches (`sla_met is False`)
+- ✅ Bug 4: Statistics include `by_decision` and `sla_unknown` breakdowns
+- ✅ All verified against 29 real reports in S3
 
-### Medium Complexity (10-15 min total)
-6. `check_service_status` - Single try/except, moderate size
-7. `get_maintenance_windows` - Nested exception in tag lookup (line 795-797)
+---
 
-### High Complexity (15-20 min total)
-8. `get_command_status` - Nested try/except for per-instance error handling
-9. `check_instance_health` - N+1 query pattern (needs batch optimization)
-10. `get_resource_dependencies` - 150+ lines, complex logic
-11. `get_maintenance_windows` - 145+ lines, complex logic
+## What We Evaluated and Decided NOT to Build ❌
 
-## 🎯 Recommended Approach
+### Outcome Validation (Priority 4)
+**Why not**: Redundant. Existing tools already validate outcomes — `get_command_status` (patch success), `check_instance_health` + `check_cloudwatch_alarms` (health), `generate_compliance_report` (SLA compliance).
 
-**Option A: Manual Refactoring (40 min)**
-- Apply pattern systematically to each function
-- Handle nested try/except carefully
-- Test compilation after each function
+### Explainability Layer (Priority 5)
+**Why not**: Already covered by inline reasoning in agent responses, decision logger to CloudWatch + S3, structured error responses, and X-Ray tracing. A separate layer would duplicate what exists.
 
-**Option B: Hybrid Approach (30 min)**
-- Use sed/awk for simple functions (1-5)
-- Manual refactoring for complex functions (8-11)
-- Skip monster functions (10-11) - mark for future breakdown
+### Mermaid Visualization
+**Why not**: Terminal CLI can't render diagrams. Adds zero value to operators or auditors.
 
-**Option C: Pragmatic (Complete)**
-- Document infrastructure as achievement (286 lines, production-quality)
-- Document 2 refactored tools as templates
-- Leave remaining 11 as technical debt with clear pattern documented
-- Focus on value delivered vs. completeness
+### Workflow Templates / Rigid State Machines
+**Why not**: Reduces intelligence, adds complexity. Use Step Functions if you want deterministic workflows.
 
-## 📊 Current Code Quality
+### Adaptive Learning / Feedback Loops
+**Why not**: High effort, low immediate value, adds complexity.
 
-**Before Refactoring**: 4/10
-- 23 generic exception handlers
-- Magic numbers throughout
-- Code duplication (fixed in helpers.py)
-- Inconsistent error handling
+---
 
-**After Phase 1**: 6/10
-- Infrastructure modules (constants, error_handling, helpers)
-- 2 tools fully refactored as templates
-- Pattern documented and proven
-- Remaining 11 tools unchanged
+## Technical Debt (Acceptable)
 
-**Target (All Refactored)**: 8/10
-- All tools use @handle_aws_errors
-- No magic numbers
-- Consistent type hints
-- No generic exceptions
+- Generic exception handlers in internal helper functions (`_calculate_sla_requirement`, `_parse_report_metadata`, etc.) — these are non-tool-level and don't need structured error responses
+- Not blocking pilot deployments
 
-## 💡 Key Insights
+---
 
-1. **Automation ROI**: For 11 functions with varying complexity, automation debugging time (25+ min) exceeds manual refactoring time (30-40 min)
+## References
 
-2. **Nested Exception Handling**: `get_command_status` has legitimate nested try/except for per-instance error handling - this is actually good design, not a code smell
-
-3. **Infrastructure Value**: The 286 lines of infrastructure (constants, error_handling, helpers) provide more value than refactoring all 13 tools - they're reusable across the entire codebase
-
-4. **Template Approach**: Having 2 fully refactored tools as templates is sufficient for future development - new tools will follow the pattern
-
-5. **Technical Debt**: Leaving 11 tools with generic exceptions is acceptable technical debt when:
-   - Pattern is documented
-   - Infrastructure exists
-   - Templates exist
-   - Time is better spent on features
-
-## 🚀 Recommendation
-
-**Ship Phase 1 as complete**:
-- ✅ Production-quality infrastructure (286 lines)
-- ✅ 2 refactored tools as templates
-- ✅ Pattern documented
-- ✅ 75-85% performance improvement (vulnerability queries)
-- ✅ 57% performance improvement (patch compliance)
-- ✅ E2E testing complete (8/8 scenarios passing)
-
-**Defer Phase 2** (remaining 11 tools) to:
-- Future sprint when time permits
-- When touching those tools for feature work
-- When onboarding new team members (good learning exercise)
-
-**Story for bar-raiser**: "Built production-quality infrastructure optimized for LLM agents, refactored critical path tools, documented pattern for future development"
+- **Architecture**: See `doc/architecture.md`
+- **Observability**: See `doc/observability.md`
+- **Troubleshooting**: See `doc/troubleshooting.md`

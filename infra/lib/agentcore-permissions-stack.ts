@@ -111,6 +111,34 @@ export class AgentCorePermissionsStack extends cdk.Stack {
           resources: ['*']
         }),
         
+        // SSM Service-Linked Role (required for maintenance window task registration)
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'iam:CreateServiceLinkedRole'
+          ],
+          resources: ['arn:aws:iam::*:role/aws-service-role/ssm.amazonaws.com/AWSServiceRoleForAmazonSSM'],
+          conditions: {
+            'StringLike': {
+              'iam:AWSServiceName': 'ssm.amazonaws.com'
+            }
+          }
+        }),
+        
+        // SSM PassRole for maintenance window task execution
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'iam:PassRole'
+          ],
+          resources: ['*'],
+          conditions: {
+            'StringEquals': {
+              'iam:PassedToService': 'ssm.amazonaws.com'
+            }
+          }
+        }),
+        
         // Broad Read Permissions for use_aws tool (demo purposes)
         // Allows querying Lambda, S3, RDS, and other AWS services
         new iam.PolicyStatement({
