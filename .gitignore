@@ -48,6 +48,9 @@ Thumbs.db
 .env.local
 *.key
 secrets.json
+
+# AgentCore (auto-generated, contains account-specific IDs)
+agent/.bedrock_agentcore.yaml
 conversations/
 # Python virtual environments
 venv/
