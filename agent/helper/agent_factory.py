@@ -1,5 +1,6 @@
 """Common agent factory to eliminate duplication"""
 
+import os
 from helper import globals
 import logging
 from strands import Agent
@@ -51,7 +52,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
         name=name,
         model=BedrockModel(
             model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            region_name='us-east-1',
+            region_name=os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')),
             temperature=0.1,
             max_tokens=max_tokens
         ),

@@ -16,6 +16,9 @@ from helper.error_handling import classify_error
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Region from environment variable (default: us-east-1)
+AWS_REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
+
 # AWS client configuration with retry logic and timeouts
 aws_config = Config(
     retries={
@@ -27,11 +30,11 @@ aws_config = Config(
 )
 
 # Initialize AWS clients with retry configuration
-inspector_client = boto3.client('inspector2', region_name='us-east-1', config=aws_config)
-ssm_client = boto3.client('ssm', region_name='us-east-1', config=aws_config)
-ec2_client = boto3.client('ec2', region_name='us-east-1', config=aws_config)
-config_client = boto3.client('config', region_name='us-east-1', config=aws_config)
-cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1', config=aws_config)
+inspector_client = boto3.client('inspector2', region_name=AWS_REGION, config=aws_config)
+ssm_client = boto3.client('ssm', region_name=AWS_REGION, config=aws_config)
+ec2_client = boto3.client('ec2', region_name=AWS_REGION, config=aws_config)
+config_client = boto3.client('config', region_name=AWS_REGION, config=aws_config)
+cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION, config=aws_config)
 
 
 # ============================================================================
@@ -40,7 +43,7 @@ cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1', config=a
 
 def _get_compliance_bucket_name() -> str:
     """Get S3 bucket name for compliance reports."""
-    sts_client = boto3.client('sts', region_name='us-east-1', config=aws_config)
+    sts_client = boto3.client('sts', region_name=AWS_REGION, config=aws_config)
     account_id = sts_client.get_caller_identity()['Account']
     return f'patch-compliance-reports-{account_id}'
 
@@ -945,7 +948,7 @@ def get_resource_dependencies(resource_id: str) -> dict:
                                      if r['resourceType'] == 'AWS::ElasticLoadBalancingV2::TargetGroup']
         
         if target_group_relationships:
-            elbv2_client = boto3.client('elbv2', region_name='us-east-1', config=aws_config)
+            elbv2_client = boto3.client('elbv2', region_name=AWS_REGION, config=aws_config)
             
             # Batch: Get all target group ARNs at once
             tg_arns = [r['resourceId'] for r in target_group_relationships]
@@ -1320,7 +1323,7 @@ def generate_compliance_report(
         }
         
         # Save to S3
-        s3_client = boto3.client('s3', region_name='us-east-1')
+        s3_client = boto3.client('s3', region_name=AWS_REGION)
         bucket_name = _get_compliance_bucket_name()
         
         # Use date-based folder structure
@@ -1388,7 +1391,7 @@ def query_compliance_reports(
         dict: {'reports': list, 'statistics': dict, 'total_count': int}
     """
     try:
-        s3_client = boto3.client('s3', region_name='us-east-1', config=aws_config)
+        s3_client = boto3.client('s3', region_name=AWS_REGION, config=aws_config)
         bucket_name = _get_compliance_bucket_name()
         
         # Check if bucket exists

@@ -8,11 +8,16 @@ import { AgentCorePermissionsStack } from '../lib/agentcore-permissions-stack';
 
 const app = new cdk.App();
 
-// Environment configuration
+// Environment configuration — reads from CDK_DEFAULT_ACCOUNT/CDK_DEFAULT_REGION
+// (set by `aws configure` or environment variables)
 const env = {
-  account: '125140434174', // ri25-demo account
-  region: 'us-east-1'
+  account: process.env.CDK_DEFAULT_ACCOUNT || process.env.AWS_ACCOUNT_ID,
+  region: process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION || 'us-east-1'
 };
+
+if (!env.account) {
+  throw new Error('AWS account not resolved. Run: aws configure, or set CDK_DEFAULT_ACCOUNT / AWS_ACCOUNT_ID');
+}
 
 // Core networking infrastructure (foundational - keep deployed)
 const networkingStack = new NetworkingStack(app, 'PatchAutomationNetworking', {
@@ -28,9 +33,14 @@ const securityStack = new SecurityStack(app, 'PatchAutomationSecurity', {
 });
 
 // AgentCore permissions (foundational - keep deployed)
+const agentCoreRoleArn = app.node.tryGetContext('agentCoreRoleArn');
+if (!agentCoreRoleArn) {
+  throw new Error('agentCoreRoleArn context required. Pass via: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
+}
+
 const agentCorePermissionsStack = new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
   env,
-  agentCoreRoleArn: 'arn:aws:iam::125140434174:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-a154b39750',
+  agentCoreRoleArn,
   description: 'IAM permissions for AgentCore patch automation runtime'
 });
 

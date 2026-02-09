@@ -7,6 +7,7 @@ Stores logs in CloudWatch (real-time) and S3 (long-term audit).
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -14,6 +15,9 @@ import boto3
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
+
+# Region from environment variable (default: us-east-1)
+_AWS_REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 
 
 class DecisionLogger:
@@ -28,7 +32,7 @@ class DecisionLogger:
             s3_bucket: S3 bucket for audit trail (optional, will use compliance reports bucket)
         """
         self.agent_name = agent_name
-        self.s3_client = boto3.client('s3', region_name='us-east-1')
+        self.s3_client = boto3.client('s3', region_name=_AWS_REGION)
         
         # Use provided bucket or discover the compliance reports bucket
         if s3_bucket:
@@ -44,7 +48,7 @@ class DecisionLogger:
             Bucket name or None if not found
         """
         try:
-            sts_client = boto3.client('sts', region_name='us-east-1')
+            sts_client = boto3.client('sts', region_name=_AWS_REGION)
             account_id = sts_client.get_caller_identity()['Account']
             bucket_name = f'patch-compliance-reports-{account_id}'
             

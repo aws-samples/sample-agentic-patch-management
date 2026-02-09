@@ -32,8 +32,11 @@ Enterprise-grade AWS infrastructure for Intelligent Patch Automation demonstrati
 # Install AWS CDK
 npm install -g aws-cdk
 
+# Set your AWS profile
+export AWS_PROFILE=<your-profile>
+
 # Create EC2 Key Pair for instances
-aws ec2 create-key-pair --key-name patch-automation-demo --profile ri25-demo --region us-east-1
+aws ec2 create-key-pair --key-name patch-automation-demo
 ```
 
 ### Deploy Infrastructure
@@ -42,16 +45,16 @@ aws ec2 create-key-pair --key-name patch-automation-demo --profile ri25-demo --r
 npm install
 
 # Bootstrap CDK (first time only)
-cdk bootstrap --profile ri25-demo
+cdk bootstrap
 
 # Deploy all stacks
 npm run deploy
 
 # Or deploy individually
-cdk deploy PatchAutomationNetworking --profile ri25-demo
-cdk deploy PatchAutomationSecurity --profile ri25-demo
-cdk deploy PatchAutomationInstances --profile ri25-demo
-cdk deploy PatchAutomationAgentCorePermissions --profile ri25-demo
+cdk deploy PatchAutomationNetworking
+cdk deploy PatchAutomationSecurity
+cdk deploy PatchAutomationInstances
+cdk deploy PatchAutomationAgentCorePermissions
 ```
 
 ### AgentCore Integration
@@ -60,14 +63,12 @@ cdk deploy PatchAutomationAgentCorePermissions --profile ri25-demo
 POLICY_ARN=$(aws cloudformation describe-stacks \
   --stack-name PatchAutomationAgentCorePermissions \
   --query 'Stacks[0].Outputs[?OutputKey==`AgentCorePolicyArn`].OutputValue' \
-  --output text \
-  --profile ri25-demo)
+  --output text)
 
 # Attach to AgentCore runtime role
 aws iam attach-role-policy \
-  --role-name AmazonBedrockAgentCoreSDKRuntime-us-east-1-<suffix> \
-  --policy-arn $POLICY_ARN \
-  --profile ri25-demo
+  --role-name AmazonBedrockAgentCoreSDKRuntime-<region>-<suffix> \
+  --policy-arn $POLICY_ARN
 ```
 
 ### Cleanup
@@ -81,13 +82,13 @@ npm run destroy
 ### Enable Inspector
 ```bash
 # Enable Inspector for vulnerability scanning
-aws inspector2 enable --resource-types ECR EC2 --profile ri25-demo --region us-east-1
+aws inspector2 enable --resource-types ECR EC2
 ```
 
 ### Verify Systems Manager
 ```bash
 # Check managed instances
-aws ssm describe-instance-information --profile ri25-demo --region us-east-1
+aws ssm describe-instance-information
 ```
 
 ## Infrastructure Outputs

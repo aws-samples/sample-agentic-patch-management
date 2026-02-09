@@ -15,8 +15,8 @@ Context files for Kiro to maintain understanding across sessions.
 
 - **Deploy agent**: `./deploy.sh agent`
 - **Chat**: `./chat.sh` (interactive, session-aware) or `./chat.sh -m "query"` (stateless)
-- **AWS**: Profile `ri25-demo`, region `us-east-1`, account `125140434174`
-- **S3 bucket**: `patch-compliance-reports-125140434174` (reports + decisions)
+- **AWS**: Profile via `AWS_PROFILE` env var, region via `AWS_REGION` (default: `us-east-1`)
+- **S3 bucket**: `patch-compliance-reports-{account_id}` (reports + decisions)
 - **Status**: Pilot-ready, end-to-end tested (Feb 9, 2026)
 
 **Last Updated**: February 9, 2026

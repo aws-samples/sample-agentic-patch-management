@@ -14,8 +14,8 @@ else
     exit 1
 fi
 
-# Set AWS profile
-export AWS_PROFILE=ri25-demo
+# Set AWS profile (override via environment variable)
+export AWS_PROFILE="${AWS_PROFILE:-default}"
 echo "✅ AWS profile set to: $AWS_PROFILE"
 
 # Navigate to agent directory

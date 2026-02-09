@@ -79,12 +79,20 @@ When a critical vulnerability is discovered, this system automatically:
 # 1. Clone and setup
 git clone <repository-url>
 cd reinvent25-cop407-agentic-patch-management
-./deploy.sh
 
-# 2. Use the chat client (recommended)
+# 2. Configure AWS profile
+export AWS_PROFILE=<your-profile>
+
+# 3. Deploy infrastructure (first time only)
+./deploy.sh infra
+
+# 4. Deploy agent
+./deploy.sh agent
+
+# 5. Use the chat client (recommended)
 ./chat.sh
 
-# 3. Or invoke directly
+# 6. Or invoke directly
 cd agent
 agentcore invoke '{"prompt": "How many EC2 instances do I have?"}'
 ```
@@ -127,7 +135,7 @@ You: What critical vulnerabilities do we have?
 ### Troubleshooting
 - **Missing dependencies**: `pip install boto3 pyyaml`
 - **Agent not deployed**: `./deploy.sh agent`
-- **AWS credentials**: Ensure AWS profile is configured (`aws configure --profile ri25-demo`)
+- **AWS credentials**: Ensure AWS profile is configured (`aws configure --profile <your-profile>`)
 
 ## What's Implemented
 

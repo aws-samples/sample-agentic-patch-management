@@ -61,9 +61,10 @@ Supervisor uses keyword-based routing (18-36% faster than LLM routing). OUT_OF_S
 
 ## Environment
 
-- AWS Profile: `ri25-demo`, Region: `us-east-1`, Account: `125140434174`
+- AWS Profile: set via `AWS_PROFILE` env var (default: `default`)
+- Region: set via `AWS_REGION` env var (default: `us-east-1`)
 - 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows
-- S3 bucket: `patch-compliance-reports-125140434174` (reports + decisions)
+- S3 bucket: `patch-compliance-reports-{account_id}` (reports + decisions)
 - Deploy: `./deploy.sh agent` (CodeBuild ARM64)
 - Chat: `./chat.sh` (interactive, maintains session)
 - `agentcore invoke` is stateless — each invoke is a new session

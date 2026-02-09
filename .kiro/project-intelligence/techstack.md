@@ -63,7 +63,7 @@ aws-cdk-lib, constructs
 ```bash
 ./chat.sh                    # Interactive chat (maintains session)
 ./chat.sh -m "query"         # Single message
-./chat.sh -p ri25-demo       # Specific AWS profile
+./chat.sh -p <your-profile>       # Specific AWS profile
 agentcore invoke '{"prompt": "..."}' # Stateless single invoke
 agentcore status             # Check agent
 ```

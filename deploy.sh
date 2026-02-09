@@ -12,9 +12,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-AWS_PROFILE="ri25-demo"
-AWS_REGION="us-east-1"
+# Configuration (override via environment variables)
+AWS_PROFILE="${AWS_PROFILE:-default}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 PYTHON_VERSION="3.9"
 
 # Parse deployment target
@@ -276,7 +276,7 @@ echo ""
 echo -e "${YELLOW}Quick Commands:${NC}"
 echo "• Status: cd agent && agentcore status"
 echo "• Test: agentcore invoke '{\"prompt\": \"Hello\"}'"
-echo "• Logs: aws logs tail /aws/bedrock-agentcore/runtimes/intelligent_patch_automation-TzHdGwD6sO-DEFAULT --follow"
+echo "• Logs: aws logs tail /aws/bedrock-agentcore/runtimes/<your-runtime-name>-DEFAULT --follow"
 echo ""
 echo -e "${BLUE}Fast Deployments:${NC}"
 echo "• Environment only: ./deploy.sh env"
