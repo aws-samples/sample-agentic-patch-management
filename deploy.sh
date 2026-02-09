@@ -15,6 +15,7 @@ NC='\033[0m' # No Color
 # Configuration (override via environment variables)
 AWS_PROFILE="${AWS_PROFILE:-default}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
+AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-}"
 PYTHON_VERSION="3.9"
 
 # Parse deployment target
@@ -138,9 +139,17 @@ deploy_infrastructure() {
         print_status "CDK dependencies up to date"
     fi
     
+    # Validate agentCoreRoleArn is set
+    if [ -z "$AGENTCORE_ROLE_ARN" ]; then
+        print_error "AGENTCORE_ROLE_ARN is required for infrastructure deployment"
+        echo "  Set it via: export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/<agentcore-role-name>"
+        echo "  Find it via: aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text"
+        exit 1
+    fi
+    
     # Skip bootstrap check for speed (assume it's done)
     echo "Deploying CDK stacks..."
-    npx cdk deploy --all --require-approval never --concurrency 10
+    npx cdk deploy --all --require-approval never --concurrency 10 -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
     print_status "Infrastructure deployed"
     
     cd ..
@@ -161,7 +170,7 @@ destroy_infrastructure() {
     fi
     
     echo "Destroying demo stack (15 EC2 instances)..."
-    npx cdk destroy PatchAutomationVulnerabilityDriven --force
+    npx cdk destroy PatchAutomationVulnerabilityDriven --force -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
     print_status "Demo infrastructure destroyed"
     print_status "Foundational infrastructure preserved (VPC, Security Groups, IAM Roles)"
     
@@ -189,7 +198,7 @@ destroy_all_infrastructure() {
     fi
     
     echo "Destroying all CDK stacks..."
-    npx cdk destroy --all --force
+    npx cdk destroy --all --force -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
     print_status "All infrastructure destroyed"
     
     cd ..

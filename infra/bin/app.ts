@@ -34,13 +34,14 @@ const securityStack = new SecurityStack(app, 'PatchAutomationSecurity', {
 
 // AgentCore permissions (foundational - keep deployed)
 const agentCoreRoleArn = app.node.tryGetContext('agentCoreRoleArn');
-if (!agentCoreRoleArn) {
-  throw new Error('agentCoreRoleArn context required. Pass via: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
+if (!agentCoreRoleArn || agentCoreRoleArn === 'placeholder') {
+  console.warn('⚠️  agentCoreRoleArn not set. AgentCore permissions stack will be skipped.');
+  console.warn('   For deploy, pass: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
 }
 
 const agentCorePermissionsStack = new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
   env,
-  agentCoreRoleArn,
+  agentCoreRoleArn: (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') ? agentCoreRoleArn : undefined,
   description: 'IAM permissions for AgentCore patch automation runtime'
 });
 

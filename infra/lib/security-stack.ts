@@ -269,12 +269,10 @@ export class SecurityStack extends cdk.Stack {
     // Grant AgentCore write access to compliance reports bucket
     // Uses IAM role grant instead of bucket policy to avoid "policy already exists" errors on redeploy
     const agentCoreRoleArn = this.node.tryGetContext('agentCoreRoleArn');
-    if (!agentCoreRoleArn) {
-      throw new Error('agentCoreRoleArn context required. Pass via: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
+    if (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') {
+      const agentCoreRole = iam.Role.fromRoleArn(this, 'AgentCoreRuntimeRole', agentCoreRoleArn);
+      complianceReportsBucket.grantReadWrite(agentCoreRole);
     }
-    
-    const agentCoreRole = iam.Role.fromRoleArn(this, 'AgentCoreRuntimeRole', agentCoreRoleArn);
-    complianceReportsBucket.grantReadWrite(agentCoreRole);
 
     new cdk.CfnOutput(this, 'ComplianceReportsBucketName', {
       value: complianceReportsBucket.bucketName,

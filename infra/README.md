@@ -47,14 +47,20 @@ npm install
 # Bootstrap CDK (first time only)
 cdk bootstrap
 
-# Deploy all stacks
-npm run deploy
+# Set the AgentCore role ARN (required)
+export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/AmazonBedrockAgentCoreSDKRuntime-<region>-<suffix>
+
+# Deploy all stacks (via deploy.sh — passes context automatically)
+cd .. && ./deploy.sh infra
+
+# Or deploy directly with CDK
+cdk deploy --all -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
 
 # Or deploy individually
-cdk deploy PatchAutomationNetworking
-cdk deploy PatchAutomationSecurity
-cdk deploy PatchAutomationInstances
-cdk deploy PatchAutomationAgentCorePermissions
+cdk deploy PatchAutomationNetworking -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
+cdk deploy PatchAutomationSecurity -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
+cdk deploy PatchAutomationAgentCorePermissions -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
+cdk deploy PatchAutomationVulnerabilityDriven -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
 ```
 
 ### AgentCore Integration
