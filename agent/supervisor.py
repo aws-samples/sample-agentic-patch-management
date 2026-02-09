@@ -79,6 +79,9 @@ When using use_aws tool, optimize for efficiency:
 
 EXECUTION:
 - Trust specialist responses
+- If a specialist returns an error with category "RETRYABLE": retry the consultation once
+- If a specialist returns an error with category "ABORT": report to user, do not retry
+- If a specialist is unreachable: try use_aws as fallback for simple queries, report error for complex workflows
 
 OUTPUT FORMAT:
 - Lead with status/summary in CAPS or with emoji (✅ ⚠️ ❌)
@@ -91,7 +94,17 @@ def consult_vulnerability_analyst(query: str) -> str:
     """Get vulnerability analysis from security specialist."""
     from helper import globals
     from helper.context_helper import get_relevant_context
+    from helper.decision_logger import get_decision_logger
     from types import SimpleNamespace
+    
+    # Log routing decision
+    decision_logger = get_decision_logger("supervisor")
+    decision_logger.log_routing_decision(
+        user_query=query,
+        specialist="vulnerability_analyst",
+        keywords_matched=["CVE", "vulnerability", "security"],  # Simplified - in production, extract actual keywords
+        confidence="high"
+    )
     
     # Get recent context from supervisor's memory
     context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
@@ -115,7 +128,17 @@ def consult_patch_manager(query: str) -> str:
     """Get patch deployment plan from infrastructure specialist."""
     from helper import globals
     from helper.context_helper import get_relevant_context
+    from helper.decision_logger import get_decision_logger
     from types import SimpleNamespace
+    
+    # Log routing decision
+    decision_logger = get_decision_logger("supervisor")
+    decision_logger.log_routing_decision(
+        user_query=query,
+        specialist="patch_manager",
+        keywords_matched=["patch", "instance", "deploy"],  # Simplified - in production, extract actual keywords
+        confidence="high"
+    )
     
     # Get recent context from supervisor's memory
     context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
@@ -139,7 +162,17 @@ def consult_compliance_analyst(query: str) -> str:
     """Get compliance reporting and audit trail analysis."""
     from helper import globals
     from helper.context_helper import get_relevant_context
+    from helper.decision_logger import get_decision_logger
     from types import SimpleNamespace
+    
+    # Log routing decision
+    decision_logger = get_decision_logger("supervisor")
+    decision_logger.log_routing_decision(
+        user_query=query,
+        specialist="compliance_analyst",
+        keywords_matched=["compliance", "report", "audit"],  # Simplified - in production, extract actual keywords
+        confidence="high"
+    )
     
     # Get recent context from supervisor's memory
     context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)

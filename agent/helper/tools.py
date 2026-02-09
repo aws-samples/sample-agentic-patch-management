@@ -2,6 +2,7 @@
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 import json
 import logging
 import time
@@ -10,6 +11,7 @@ from strands import tool
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from croniter import croniter
+from helper.error_handling import classify_error
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -192,9 +194,18 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
             "findings": findings,
             "total_count": len(findings)
         }
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error getting vulnerability findings: {error_info}")
+        error_info["findings"] = []
+        error_info["total_count"] = 0
+        return error_info
     except Exception as e:
         logger.error(f"Error getting vulnerability findings: {e}")
-        return {"error": str(e), "findings": [], "total_count": 0}
+        result = classify_error(e)
+        result["findings"] = []
+        result["total_count"] = 0
+        return result
 
 
 # --- Patch Management ---
@@ -279,48 +290,142 @@ def get_patch_compliance(environment: str,
                     result['sla_requirement'] = sla_req
         
         return result
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error getting patch compliance: {error_info}")
+        error_info["instances"] = []
+        error_info["total_count"] = 0
+        return error_info
     except Exception as e:
         logger.error(f"Error getting patch compliance: {e}")
-        return {"error": str(e), "instances": [], "total_count": 0}
+        result = classify_error(e)
+        result["instances"] = []
+        result["total_count"] = 0
+        return result
 
 
 @tool
-def execute_patch_operation(instance_ids: List[str], 
-                           operation: str = "Install",
-                           cve_ids: Optional[List[str]] = None) -> dict:
-    """Execute patch operation via AWS Systems Manager.
+def execute_patch_operation(
+    instance_ids: List[str],
+    execution_mode: str,
+    environment: str,
+    maintenance_window_id: Optional[str] = None
+) -> dict:
+    """Execute patching based on SLA decision (SCHEDULED or EMERGENCY).
+    
+    Agent decides execution_mode based on SLA vs maintenance window comparison:
+    - SCHEDULED: Window is within SLA deadline → register with maintenance window
+    - EMERGENCY: Window exceeds SLA deadline → patch immediately
     
     Args:
         instance_ids: List of EC2 instance IDs to patch
-        operation: Patch operation type (default: 'Install')
-        cve_ids: Optional list of specific CVE IDs (requires custom patch baseline)
+        execution_mode: "scheduled" or "immediate" (based on agent's SLA decision)
+        environment: Environment name (dev/staging/prod)
+        maintenance_window_id: Required if execution_mode="scheduled"
     
     Returns:
-        dict: {'command_id': str, 'status': str, 'instance_count': int}
-    """
-    try:
-        params = {
-            'Operation': [operation],
-            'RebootOption': ['NoReboot']
-        }
-        
-        if cve_ids:
-            logger.warning("CVE-specific filtering requires custom patch baseline")
-        
-        response = ssm_client.send_command(
-            DocumentName='AWS-RunPatchBaseline',
-            InstanceIds=instance_ids,
-            Parameters=params
+        dict: Status and tracking information
+    
+    Examples:
+        # SCHEDULED patching (window within SLA)
+        execute_patch_operation(
+            instance_ids=["i-123", "i-456"],
+            execution_mode="scheduled",
+            environment="prod",
+            maintenance_window_id="mw-abc123"
         )
         
-        return {
-            'command_id': response['Command']['CommandId'],
-            'status': response['Command']['Status'],
-            'instance_count': len(instance_ids)
-        }
+        # EMERGENCY patching (window exceeds SLA)
+        execute_patch_operation(
+            instance_ids=["i-123", "i-456"],
+            execution_mode="immediate",
+            environment="prod"
+        )
+    """
+    try:
+        if execution_mode == "scheduled":
+            # Validate maintenance_window_id is provided
+            if not maintenance_window_id:
+                return {
+                    "error": "maintenance_window_id required for scheduled patching",
+                    "suggestion": "Call get_maintenance_windows first to get window_id"
+                }
+            
+            # Register task with maintenance window
+            response = ssm_client.register_task_with_maintenance_window(
+                WindowId=maintenance_window_id,
+                Targets=[{
+                    'Key': 'InstanceIds',
+                    'Values': instance_ids
+                }],
+                TaskArn='AWS-RunPatchBaseline',
+                TaskType='RUN_COMMAND',
+                TaskInvocationParameters={
+                    'RunCommand': {
+                        'Parameters': {
+                            'Operation': ['Install'],
+                            'RebootOption': ['NoReboot']
+                        }
+                    }
+                },
+                Priority=1,
+                MaxConcurrency='50%',
+                MaxErrors='10%',
+                Name=f'scheduled-patch-{environment}-{datetime.utcnow().strftime("%Y%m%d%H%M%S")}'
+            )
+            
+            # Get window details
+            window_details = ssm_client.get_maintenance_window(WindowId=maintenance_window_id)
+            
+            return {
+                'execution_mode': 'scheduled',
+                'status': 'SCHEDULED',
+                'window_task_id': response['WindowTaskId'],
+                'maintenance_window_id': maintenance_window_id,
+                'window_name': window_details.get('Name'),
+                'next_execution': window_details.get('NextExecutionTime', 'See maintenance window schedule'),
+                'instance_count': len(instance_ids),
+                'message': f'Patching scheduled in maintenance window: {window_details.get("Name")}'
+            }
+        
+        elif execution_mode == "immediate":
+            # Execute immediately (EMERGENCY)
+            response = ssm_client.send_command(
+                DocumentName='AWS-RunPatchBaseline',
+                InstanceIds=instance_ids,
+                Parameters={
+                    'Operation': ['Install'],
+                    'RebootOption': ['NoReboot']
+                },
+                Comment=f'EMERGENCY patching for {environment} environment'
+            )
+            
+            return {
+                'execution_mode': 'immediate',
+                'status': 'EXECUTING',
+                'command_id': response['Command']['CommandId'],
+                'instance_count': len(instance_ids),
+                'message': f'Emergency patching initiated for {len(instance_ids)} instances'
+            }
+        
+        else:
+            return {
+                "error": f"Invalid execution_mode: {execution_mode}. Must be 'scheduled' or 'immediate'",
+                "error_code": "InvalidParameter",
+                "category": "ABORT",
+                "suggestion": "Use execution_mode='scheduled' or execution_mode='immediate'",
+                "retryable": False
+            }
+        
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error executing patch operation: {error_info}")
+        error_info["instance_ids"] = instance_ids
+        error_info["execution_mode"] = execution_mode
+        return error_info
     except Exception as e:
         logger.error(f"Error executing patch operation: {e}")
-        return {"error": str(e)}
+        return classify_error(e)
 
 
 @tool
@@ -393,9 +498,14 @@ def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
             'results': results,
             'summary': summary
         }
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error getting command status: {error_info}")
+        error_info["command_id"] = command_id
+        return error_info
     except Exception as e:
         logger.error(f"Error getting command status: {e}")
-        return {"error": str(e)}
+        return classify_error(e)
 
 
 # --- Maintenance Windows ---
@@ -440,9 +550,13 @@ def create_maintenance_window(name: str, schedule: str, duration: int,
             'name': name,
             'schedule': schedule
         }
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error creating maintenance window: {error_info}")
+        return error_info
     except Exception as e:
         logger.error(f"Error creating maintenance window: {e}")
-        return {"error": str(e)}
+        return classify_error(e)
 
 
 # --- Health & Monitoring ---
@@ -506,9 +620,14 @@ def check_instance_health(instance_ids: List[str]) -> dict:
             'recommendation': 'HEALTHY' if avg_health >= 80 else 'INVESTIGATE' if avg_health >= 50 else 'ROLLBACK_RECOMMENDED'
         }
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error checking instance health: {error_info}")
+        error_info["instance_ids"] = instance_ids
+        return error_info
     except Exception as e:
         logger.error(f"Error checking instance health: {e}")
-        return {"error": str(e)}
+        return classify_error(e)
 
 
 @tool
@@ -589,13 +708,18 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
         
         return result
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error checking CloudWatch alarms: {error_info}", exc_info=True)
+        error_info["instance_ids"] = instance_ids
+        error_info["recommendation"] = "UNKNOWN"
+        return error_info
     except Exception as e:
         logger.error(f"Error checking CloudWatch alarms: {e}", exc_info=True)
-        return {
-            "error": str(e),
-            "instance_ids": instance_ids,
-            "recommendation": "UNKNOWN"
-        }
+        result = classify_error(e)
+        result["instance_ids"] = instance_ids
+        result["recommendation"] = "UNKNOWN"
+        return result
 
 
 @tool
@@ -608,7 +732,7 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
     - Patching production environment (higher safety requirements)
     - User wants to wait for completion before moving forward
     
-    For demos/dev environments, users can say "proceed" without verification.
+    For development/testing environments, users can say "proceed" without verification.
     
     Args:
         command_id: SSM command ID from execute_patch_operation
@@ -686,13 +810,16 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
             'alarm_health': alarm_health
         }
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error in verify_and_proceed: {error_info}")
+        error_info["recommendation"] = "INVESTIGATE"
+        return error_info
     except Exception as e:
         logger.error(f"Error in verify_and_proceed: {e}")
-        return {
-            'status': 'ERROR',
-            'recommendation': 'INVESTIGATE',
-            'reason': str(e)
-        }
+        result = classify_error(e)
+        result["recommendation"] = "INVESTIGATE"
+        return result
 
 
 @tool
@@ -752,13 +879,25 @@ fi
             'message': 'Rollback command sent. Use get_command_status to verify completion. If rollback fails, check command output for manual recovery suggestions.'
         }
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error initiating rollback: {error_info}")
+        error_info["instance_ids"] = instance_ids
+        error_info["suggestion"] = (
+            f"{error_info.get('suggestion', '')} "
+            "CRITICAL: Rollback failed. Manual intervention required. "
+            "Check SSM connectivity and instance state."
+        ).strip()
+        return error_info
     except Exception as e:
         logger.error(f"Error initiating rollback: {e}")
-        return {
-            "error": str(e), 
-            "instance_ids": instance_ids,
-            "suggestion": "Rollback command could not be sent. Verify SSM connectivity and instance state."
-        }
+        result = classify_error(e)
+        result["instance_ids"] = instance_ids
+        result["suggestion"] = (
+            "CRITICAL: Rollback failed. Manual intervention required. "
+            "Verify SSM connectivity and instance state."
+        )
+        return result
 
 
 @tool
@@ -884,12 +1023,16 @@ def get_resource_dependencies(resource_id: str) -> dict:
             'summary': f"{blast_radius} blast radius - {impact_description}"
         }
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error analyzing dependencies for {resource_id}: {error_info}")
+        error_info["resource_id"] = resource_id
+        return error_info
     except Exception as e:
         logger.error(f"Error analyzing dependencies for {resource_id}: {e}")
-        return {
-            'error': str(e),
-            'resource_id': resource_id
-        }
+        result = classify_error(e)
+        result["resource_id"] = resource_id
+        return result
 
 
 # --- Compliance & Reporting ---
@@ -1039,13 +1182,18 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
             'instances_validated': len(instance_ids) if instance_ids else 0
         }
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error getting maintenance windows: {error_info}")
+        error_info["windows"] = []
+        error_info["count"] = 0
+        return error_info
     except Exception as e:
         logger.error(f"Error getting maintenance windows: {e}")
-        return {
-            'error': str(e),
-            'windows': [],
-            'count': 0
-        }
+        result = classify_error(e)
+        result["windows"] = []
+        result["count"] = 0
+        return result
 
 
 @tool
@@ -1188,7 +1336,8 @@ def generate_compliance_report(
                 'cve-id': cve_id,
                 'environment': environment,
                 'severity': severity or 'UNKNOWN',
-                'sla-met': str(report['compliance']['sla_met']),
+                'decision-type': decision,
+                'sla-met': str(report['compliance']['sla_met']) if report['compliance']['sla_met'] is not None else 'UNKNOWN',
                 'team': team,
                 'product': product
             }
@@ -1206,12 +1355,16 @@ def generate_compliance_report(
             }
         }
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error generating compliance report: {error_info}")
+        error_info["report_id"] = None
+        return error_info
     except Exception as e:
         logger.error(f"Error generating compliance report: {e}")
-        return {
-            'error': str(e),
-            'report_id': None
-        }
+        result = classify_error(e)
+        result["report_id"] = None
+        return result
 
 
 @tool
@@ -1277,9 +1430,18 @@ def query_compliance_reports(
             }
         }
         
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error querying compliance reports: {error_info}")
+        error_info["reports"] = []
+        error_info["total_count"] = 0
+        return error_info
     except Exception as e:
         logger.error(f"Error querying compliance reports: {e}")
-        return {"error": str(e), "reports": [], "total_count": 0}
+        result = classify_error(e)
+        result["reports"] = []
+        result["total_count"] = 0
+        return result
 
 
 def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime, 
@@ -1339,13 +1501,22 @@ def _parse_report_metadata(s3_client, bucket_name: str, obj: dict) -> Optional[d
         metadata_response = s3_client.head_object(Bucket=bucket_name, Key=obj['Key'])
         metadata = metadata_response.get('Metadata', {})
         
+        # Parse sla-met: 'True' → True, 'False' → False, 'UNKNOWN'/missing → None
+        sla_met_raw = metadata.get('sla-met', 'UNKNOWN')
+        if sla_met_raw == 'True':
+            sla_met = True
+        elif sla_met_raw == 'False':
+            sla_met = False
+        else:
+            sla_met = None  # Unknown — SLA was not calculated
+        
         return {
             'report_id': obj['Key'].split('/')[-1].replace('.json', ''),
             'cve_id': metadata.get('cve-id', 'unknown'),
             'severity': metadata.get('severity', 'unknown'),
             'environment': metadata.get('environment', 'unknown'),
             'decision': metadata.get('decision-type', 'unknown'),
-            'sla_met': metadata.get('sla-met') == 'True',
+            'sla_met': sla_met,
             'team': metadata.get('team', 'unknown'),
             'product': metadata.get('product', 'unknown'),
             's3_key': obj['Key'],
@@ -1363,8 +1534,10 @@ def _matches_filters(report: dict, severity: Optional[str], environment: Optiona
         return False
     if environment and report['environment'] != environment:
         return False
-    if sla_breaches_only and report['sla_met']:
-        return False
+    if sla_breaches_only:
+        # Only include confirmed breaches (sla_met=False), not unknown (sla_met=None)
+        if report['sla_met'] is None or report['sla_met'] is True:
+            return False
     return True
 
 
@@ -1376,12 +1549,17 @@ def _calculate_report_statistics(reports: list) -> dict:
             'total_reports': 0,
             'sla_breaches': 0,
             'sla_breach_rate': 0,
+            'sla_unknown': 0,
             'by_severity': {},
-            'by_team': {}
+            'by_team': {},
+            'by_decision': {}
         }
     
-    sla_breaches = sum(1 for r in reports if not r['sla_met'])
-    breach_rate = (sla_breaches / total * 100)
+    sla_breaches = sum(1 for r in reports if r['sla_met'] is False)
+    sla_unknown = sum(1 for r in reports if r['sla_met'] is None)
+    # Breach rate calculated only against reports with known SLA
+    reports_with_sla = total - sla_unknown
+    breach_rate = (sla_breaches / reports_with_sla * 100) if reports_with_sla > 0 else 0
     
     # Breakdown by severity
     severity_breakdown = {}
@@ -1395,10 +1573,18 @@ def _calculate_report_statistics(reports: list) -> dict:
         team = r['team']
         team_breakdown[team] = team_breakdown.get(team, 0) + 1
     
+    # Breakdown by decision type
+    decision_breakdown = {}
+    for r in reports:
+        dec = r['decision']
+        decision_breakdown[dec] = decision_breakdown.get(dec, 0) + 1
+    
     return {
         'total_reports': total,
         'sla_breaches': sla_breaches,
         'sla_breach_rate': round(breach_rate, 1),
+        'sla_unknown': sla_unknown,
         'by_severity': severity_breakdown,
-        'by_team': team_breakdown
+        'by_team': team_breakdown,
+        'by_decision': decision_breakdown
     }
