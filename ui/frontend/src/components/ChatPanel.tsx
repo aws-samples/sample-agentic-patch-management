@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Button from "@cloudscape-design/components/button";
 import Input from "@cloudscape-design/components/input";
 import SpaceBetween from "@cloudscape-design/components/space-between";
@@ -35,6 +35,24 @@ export default function ChatPanel({
 }: Props) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputBarRef = useRef<HTMLDivElement>(null);
+  const [messagesHeight, setMessagesHeight] = useState<number | undefined>(undefined);
+
+  // Compute messages area height from viewport minus known chrome
+  // TopNav ~48px, SplitPanel header ~56px, input bar measured dynamically
+  const recalcHeight = useCallback(() => {
+    const inputH = inputBarRef.current?.offsetHeight ?? 60;
+    const chrome = 48 + 56; // TopNavigation + SplitPanel header
+    setMessagesHeight(window.innerHeight - chrome - inputH);
+  }, []);
+
+  useEffect(() => {
+    recalcHeight();
+    window.addEventListener("resize", recalcHeight);
+    const t = setTimeout(recalcHeight, 500);
+    return () => { window.removeEventListener("resize", recalcHeight); clearTimeout(t); };
+  }, [recalcHeight]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -55,14 +73,13 @@ export default function ChatPanel({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Messages area */}
+    <div ref={rootRef}>
+      {/* Scrollable messages area */}
       <div
         style={{
-          flex: 1,
           overflowY: "auto",
           padding: "12px 8px",
-          minHeight: 0,
+          height: messagesHeight ?? "calc(100vh - 280px)",
         }}
       >
         {messages.length === 0 ? (
@@ -80,36 +97,28 @@ export default function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* Input area */}
-      <div style={{ padding: "8px 0", borderTop: "1px solid #e9ebed", marginTop: "auto" }}>
+      {/* Input bar */}
+      <div ref={inputBarRef} style={{ padding: "8px 8px", borderTop: "1px solid #e9ebed", background: "#fff" }}>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <div style={{ flex: 1 }}>
             <Input
               value={input}
               onChange={({ detail }) => setInput(detail.value)}
-              onKeyDown={({ detail }) => {
-                if (detail.key === "Enter") handleSend();
-              }}
+              onKeyDown={({ detail }) => { if (detail.key === "Enter") handleSend(); }}
               placeholder="Ask about vulnerabilities, patching, compliance..."
               disabled={isStreaming}
               autoFocus
             />
           </div>
           {isStreaming ? (
-            <Button onClick={onStop} variant="normal">
-              Stop
-            </Button>
+            <Button onClick={onStop} variant="normal">Stop</Button>
           ) : (
-            <Button onClick={handleSend} variant="primary" disabled={!input.trim()}>
-              Send
-            </Button>
+            <Button onClick={handleSend} variant="primary" disabled={!input.trim()}>Send</Button>
           )}
         </div>
         {messages.length > 0 && (
           <Box float="right" margin={{ top: "xxs" }}>
-            <Button variant="link" onClick={onClear} disabled={isStreaming}>
-              New conversation
-            </Button>
+            <Button variant="link" onClick={onClear} disabled={isStreaming}>New conversation</Button>
           </Box>
         )}
       </div>
@@ -127,9 +136,7 @@ function EmptyState({ onSelect }: { onSelect: (text: string) => void }) {
         </Box>
         <SpaceBetween size="xxs">
           {EXAMPLE_PROMPTS.map((prompt) => (
-            <Button key={prompt} variant="link" onClick={() => onSelect(prompt)}>
-              {prompt}
-            </Button>
+            <Button key={prompt} variant="link" onClick={() => onSelect(prompt)}>{prompt}</Button>
           ))}
         </SpaceBetween>
       </SpaceBetween>

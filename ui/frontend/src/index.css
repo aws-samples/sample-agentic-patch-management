@@ -133,3 +133,5 @@
 .agent-markdown a:hover {
   text-decoration: underline;
 }
+
+/* Chat panel — no special CSS needed, height computed via JS */

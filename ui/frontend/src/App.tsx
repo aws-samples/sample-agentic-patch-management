@@ -38,7 +38,7 @@ export default function App() {
             hidePreferencesButton
             closeBehavior="hide"
           >
-            <div style={{ height: "calc(100vh - 220px)" }}>
+            <div>
               <ChatPanel
                 messages={messages}
                 isStreaming={isStreaming}
