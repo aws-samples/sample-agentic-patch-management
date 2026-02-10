@@ -1,17 +1,23 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import AppLayout from "@cloudscape-design/components/app-layout";
 import ContentLayout from "@cloudscape-design/components/content-layout";
 import Header from "@cloudscape-design/components/header";
-import Box from "@cloudscape-design/components/box";
 import SplitPanel from "@cloudscape-design/components/split-panel";
 import TopNavigation from "@cloudscape-design/components/top-navigation";
 import ChatPanel from "./components/ChatPanel";
+import DashboardPanel from "./components/DashboardPanel";
 import { useAgentStream } from "./hooks/useAgentStream";
 
 export default function App() {
   const { messages, isStreaming, sessionId, sendMessage, stopStreaming, clearMessages } =
     useAgentStream();
   const [splitOpen, setSplitOpen] = useState(true);
+  const [chatPrefill, setChatPrefill] = useState("");
+
+  const handleChatPrefill = useCallback((text: string) => {
+    setChatPrefill(text);
+    setSplitOpen(true);
+  }, []);
 
   return (
     <>
@@ -48,6 +54,8 @@ export default function App() {
                 onStop={stopStreaming}
                 onClear={clearMessages}
                 sessionId={sessionId}
+                prefillText={chatPrefill}
+                onPrefillConsumed={() => setChatPrefill("")}
               />
             </div>
           </SplitPanel>
@@ -66,14 +74,7 @@ export default function App() {
               </Header>
             }
           >
-            <Box padding="l" textAlign="center" color="text-body-secondary">
-              <Box variant="h2">Dashboard panels coming in Phase 2</Box>
-              <Box variant="p" margin={{ top: "s" }}>
-                Environment status, vulnerability findings, patching activity, and compliance
-                summary will appear here. For now, use the chat panel on the right to interact
-                with Patchy.
-              </Box>
-            </Box>
+            <DashboardPanel onChatPrefill={handleChatPrefill} />
           </ContentLayout>
         }
       />

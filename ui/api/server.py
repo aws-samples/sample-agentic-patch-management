@@ -201,6 +201,244 @@ async def health():
         return {"status": "error", "detail": str(e)}
 
 
+# ── Dashboard endpoints ─────────────────────────────────────────────
+
+ENVIRONMENTS = ["dev", "staging", "prod"]
+
+
+def _aws_session():
+    """Create a boto3 session using .env config."""
+    profile = os.environ.get("AWS_PROFILE")
+    region = os.environ.get("AWS_REGION", _region or "us-east-1")
+    if profile:
+        return boto3.Session(profile_name=profile, region_name=region)
+    return boto3.Session(region_name=region)
+
+
+@app.get("/api/dashboard/environments")
+async def dashboard_environments():
+    """Environment status cards — instance counts + SSM health per env."""
+    try:
+        session = _aws_session()
+        ec2 = session.client("ec2")
+        ssm = session.client("ssm")
+
+        # Get all tagged instances in one call
+        ec2_resp = ec2.describe_instances(
+            Filters=[
+                {"Name": "tag:Environment", "Values": ENVIRONMENTS},
+                {"Name": "instance-state-name", "Values": ["running"]},
+            ]
+        )
+
+        # Build instance map by environment
+        env_instances: dict[str, list[str]] = {e: [] for e in ENVIRONMENTS}
+        for res in ec2_resp.get("Reservations", []):
+            for inst in res.get("Instances", []):
+                tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+                env = tags.get("Environment", "")
+                if env in env_instances:
+                    env_instances[env].append(inst["InstanceId"])
+
+        # Get SSM connectivity in one call
+        all_ids = [i for ids in env_instances.values() for i in ids]
+        ssm_online: set[str] = set()
+        if all_ids:
+            ssm_resp = ssm.describe_instance_information(
+                Filters=[{"Key": "InstanceIds", "Values": all_ids}]
+            )
+            for info in ssm_resp.get("InstanceInformationList", []):
+                if info.get("PingStatus") == "Online":
+                    ssm_online.add(info["InstanceId"])
+
+        results = []
+        for env in ENVIRONMENTS:
+            ids = env_instances[env]
+            online = sum(1 for i in ids if i in ssm_online)
+            results.append({
+                "environment": env,
+                "total": len(ids),
+                "online": online,
+                "offline": len(ids) - online,
+                "status": "healthy" if online == len(ids) and len(ids) > 0
+                          else "warning" if online > 0
+                          else "error" if len(ids) > 0
+                          else "inactive",
+            })
+
+        return {"environments": results}
+    except Exception as e:
+        logger.error(f"dashboard/environments error: {e}")
+        return {"environments": [], "error": str(e)}
+
+
+@app.get("/api/dashboard/vulnerabilities")
+async def dashboard_vulnerabilities():
+    """Active vulnerability findings from Inspector, sorted by severity."""
+    try:
+        session = _aws_session()
+        inspector = session.client("inspector2")
+
+        resp = inspector.list_findings(
+            filterCriteria={
+                "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
+            },
+            sortCriteria={"field": "SEVERITY", "sortOrder": "DESC"},
+            maxResults=50,
+        )
+
+        findings = []
+        severity_counts: dict[str, int] = {}
+        for f in resp.get("findings", []):
+            vuln = f.get("packageVulnerabilityDetails", {})
+            sev = f.get("severity", "UNKNOWN")
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+            # Extract environment from resource tags
+            env = "unknown"
+            for r in f.get("resources", []):
+                for t in r.get("tags", {}).items():
+                    if t[0] == "Environment":
+                        env = t[1]
+
+            findings.append({
+                "cve_id": vuln.get("vulnerabilityId", "N/A"),
+                "severity": sev,
+                "cvss_score": vuln.get("cvss", [{}])[0].get("baseScore"),
+                "title": f.get("title", ""),
+                "environment": env,
+                "resource_id": f.get("resources", [{}])[0].get("id", ""),
+                "fix_available": f.get("fixAvailable", "UNKNOWN"),
+            })
+
+        return {
+            "findings": findings,
+            "total": len(findings),
+            "severity_counts": severity_counts,
+        }
+    except Exception as e:
+        logger.error(f"dashboard/vulnerabilities error: {e}")
+        return {"findings": [], "total": 0, "severity_counts": {}, "error": str(e)}
+
+
+@app.get("/api/dashboard/activity")
+async def dashboard_activity():
+    """Recent patching activity from S3 compliance reports (last 7 days)."""
+    try:
+        session = _aws_session()
+        s3 = session.client("s3")
+        sts = session.client("sts")
+        account_id = sts.get_caller_identity()["Account"]
+        bucket = f"patch-compliance-reports-{account_id}"
+
+        # Check bucket exists
+        try:
+            s3.head_bucket(Bucket=bucket)
+        except Exception:
+            return {"activities": [], "total": 0, "message": "No compliance bucket found"}
+
+        # Scan last 7 days of date-prefixed keys
+        from datetime import datetime, timedelta
+
+        activities = []
+        now = datetime.utcnow()
+        for day_offset in range(7):
+            d = now - timedelta(days=day_offset)
+            prefix = f"{d.year}/{d.month:02d}/{d.day:02d}/"
+            try:
+                resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+                for obj in resp.get("Contents", []):
+                    # Read report metadata from S3 object metadata
+                    head = s3.head_object(Bucket=bucket, Key=obj["Key"])
+                    meta = head.get("Metadata", {})
+                    activities.append({
+                        "report_key": obj["Key"],
+                        "timestamp": obj["LastModified"].isoformat(),
+                        "cve_id": meta.get("cve-id", "N/A"),
+                        "environment": meta.get("environment", "N/A"),
+                        "severity": meta.get("severity", "N/A"),
+                        "decision": meta.get("decision-type", "N/A"),
+                        "sla_met": meta.get("sla-met", "UNKNOWN"),
+                    })
+            except Exception:
+                continue
+
+        # Sort newest first
+        activities.sort(key=lambda x: x["timestamp"], reverse=True)
+
+        return {"activities": activities[:25], "total": len(activities)}
+    except Exception as e:
+        logger.error(f"dashboard/activity error: {e}")
+        return {"activities": [], "total": 0, "error": str(e)}
+
+
+@app.get("/api/dashboard/compliance")
+async def dashboard_compliance():
+    """Compliance summary — SLA stats from recent reports."""
+    try:
+        session = _aws_session()
+        s3 = session.client("s3")
+        sts = session.client("sts")
+        account_id = sts.get_caller_identity()["Account"]
+        bucket = f"patch-compliance-reports-{account_id}"
+
+        try:
+            s3.head_bucket(Bucket=bucket)
+        except Exception:
+            return {"summary": {}, "message": "No compliance bucket found"}
+
+        from datetime import datetime, timedelta
+
+        total = 0
+        sla_met = 0
+        sla_breached = 0
+        by_severity: dict[str, dict] = {}
+
+        now = datetime.utcnow()
+        for day_offset in range(30):
+            d = now - timedelta(days=day_offset)
+            prefix = f"{d.year}/{d.month:02d}/{d.day:02d}/"
+            try:
+                resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+                for obj in resp.get("Contents", []):
+                    head = s3.head_object(Bucket=bucket, Key=obj["Key"])
+                    meta = head.get("Metadata", {})
+                    total += 1
+                    sla_status = meta.get("sla-met", "UNKNOWN")
+                    severity = meta.get("severity", "UNKNOWN")
+
+                    if sla_status == "True":
+                        sla_met += 1
+                    elif sla_status == "False":
+                        sla_breached += 1
+
+                    if severity not in by_severity:
+                        by_severity[severity] = {"total": 0, "met": 0, "breached": 0}
+                    by_severity[severity]["total"] += 1
+                    if sla_status == "True":
+                        by_severity[severity]["met"] += 1
+                    elif sla_status == "False":
+                        by_severity[severity]["breached"] += 1
+            except Exception:
+                continue
+
+        sla_rate = round((sla_met / total) * 100, 1) if total > 0 else 0
+
+        return {
+            "summary": {
+                "total_reports": total,
+                "sla_met": sla_met,
+                "sla_breached": sla_breached,
+                "sla_rate_percent": sla_rate,
+                "period_days": 30,
+                "by_severity": by_severity,
+            }
+        }
+    except Exception as e:
+        logger.error(f"dashboard/compliance error: {e}")
+        return {"summary": {}, "error": str(e)}
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

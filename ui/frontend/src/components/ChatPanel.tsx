@@ -14,6 +14,8 @@ interface Props {
   onStop: () => void;
   onClear: () => void;
   sessionId: string;
+  prefillText?: string;
+  onPrefillConsumed?: () => void;
 }
 
 const EXAMPLE_PROMPTS = [
@@ -29,6 +31,8 @@ export default function ChatPanel({
   onStop,
   onClear,
   sessionId,
+  prefillText,
+  onPrefillConsumed,
 }: Props) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -37,6 +41,14 @@ export default function ChatPanel({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Handle prefill from dashboard clicks
+  useEffect(() => {
+    if (prefillText) {
+      setInput(prefillText);
+      onPrefillConsumed?.();
+    }
+  }, [prefillText, onPrefillConsumed]);
 
   const handleSend = () => {
     const text = input.trim();
