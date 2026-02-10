@@ -5,6 +5,7 @@ import ColumnLayout from "@cloudscape-design/components/column-layout";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import Table from "@cloudscape-design/components/table";
 import Select from "@cloudscape-design/components/select";
+import Button from "@cloudscape-design/components/button";
 import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import Box from "@cloudscape-design/components/box";
 import ProgressBar from "@cloudscape-design/components/progress-bar";
@@ -100,12 +101,12 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
           </Header>
         }
         filter={
-          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ minWidth: "150px" }}>
               <Select
                 selectedOption={teamFilter ? { value: teamFilter, label: teamFilter } : null}
-                onChange={({ detail }) => { setTeamFilter(detail.selectedOption?.value ?? null); setCurrentPage(1); }}
-                options={teams.map((t) => ({ value: t, label: t }))}
+                onChange={({ detail }) => { setTeamFilter(detail.selectedOption?.value === "__all__" ? null : detail.selectedOption?.value ?? null); setCurrentPage(1); }}
+                options={[{ value: "__all__", label: "All teams" }, ...teams.map((t) => ({ value: t, label: t }))]}
                 placeholder="All teams"
                 selectedAriaLabel="Selected"
               />
@@ -113,8 +114,8 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
             <div style={{ minWidth: "150px" }}>
               <Select
                 selectedOption={sevFilter ? { value: sevFilter, label: sevFilter } : null}
-                onChange={({ detail }) => { setSevFilter(detail.selectedOption?.value ?? null); setCurrentPage(1); }}
-                options={severities.map((s) => ({ value: s, label: s }))}
+                onChange={({ detail }) => { setSevFilter(detail.selectedOption?.value === "__all__" ? null : detail.selectedOption?.value ?? null); setCurrentPage(1); }}
+                options={[{ value: "__all__", label: "All severities" }, ...severities.map((s) => ({ value: s, label: s }))]}
                 placeholder="All severities"
                 selectedAriaLabel="Selected"
               />
@@ -122,12 +123,17 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
             <div style={{ minWidth: "150px" }}>
               <Select
                 selectedOption={envFilter ? { value: envFilter, label: envFilter } : null}
-                onChange={({ detail }) => { setEnvFilter(detail.selectedOption?.value ?? null); setCurrentPage(1); }}
-                options={environments.map((e) => ({ value: e, label: e }))}
+                onChange={({ detail }) => { setEnvFilter(detail.selectedOption?.value === "__all__" ? null : detail.selectedOption?.value ?? null); setCurrentPage(1); }}
+                options={[{ value: "__all__", label: "All environments" }, ...environments.map((e) => ({ value: e, label: e }))]}
                 placeholder="All environments"
                 selectedAriaLabel="Selected"
               />
             </div>
+            {(teamFilter || sevFilter || envFilter) && (
+              <Button variant="link" onClick={() => { setTeamFilter(null); setSevFilter(null); setEnvFilter(null); setCurrentPage(1); }}>
+                Clear filters
+              </Button>
+            )}
           </div>
         }
         columnDefinitions={[
