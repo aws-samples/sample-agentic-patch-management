@@ -415,12 +415,21 @@ def _fetch_reports() -> dict:
     sla_met = 0
     sla_breached = 0
     by_severity: dict[str, dict] = {}
+    by_environment: dict[str, dict] = {}
+    by_team: dict[str, dict] = {}
+
+    # Also build detailed report list for explainability
+    report_details = []
 
     for _, report in reports:
         vuln = report.get("vulnerability", {})
+        scope = report.get("scope", {})
         comp_data = report.get("compliance", {})
+        exec_data = report.get("execution", {})
         sla_status = comp_data.get("sla_met")
         severity = vuln.get("severity", "UNKNOWN")
+        environment = scope.get("environment", "unknown")
+        team = scope.get("team", "unknown")
         total += 1
 
         if sla_status is True:
@@ -428,6 +437,7 @@ def _fetch_reports() -> dict:
         elif sla_status is False:
             sla_breached += 1
 
+        # By severity
         if severity not in by_severity:
             by_severity[severity] = {"total": 0, "met": 0, "breached": 0}
         by_severity[severity]["total"] += 1
@@ -435,6 +445,47 @@ def _fetch_reports() -> dict:
             by_severity[severity]["met"] += 1
         elif sla_status is False:
             by_severity[severity]["breached"] += 1
+
+        # By environment
+        if environment not in by_environment:
+            by_environment[environment] = {"total": 0, "met": 0, "breached": 0}
+        by_environment[environment]["total"] += 1
+        if sla_status is True:
+            by_environment[environment]["met"] += 1
+        elif sla_status is False:
+            by_environment[environment]["breached"] += 1
+
+        # By team
+        if team not in by_team:
+            by_team[team] = {"total": 0, "met": 0, "breached": 0}
+        by_team[team]["total"] += 1
+        if sla_status is True:
+            by_team[team]["met"] += 1
+        elif sla_status is False:
+            by_team[team]["breached"] += 1
+
+        # Detailed report for explainability
+        report_details.append({
+            "report_id": report.get("report_id", ""),
+            "timestamp": report.get("timestamp", ""),
+            "cve_id": vuln.get("cve_id", "N/A"),
+            "severity": severity,
+            "cvss_score": vuln.get("cvss_score"),
+            "environment": environment,
+            "team": team,
+            "product": scope.get("product", "unknown"),
+            "instance_count": scope.get("instance_count", 0),
+            "decision": exec_data.get("decision", "N/A"),
+            "sla_hours": comp_data.get("sla_hours"),
+            "sla_source": comp_data.get("sla_source", "N/A"),
+            "time_to_patch_hours": comp_data.get("time_to_patch_hours"),
+            "sla_met": sla_status,
+            "status": exec_data.get("status", "UNKNOWN"),
+            "success_count": exec_data.get("success_count", 0),
+            "failure_count": exec_data.get("failure_count", 0),
+        })
+
+    report_details.sort(key=lambda x: x["timestamp"], reverse=True)
 
     compliance = None
     if total > 0:
@@ -445,9 +496,15 @@ def _fetch_reports() -> dict:
             "sla_rate_percent": round((sla_met / total) * 100, 1),
             "period_days": 30,
             "by_severity": by_severity,
+            "by_environment": by_environment,
+            "by_team": by_team,
         }
 
-    return {"activities": activities[:25], "compliance": compliance}
+    return {
+        "activities": activities[:25],
+        "compliance": compliance,
+        "report_details": report_details,
+    }
 
 
 @app.get("/api/dashboard")
@@ -478,7 +535,7 @@ async def dashboard(force: bool = False):
 
     envs = results[0] if not isinstance(results[0], Exception) else []
     vulns = results[1] if not isinstance(results[1], Exception) else {"findings": [], "severity_counts": {}}
-    report_data = results[2] if not isinstance(results[2], Exception) else {"activities": [], "compliance": None}
+    report_data = results[2] if not isinstance(results[2], Exception) else {"activities": [], "compliance": None, "report_details": []}
 
     if isinstance(results[0], Exception):
         errors.append(f"Environments: {results[0]}")
@@ -493,6 +550,7 @@ async def dashboard(force: bool = False):
         "severity_counts": vulns["severity_counts"],
         "activities": report_data["activities"],
         "compliance": report_data["compliance"],
+        "report_details": report_data["report_details"],
         "errors": errors,
     }
 

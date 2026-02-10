@@ -10,6 +10,7 @@ import EnvironmentCards from "./EnvironmentCards";
 import VulnTable from "./VulnTable";
 import ActivityTable from "./ActivityTable";
 import ComplianceSummary from "./ComplianceSummary";
+import ExplainabilityTable from "./ExplainabilityTable";
 import { useDashboard } from "../hooks/useDashboard";
 
 interface Props {
@@ -112,7 +113,20 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
             label: "Compliance",
             content: (
               <Box padding={{ top: "s" }}>
-                <ComplianceSummary data={data.compliance} loading={loading} />
+                <ComplianceSummary data={data.compliance} reports={data.reportDetails} loading={loading} />
+              </Box>
+            ),
+          },
+          {
+            id: "explainability",
+            label: `Decisions (${data.reportDetails.length})`,
+            content: (
+              <Box padding={{ top: "s" }}>
+                <ExplainabilityTable
+                  items={data.reportDetails}
+                  loading={loading}
+                  onCveClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
+                />
               </Box>
             ),
           },

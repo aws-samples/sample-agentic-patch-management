@@ -37,6 +37,28 @@ export interface ComplianceSummary {
   sla_rate_percent: number;
   period_days: number;
   by_severity: Record<string, { total: number; met: number; breached: number }>;
+  by_environment: Record<string, { total: number; met: number; breached: number }>;
+  by_team: Record<string, { total: number; met: number; breached: number }>;
+}
+
+export interface ReportDetail {
+  report_id: string;
+  timestamp: string;
+  cve_id: string;
+  severity: string;
+  cvss_score: number | null;
+  environment: string;
+  team: string;
+  product: string;
+  instance_count: number;
+  decision: string;
+  sla_hours: number | null;
+  sla_source: string;
+  time_to_patch_hours: number | null;
+  sla_met: boolean | null;
+  status: string;
+  success_count: number;
+  failure_count: number;
 }
 
 export interface DashboardData {
@@ -45,6 +67,7 @@ export interface DashboardData {
   severityCounts: Record<string, number>;
   activities: ActivityItem[];
   compliance: ComplianceSummary | null;
+  reportDetails: ReportDetail[];
   errors: string[];
 }
 
@@ -82,6 +105,7 @@ export async function fetchDashboard(force = false): Promise<DashboardData> {
     severityCounts: raw.severity_counts ?? {},
     activities: raw.activities ?? [],
     compliance: raw.compliance ?? null,
+    reportDetails: raw.report_details ?? [],
     errors: raw.errors ?? [],
   };
 }
