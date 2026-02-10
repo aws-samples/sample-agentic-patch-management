@@ -156,6 +156,25 @@ function workflowReducer(state: WorkflowState, event: WorkflowEvent): WorkflowSt
         }));
       }
 
+      // Discovery: handle instance_count from text extraction (when no instance_ids)
+      if (event.step === "discovery" && typeof data.instance_count === "number" && env.instances.length === 0) {
+        env.instances = Array.from({ length: data.instance_count }, (_, i) => ({
+          instanceId: `instance-${i + 1}`,
+          team: "",
+          status: "queued" as const,
+          elapsedMs: null,
+        }));
+      }
+
+      // Update CVE/severity from text extraction if not already set
+      if (typeof data.cve_id === "string") {
+        // Update at state level — will be picked up on return
+        state = { ...state, cveId: state.cveId ?? data.cve_id };
+      }
+      if (typeof data.severity === "string") {
+        state = { ...state, severity: state.severity ?? data.severity };
+      }
+
       // Patch execute: store command_id from tool input
       if (event.step === "patch_execute") {
         if (typeof data.command_id === "string") {

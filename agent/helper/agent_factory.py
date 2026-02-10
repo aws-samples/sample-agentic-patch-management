@@ -7,13 +7,14 @@ from strands import Agent
 from strands.models import BedrockModel
 from bedrock_agentcore.memory import MemoryClient
 from helper.memory_hooks import AgentCoreMemoryHook
+from helper.workflow_events import WorkflowTrackingHook
 
 logger = logging.getLogger(__name__)
 
 
 def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens: int = 6000) -> Agent:
     """
-    Create agent with AgentCore memory integration.
+    Create agent with AgentCore memory integration and workflow tracking.
     
     Args:
         name: Agent name (e.g., "supervisor", "vulnerability_analyst")
@@ -46,6 +47,16 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             session_id=context.session_id
         )
         hooks.append(memory_hook)
+    
+    # Attach workflow tracking hook to specialist agents (not supervisor)
+    # Supervisor tool calls are already visible in the outer stream;
+    # we need this hook to capture inner specialist tool calls.
+    if name != "patch-automation-supervisor":
+        workflow_hook = WorkflowTrackingHook(
+            session_id=context.session_id,
+            agent_name=name,
+        )
+        hooks.append(workflow_hook)
     
     # Create and return agent
     return Agent(

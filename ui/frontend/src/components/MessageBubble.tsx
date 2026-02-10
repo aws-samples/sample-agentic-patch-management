@@ -169,17 +169,14 @@ function cleanAgentText(raw: string): string {
  * the body (without next steps) and an array of action strings.
  *
  * Matches patterns like:
- *   **Next Steps:**
+ *   **Next Steps:**           / **Next steps:**
+ *   ### Next Steps            / ## ⚡ Next Steps
  *   - Handle CVE-2025-38527 in dev
  *   - Check compliance status
- *
- * Or:
- *   ## Next Steps
- *   1. Handle CVE-2025-38527 in dev
  */
 function extractActions(text: string): { body: string; actions: string[] } {
-  // Match "Next Steps" heading or bold label, then capture the rest
-  const pattern = /(?:^|\n)(?:#{1,4}\s*Next\s*Steps[:\s]*|[*_]{2}Next\s*Steps[:\s]*[*_]{2}[:\s]*)\n([\s\S]*?)$/i;
+  // Match "Next Steps" heading or bold label with optional emoji prefix, case-insensitive
+  const pattern = /(?:^|\n)(?:#{1,4}\s*(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?Next\s*Steps[:\s]*|[*_]{2}(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?Next\s*Steps[:\s]*[*_]{2}[:\s]*)\n([\s\S]*?)$/iu;
   const match = text.match(pattern);
 
   if (!match) return { body: text, actions: [] };

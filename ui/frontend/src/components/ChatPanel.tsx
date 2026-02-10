@@ -55,7 +55,7 @@ export default function ChatPanel({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", fontFamily: "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" }}>
       {/* Scrollable messages area — fills available space */}
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 8px", minHeight: 0 }}>
         {messages.length === 0 ? (
