@@ -9,9 +9,9 @@ export function useDashboard() {
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     try {
-      const result = await fetchDashboard();
+      const result = await fetchDashboard(force);
       setData(result);
       setLastRefreshed(new Date());
     } catch {
@@ -21,10 +21,10 @@ export function useDashboard() {
     }
   }, []);
 
-  // Initial load + auto-refresh
+  // Initial load + auto-refresh (auto-refresh uses cache, initial load forces)
   useEffect(() => {
-    refresh();
-    timerRef.current = setInterval(refresh, AUTO_REFRESH_MS);
+    refresh(true);
+    timerRef.current = setInterval(() => refresh(false), AUTO_REFRESH_MS);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };

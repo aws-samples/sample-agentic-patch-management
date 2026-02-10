@@ -204,9 +204,13 @@ async def health():
 # ── Dashboard ────────────────────────────────────────────────────────
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 ENVIRONMENTS = ["dev", "staging", "prod"]
+
+# Cache account ID — never changes during a server session
+_cached_account_id: str | None = None
 
 
 def _aws_session():
@@ -216,6 +220,15 @@ def _aws_session():
     if profile:
         return boto3.Session(profile_name=profile, region_name=region)
     return boto3.Session(region_name=region)
+
+
+def _get_account_id() -> str:
+    """Cached STS get_caller_identity — avoids 3 redundant calls per refresh."""
+    global _cached_account_id
+    if not _cached_account_id:
+        session = _aws_session()
+        _cached_account_id = session.client("sts").get_caller_identity()["Account"]
+    return _cached_account_id
 
 
 def _fetch_environments():
@@ -305,142 +318,192 @@ def _fetch_vulnerabilities():
     return {"findings": findings, "severity_counts": severity_counts}
 
 
-def _fetch_activity():
-    """Sync: Recent compliance reports from S3 (last 7 days)."""
-    session = _aws_session()
-    s3 = session.client("s3")
-    sts = session.client("sts")
-    account_id = sts.get_caller_identity()["Account"]
-    bucket = f"patch-compliance-reports-{account_id}"
+def _list_report_keys(s3, bucket: str, days: int) -> list[dict]:
+    """List all S3 report objects for the last N days in a single pass.
 
-    try:
-        s3.head_bucket(Bucket=bucket)
-    except Exception:
-        return []
-
-    activities = []
+    Uses year/month prefix to minimize list_objects_v2 calls — e.g. 30 days
+    spanning 2 months = 2 API calls instead of 30.
+    """
     now = datetime.utcnow()
-    for day_offset in range(7):
-        d = now - timedelta(days=day_offset)
-        prefix = f"{d.year}/{d.month:02d}/{d.day:02d}/"
+    cutoff = now - timedelta(days=days)
+
+    # Collect unique year/month prefixes covering the range
+    months: set[str] = set()
+    d = cutoff
+    while d <= now:
+        months.add(f"{d.year}/{d.month:02d}/")
+        d += timedelta(days=28)  # jump by ~month
+    months.add(f"{now.year}/{now.month:02d}/")  # ensure current month
+
+    objects = []
+    for prefix in sorted(months):
         try:
-            resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-            for obj in resp.get("Contents", []):
-                head = s3.head_object(Bucket=bucket, Key=obj["Key"])
-                meta = head.get("Metadata", {})
-                activities.append({
-                    "report_key": obj["Key"],
-                    "timestamp": obj["LastModified"].isoformat(),
-                    "cve_id": meta.get("cve-id", "N/A"),
-                    "environment": meta.get("environment", "N/A"),
-                    "severity": meta.get("severity", "N/A"),
-                    "decision": meta.get("decision-type", "N/A"),
-                    "sla_met": meta.get("sla-met", "UNKNOWN"),
-                })
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    # Filter by actual date cutoff
+                    if obj["LastModified"].replace(tzinfo=None) >= cutoff:
+                        objects.append(obj)
         except Exception:
             continue
-
-    activities.sort(key=lambda x: x["timestamp"], reverse=True)
-    return activities[:25]
+    return objects
 
 
-def _fetch_compliance():
-    """Sync: SLA stats from S3 reports (last 30 days)."""
-    session = _aws_session()
-    s3 = session.client("s3")
-    sts = session.client("sts")
-    account_id = sts.get_caller_identity()["Account"]
-    bucket = f"patch-compliance-reports-{account_id}"
-
+def _read_report_json(s3, bucket: str, key: str) -> dict | None:
+    """Read a single report JSON from S3. Returns parsed dict or None."""
     try:
-        s3.head_bucket(Bucket=bucket)
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        return json.loads(resp["Body"].read())
     except Exception:
         return None
 
+
+def _fetch_reports() -> dict:
+    """Fetch all S3 compliance reports (last 30 days) in one pass.
+
+    Returns both activity (last 7 days, max 25) and compliance stats (30 days).
+    Eliminates per-object head_object calls by reading JSON body in parallel.
+    """
+    account_id = _get_account_id()
+    bucket = f"patch-compliance-reports-{account_id}"
+    session = _aws_session()
+    s3 = session.client("s3")
+
+    try:
+        s3.head_bucket(Bucket=bucket)
+    except Exception:
+        return {"activities": [], "compliance": None}
+
+    # List all report keys for last 30 days (few API calls via month-prefix)
+    objects = _list_report_keys(s3, bucket, days=30)
+    if not objects:
+        return {"activities": [], "compliance": None}
+
+    # Read report JSON bodies in parallel (10 threads)
+    reports: list[tuple[dict, dict]] = []  # (s3_obj, parsed_json)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_read_report_json, s3, bucket, obj["Key"]): obj for obj in objects}
+        for future in futures:
+            obj = futures[future]
+            parsed = future.result()
+            if parsed:
+                reports.append((obj, parsed))
+
+    # Build activity list (last 7 days, sorted, max 25)
+    cutoff_7d = datetime.utcnow() - timedelta(days=7)
+    activities = []
+    for obj, report in reports:
+        last_mod = obj["LastModified"].replace(tzinfo=None)
+        if last_mod >= cutoff_7d:
+            vuln = report.get("vulnerability", {})
+            scope = report.get("scope", {})
+            comp_data = report.get("compliance", {})
+            exec_data = report.get("execution", {})
+            activities.append({
+                "report_key": obj["Key"],
+                "timestamp": obj["LastModified"].isoformat(),
+                "cve_id": vuln.get("cve_id", "N/A"),
+                "environment": scope.get("environment", "N/A"),
+                "severity": vuln.get("severity", "N/A"),
+                "decision": exec_data.get("decision", "N/A"),
+                "sla_met": str(comp_data.get("sla_met", "UNKNOWN")),
+            })
+    activities.sort(key=lambda x: x["timestamp"], reverse=True)
+
+    # Build compliance stats (all 30 days)
     total = 0
     sla_met = 0
     sla_breached = 0
     by_severity: dict[str, dict] = {}
 
-    now = datetime.utcnow()
-    for day_offset in range(30):
-        d = now - timedelta(days=day_offset)
-        prefix = f"{d.year}/{d.month:02d}/{d.day:02d}/"
-        try:
-            resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-            for obj in resp.get("Contents", []):
-                head = s3.head_object(Bucket=bucket, Key=obj["Key"])
-                meta = head.get("Metadata", {})
-                total += 1
-                sla_status = meta.get("sla-met", "UNKNOWN")
-                severity = meta.get("severity", "UNKNOWN")
+    for _, report in reports:
+        vuln = report.get("vulnerability", {})
+        comp_data = report.get("compliance", {})
+        sla_status = comp_data.get("sla_met")
+        severity = vuln.get("severity", "UNKNOWN")
+        total += 1
 
-                if sla_status == "True":
-                    sla_met += 1
-                elif sla_status == "False":
-                    sla_breached += 1
+        if sla_status is True:
+            sla_met += 1
+        elif sla_status is False:
+            sla_breached += 1
 
-                if severity not in by_severity:
-                    by_severity[severity] = {"total": 0, "met": 0, "breached": 0}
-                by_severity[severity]["total"] += 1
-                if sla_status == "True":
-                    by_severity[severity]["met"] += 1
-                elif sla_status == "False":
-                    by_severity[severity]["breached"] += 1
-        except Exception:
-            continue
+        if severity not in by_severity:
+            by_severity[severity] = {"total": 0, "met": 0, "breached": 0}
+        by_severity[severity]["total"] += 1
+        if sla_status is True:
+            by_severity[severity]["met"] += 1
+        elif sla_status is False:
+            by_severity[severity]["breached"] += 1
 
-    if total == 0:
-        return None
+    compliance = None
+    if total > 0:
+        compliance = {
+            "total_reports": total,
+            "sla_met": sla_met,
+            "sla_breached": sla_breached,
+            "sla_rate_percent": round((sla_met / total) * 100, 1),
+            "period_days": 30,
+            "by_severity": by_severity,
+        }
 
-    return {
-        "total_reports": total,
-        "sla_met": sla_met,
-        "sla_breached": sla_breached,
-        "sla_rate_percent": round((sla_met / total) * 100, 1),
-        "period_days": 30,
-        "by_severity": by_severity,
-    }
+    return {"activities": activities[:25], "compliance": compliance}
 
 
 @app.get("/api/dashboard")
-async def dashboard():
+async def dashboard(force: bool = False):
     """
     Single endpoint returning all dashboard data.
-    Runs all 4 data fetches concurrently in threads so they don't block each other.
+    Runs 3 concurrent fetches: environments, vulnerabilities, and S3 reports.
+    S3 reports are fetched once and split into activity + compliance views.
+
+    Caches results for 30 seconds — returns stale data instantly while
+    refreshing in the background on the next request after TTL expires.
+    Pass ?force=true to bypass cache (manual refresh button).
     """
+    global _dashboard_cache, _dashboard_cache_time
+    now = time.time()
+
+    # Return cached data if fresh (< 30s old) and not forced
+    if not force and _dashboard_cache and (now - _dashboard_cache_time) < 30:
+        return _dashboard_cache
+
     errors = []
 
-    # Run all sync boto3 calls concurrently in the thread pool
     env_task = asyncio.to_thread(_fetch_environments)
     vuln_task = asyncio.to_thread(_fetch_vulnerabilities)
-    act_task = asyncio.to_thread(_fetch_activity)
-    comp_task = asyncio.to_thread(_fetch_compliance)
+    reports_task = asyncio.to_thread(_fetch_reports)
 
-    results = await asyncio.gather(env_task, vuln_task, act_task, comp_task, return_exceptions=True)
+    results = await asyncio.gather(env_task, vuln_task, reports_task, return_exceptions=True)
 
     envs = results[0] if not isinstance(results[0], Exception) else []
     vulns = results[1] if not isinstance(results[1], Exception) else {"findings": [], "severity_counts": {}}
-    acts = results[2] if not isinstance(results[2], Exception) else []
-    comp = results[3] if not isinstance(results[3], Exception) else None
+    report_data = results[2] if not isinstance(results[2], Exception) else {"activities": [], "compliance": None}
 
     if isinstance(results[0], Exception):
         errors.append(f"Environments: {results[0]}")
     if isinstance(results[1], Exception):
         errors.append(f"Vulnerabilities: {results[1]}")
     if isinstance(results[2], Exception):
-        errors.append(f"Activity: {results[2]}")
-    if isinstance(results[3], Exception):
-        errors.append(f"Compliance: {results[3]}")
+        errors.append(f"Reports: {results[2]}")
 
-    return {
+    result = {
         "environments": envs,
         "findings": vulns["findings"],
         "severity_counts": vulns["severity_counts"],
-        "activities": acts,
-        "compliance": comp,
+        "activities": report_data["activities"],
+        "compliance": report_data["compliance"],
         "errors": errors,
     }
+
+    _dashboard_cache = result
+    _dashboard_cache_time = now
+    return result
+
+
+# Server-side dashboard cache (30s TTL)
+_dashboard_cache: dict | None = None
+_dashboard_cache_time: float = 0.0
 
 
 # ── Main ────────────────────────────────────────────────────────────

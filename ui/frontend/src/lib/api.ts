@@ -65,11 +65,13 @@ function enrichEnvironments(
 }
 
 /**
- * Single fetch — server runs all 4 data sources concurrently via asyncio.gather.
+ * Single fetch — server runs all 3 data sources concurrently via asyncio.gather.
  * One HTTP request, no event-loop blocking, no queuing.
+ * Pass force=true to bypass server-side cache (manual refresh).
  */
-export async function fetchDashboard(): Promise<DashboardData> {
-  const res = await fetch("/api/dashboard");
+export async function fetchDashboard(force = false): Promise<DashboardData> {
+  const url = force ? "/api/dashboard?force=true" : "/api/dashboard";
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Dashboard API: ${res.status}`);
 
   const raw = await res.json();
