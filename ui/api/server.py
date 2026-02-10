@@ -10,6 +10,12 @@ import time
 import uuid
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Auto-source .env from project root (same as deploy.sh / chat.sh)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
+
 import boto3
 import yaml
 from botocore.config import Config as BotoConfig
