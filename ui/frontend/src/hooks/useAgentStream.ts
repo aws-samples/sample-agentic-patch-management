@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from "react";
+import type { WorkflowEvent } from "./useWorkflowState";
 
 export interface ChatMessage {
   id: string;
@@ -23,7 +24,19 @@ const TOOL_LABELS: Record<string, string> = {
   use_aws: "⚙️ Consulting AWS Services",
 };
 
-export function useAgentStream() {
+// Task 3.1: Accept optional workflow event callback
+interface UseAgentStreamOptions {
+  onWorkflowEvent?: (event: WorkflowEvent) => void;
+}
+
+const WORKFLOW_EVENT_TYPES = new Set([
+  "workflow_start",
+  "workflow_step",
+  "workflow_data",
+  "workflow_env_done",
+]);
+
+export function useAgentStream(options: UseAgentStreamOptions = {}) {
   const [state, setState] = useState<StreamState>({
     messages: [],
     isStreaming: false,
@@ -31,6 +44,9 @@ export function useAgentStream() {
   });
 
   const abortRef = useRef<AbortController | null>(null);
+  // Store callback in ref to avoid it being a useCallback dependency
+  const workflowCbRef = useRef(options.onWorkflowEvent);
+  workflowCbRef.current = options.onWorkflowEvent;
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -132,6 +148,11 @@ export function useAgentStream() {
                   ),
                 }));
               }
+
+              // Task 3.2 & 3.3: Forward workflow events to callback
+              if (WORKFLOW_EVENT_TYPES.has(event.type)) {
+                workflowCbRef.current?.(event as WorkflowEvent);
+              }
             } catch {
               // skip malformed SSE lines
             }
@@ -164,6 +185,8 @@ export function useAgentStream() {
       messages: [],
       sessionId: `web-${crypto.randomUUID().replace(/-/g, "")}`,
     }));
+    // Task 3.4: Fire reset event to workflow callback
+    workflowCbRef.current?.({ type: "reset" });
   }, []);
 
   return {

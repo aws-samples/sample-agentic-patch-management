@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import Button from "@cloudscape-design/components/button";
 import Input from "@cloudscape-design/components/input";
 import SpaceBetween from "@cloudscape-design/components/space-between";
@@ -35,24 +35,6 @@ export default function ChatPanel({
 }: Props) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const inputBarRef = useRef<HTMLDivElement>(null);
-  const [messagesHeight, setMessagesHeight] = useState<number | undefined>(undefined);
-
-  // Compute messages area height from viewport minus known chrome
-  // TopNav ~48px, SplitPanel header ~56px, input bar measured dynamically
-  const recalcHeight = useCallback(() => {
-    const inputH = inputBarRef.current?.offsetHeight ?? 60;
-    const chrome = 48 + 120; // TopNavigation + SplitPanel header + padding/margins
-    setMessagesHeight(window.innerHeight - chrome - inputH);
-  }, []);
-
-  useEffect(() => {
-    recalcHeight();
-    window.addEventListener("resize", recalcHeight);
-    const t = setTimeout(recalcHeight, 500);
-    return () => { window.removeEventListener("resize", recalcHeight); clearTimeout(t); };
-  }, [recalcHeight]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -73,15 +55,9 @@ export default function ChatPanel({
   };
 
   return (
-    <div ref={rootRef}>
-      {/* Scrollable messages area */}
-      <div
-        style={{
-          overflowY: "auto",
-          padding: "12px 8px",
-          height: messagesHeight ?? "calc(100vh - 280px)",
-        }}
-      >
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Scrollable messages area — fills available space */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 8px", minHeight: 0 }}>
         {messages.length === 0 ? (
           <EmptyState onSelect={(text) => setInput(text)} />
         ) : (
@@ -97,8 +73,8 @@ export default function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* Input bar */}
-      <div ref={inputBarRef} style={{ padding: "4px 8px", borderTop: "1px solid #e9ebed", background: "#fff" }}>
+      {/* Input bar — pinned to bottom */}
+      <div style={{ flexShrink: 0, padding: "4px 8px", borderTop: "1px solid #e9ebed", background: "#fff" }}>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <div style={{ flex: 1 }}>
             <Input

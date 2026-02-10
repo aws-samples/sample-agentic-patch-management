@@ -11,13 +11,19 @@ import VulnTable from "./VulnTable";
 import ActivityTable from "./ActivityTable";
 import ComplianceSummary from "./ComplianceSummary";
 import ExplainabilityTable from "./ExplainabilityTable";
+import WorkflowTracker from "./WorkflowTracker";
 import { useDashboard } from "../hooks/useDashboard";
+import type { WorkflowState } from "../hooks/useWorkflowState";
 
 interface Props {
   onChatPrefill?: (text: string) => void;
+  workflowState: WorkflowState;
+  estimatedRemainingMs: number | null;
+  onSend: (text: string) => void;
+  isStreaming: boolean;
 }
 
-export default function DashboardPanel({ onChatPrefill }: Props) {
+export default function DashboardPanel({ onChatPrefill, workflowState, estimatedRemainingMs, onSend, isStreaming }: Props) {
   const { data, loading, lastRefreshed, refresh } = useDashboard();
   const [activeTab, setActiveTab] = useState("overview");
 
@@ -48,6 +54,14 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
 
       {/* KPI bar — always visible above tabs */}
       <KpiBar data={data} />
+
+      {/* Workflow tracker — above tabs */}
+      <WorkflowTracker
+        workflowState={workflowState}
+        estimatedRemainingMs={estimatedRemainingMs}
+        isStreaming={isStreaming}
+        onSend={onSend}
+      />
 
       {/* Tabbed content with refresh controls */}
       <div style={{ position: "relative" }}>

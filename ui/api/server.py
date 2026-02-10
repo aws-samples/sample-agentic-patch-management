@@ -67,6 +67,23 @@ def _get_client():
 
 # ── SSE stream parser ──────────────────────────────────────────────
 
+# Task 1.1: Tool-to-workflow-step mapping
+WORKFLOW_TOOLS: dict[str, str] = {
+    "get_patch_compliance": "discovery",
+    "get_maintenance_windows": "window_check",
+    "execute_patch_operation": "patch_execute",
+    "get_command_status": "patch_execute",
+    "check_instance_health": "health_check",
+    "check_cloudwatch_alarms": "alarm_check",
+    "generate_compliance_report": "report",
+    "verify_and_proceed": "verification",
+}
+
+
+def _emit_workflow_event(event_type: str, **kwargs) -> str:
+    """Emit a workflow-specific SSE event."""
+    return _sse_event(event_type, **kwargs)
+
 
 def _sse_event(event_type: str, **kwargs) -> str:
     """Format a single SSE data line."""
@@ -86,6 +103,13 @@ def _parse_agentcore_stream(event_stream):
     chunk_size = 4096
     current_tool = None
     start_time = time.time()
+
+    # Task 1.2: Workflow tracking variables
+    tool_input_buffer: str = ""          # Accumulates toolUse.input JSON chunks per content block
+    current_block_tool: str | None = None  # Tool name for the active content block (if it's a workflow tool)
+    current_block_index: int | None = None  # Index of the active content block
+    # Task 1.6: Track whether workflow_start has been emitted this session
+    workflow_started: bool = False
 
     try:
         while True:
@@ -118,18 +142,88 @@ def _parse_agentcore_stream(event_stream):
 
                     # Tool start events
                     if "event" in data and "contentBlockStart" in data["event"]:
-                        start = data["event"]["contentBlockStart"].get("start", {})
+                        block_start = data["event"]["contentBlockStart"]
+                        block_index = block_start.get("contentBlockIndex")
+                        start = block_start.get("start", {})
                         if "toolUse" in start:
                             tool_name = start["toolUse"].get("name")
                             if tool_name and tool_name != current_tool:
                                 current_tool = tool_name
                                 yield _sse_event("tool_start", tool=tool_name)
 
-                    # Text delta events
+                            # Task 1.3: Detect workflow tools and emit workflow_step started
+                            if tool_name and tool_name in WORKFLOW_TOOLS:
+                                current_block_tool = tool_name
+                                current_block_index = block_index
+                                tool_input_buffer = ""
+                                step = WORKFLOW_TOOLS[tool_name]
+                                yield _emit_workflow_event(
+                                    "workflow_step",
+                                    step=step,
+                                    tool=tool_name,
+                                    status="started",
+                                )
+                            else:
+                                # Not a workflow tool — reset tracking
+                                current_block_tool = None
+                                current_block_index = None
+                                tool_input_buffer = ""
+
+                    # Text delta events + Task 1.4: toolUse.input buffering
                     if "event" in data and "contentBlockDelta" in data["event"]:
                         delta = data["event"]["contentBlockDelta"].get("delta", {})
                         if "text" in delta:
                             yield _sse_event("text", content=delta["text"])
+                        # Task 1.4: Append toolUse.input chunks to buffer
+                        if "toolUse" in delta and current_block_tool is not None:
+                            input_chunk = delta["toolUse"].get("input", "")
+                            if input_chunk:
+                                tool_input_buffer += input_chunk
+
+                    # Task 1.5: contentBlockStop — parse accumulated input, emit workflow events
+                    if "event" in data and "contentBlockStop" in data["event"]:
+                        if current_block_tool is not None and tool_input_buffer:
+                            try:
+                                tool_input = json.loads(tool_input_buffer)
+                            except (json.JSONDecodeError, ValueError):
+                                tool_input = {}
+
+                            step = WORKFLOW_TOOLS.get(current_block_tool, "")
+
+                            # Task 1.6: Emit workflow_start on first workflow tool
+                            if not workflow_started:
+                                workflow_started = True
+                                start_payload: dict = {}
+                                # Extract CVE ID and severity from tool input if available
+                                if tool_input.get("cve_id"):
+                                    start_payload["cve_id"] = tool_input["cve_id"]
+                                if tool_input.get("severity"):
+                                    start_payload["severity"] = tool_input["severity"]
+                                if tool_input.get("environment"):
+                                    start_payload["environments"] = [tool_input["environment"]]
+                                yield _emit_workflow_event("workflow_start", **start_payload)
+
+                            # Emit workflow_data with the parsed tool input
+                            if tool_input:
+                                yield _emit_workflow_event(
+                                    "workflow_data",
+                                    step=step,
+                                    tool=current_block_tool,
+                                    data=tool_input,
+                                )
+
+                            # Task 1.7: Emit workflow_env_done when generate_compliance_report completes
+                            if current_block_tool == "generate_compliance_report":
+                                env_name = tool_input.get("environment", "unknown")
+                                yield _emit_workflow_event(
+                                    "workflow_env_done",
+                                    environment=env_name,
+                                )
+
+                        # Reset buffer state regardless of whether we emitted
+                        current_block_tool = None
+                        current_block_index = None
+                        tool_input_buffer = ""
 
                 except json.JSONDecodeError:
                     pass
