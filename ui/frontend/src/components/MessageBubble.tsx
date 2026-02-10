@@ -1,4 +1,5 @@
 import Box from "@cloudscape-design/components/box";
+import Button from "@cloudscape-design/components/button";
 import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import Spinner from "@cloudscape-design/components/spinner";
 import Markdown from "react-markdown";
@@ -8,10 +9,17 @@ import type { ChatMessage } from "../hooks/useAgentStream";
 interface Props {
   message: ChatMessage;
   isStreaming: boolean;
+  onAction?: (text: string) => void;
 }
 
-export default function MessageBubble({ message, isStreaming }: Props) {
+export default function MessageBubble({ message, isStreaming, onAction }: Props) {
   const isUser = message.role === "user";
+
+  // Parse next steps from completed assistant messages
+  const cleaned = !isUser ? cleanAgentText(message.content) : "";
+  const { body, actions } = !isUser && !isStreaming && cleaned
+    ? extractActions(cleaned)
+    : { body: cleaned, actions: [] };
 
   return (
     <div
@@ -83,11 +91,11 @@ export default function MessageBubble({ message, isStreaming }: Props) {
               </div>
             )}
 
-            {/* Message content */}
-            {message.content ? (
+            {/* Message content (without next steps section) */}
+            {(isStreaming ? cleaned : body) ? (
               <div className="agent-markdown">
                 <Markdown remarkPlugins={[remarkGfm]}>
-                  {cleanAgentText(message.content)}
+                  {isStreaming ? cleaned : body}
                 </Markdown>
               </div>
             ) : isStreaming ? (
@@ -96,6 +104,31 @@ export default function MessageBubble({ message, isStreaming }: Props) {
                 <span style={{ fontSize: "13px", color: "#5f6b7a" }}>Thinking...</span>
               </div>
             ) : null}
+
+            {/* Action buttons from Next Steps */}
+            {actions.length > 0 && onAction && (
+              <div style={{
+                marginTop: "12px",
+                padding: "10px 12px",
+                background: "var(--color-background-layout-toggle-default, #f2f3f3)",
+                borderRadius: "8px",
+              }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "#5f6b7a", marginBottom: "8px" }}>
+                  Suggested Actions
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {actions.map((action, i) => (
+                    <Button
+                      key={i}
+                      variant="normal"
+                      onClick={() => onAction(action)}
+                    >
+                      {action}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Error */}
             {message.error && (
@@ -120,16 +153,54 @@ export default function MessageBubble({ message, isStreaming }: Props) {
 /** Strip <answer>/<thinking> XML tags the agent wraps responses in. */
 function cleanAgentText(raw: string): string {
   let text = raw;
-  // Strip thinking content entirely (before extracting answer)
   text = text.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
-  // Extract answer block if present
   const answerMatch = text.match(/<answer>([\s\S]*?)<\/answer>/);
   if (answerMatch) {
     text = answerMatch[1];
   }
-  // Strip any remaining tags
   for (const tag of ["<answer>", "</answer>", "<thinking>", "</thinking>"]) {
     text = text.replaceAll(tag, "");
   }
   return text.trim();
+}
+
+/**
+ * Extract "Next Steps" section from agent markdown and return
+ * the body (without next steps) and an array of action strings.
+ *
+ * Matches patterns like:
+ *   **Next Steps:**
+ *   - Handle CVE-2025-38527 in dev
+ *   - Check compliance status
+ *
+ * Or:
+ *   ## Next Steps
+ *   1. Handle CVE-2025-38527 in dev
+ */
+function extractActions(text: string): { body: string; actions: string[] } {
+  // Match "Next Steps" heading or bold label, then capture the rest
+  const pattern = /(?:^|\n)(?:#{1,4}\s*Next\s*Steps[:\s]*|[*_]{2}Next\s*Steps[:\s]*[*_]{2}[:\s]*)\n([\s\S]*?)$/i;
+  const match = text.match(pattern);
+
+  if (!match) return { body: text, actions: [] };
+
+  const body = text.slice(0, match.index!).trim();
+  const stepsBlock = match[1].trim();
+
+  // Parse list items (- item, * item, 1. item, or lines starting with action-like text)
+  const actions: string[] = [];
+  for (const line of stepsBlock.split("\n")) {
+    const cleaned = line
+      .replace(/^[\s]*[-*•]\s*/, "")       // unordered list markers
+      .replace(/^[\s]*\d+[.)]\s*/, "")     // ordered list markers
+      .replace(/[*_`]/g, "")               // strip markdown formatting
+      .replace(/^\s*>\s*/, "")             // blockquote markers
+      .trim();
+
+    if (cleaned.length > 5 && cleaned.length < 120) {
+      actions.push(cleaned);
+    }
+  }
+
+  return { body, actions: actions.slice(0, 5) }; // max 5 action buttons
 }
