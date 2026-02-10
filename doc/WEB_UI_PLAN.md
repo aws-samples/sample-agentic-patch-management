@@ -4,20 +4,23 @@
 
 Replace the terminal chat client (`./chat.sh`) with a browser-based operations console. Not a generic chatbot UI — an opinionated patch management dashboard with an embedded conversational agent.
 
-**Why:** The terminal chat works for developers, but presenting to a CISO or VP of Operations at re:Invent requires a real operations tool. A dashboard with vulnerability cards, environment status, and a chat panel tells a stronger story than a blinking cursor.
+**Why:** The terminal chat works for developers, but presenting to a CISO or VP of Operations requires a real operations tool. A dashboard with vulnerability cards, environment status, and a chat panel tells a stronger story than a blinking cursor.
 
 ---
 
 ## Architecture
 
 ```
-Browser (React)  ←→  Python API (FastAPI)  ←→  AgentCore Runtime (existing)
-                           ↓
-                     boto3 invoke_agent_runtime
-                     (same as patch_client.py today)
+Browser (React + Cloudscape)  ←→  Python API (FastAPI)  ←→  AgentCore Runtime (existing)
+                                        ↓
+                                  boto3 invoke_agent_runtime
+                                  (same as patch_client.py today)
+                                        ↓
+                                  boto3 direct calls
+                                  (Inspector, SSM, EC2, S3 for dashboard data)
 ```
 
-The browser can't call AgentCore directly (it's a boto3 SDK call, not an HTTP endpoint). The API server is essentially `patch_client.py` exposed as HTTP endpoints with SSE streaming. ~150 lines of code — it's a proxy, not a backend.
+The browser can't call AgentCore directly (it's a boto3 SDK call, not an HTTP endpoint). The API server is essentially `patch_client.py` exposed as HTTP endpoints with SSE streaming, plus direct AWS API calls for dashboard panels. ~200 lines of code — it's a proxy, not a backend.
 
 **No database.** Session state lives in AgentCore memory (already working). Compliance reports are in S3 (already working). The API is stateless.
 
@@ -25,17 +28,28 @@ The browser can't call AgentCore directly (it's a boto3 SDK call, not an HTTP en
 
 ---
 
-## Tech Choices
+## Tech Stack
 
 | Layer | Choice | Why |
 |-------|--------|-----|
-| Frontend | React + Vite + TypeScript | Standard for AWS demo UIs, fast builds, no SSR needed |
-| Styling | Tailwind CSS | Dashboard-friendly utility classes, fast iteration |
-| Components | Hand-built (or shadcn/ui) | No heavy library dependency. shadcn is copy-paste, not a dep |
-| Backend | FastAPI (Python) | Same ecosystem as agent (boto3, same venv), native SSE support |
-| Streaming | Server-Sent Events (SSE) | Simpler than WebSockets for one-directional streaming |
+| Frontend | React + TypeScript | Standard for AWS demo UIs, strong typing, large ecosystem |
+| Build Tool | Vite | De facto standard for React SPAs in 2025. Fast HMR, zero opinions, static `dist/` output drops into S3 for production hosting. Cloudscape docs and examples use it |
+| Component Library | Cloudscape Design System | AWS Console's own design system. Customers instantly recognize the visual language — same muscle memory as EC2/SSM/Inspector consoles. Tables, status indicators, split panels, app layout all map 1:1 to our data model |
+| Backend | FastAPI (Python) | Same ecosystem as agent (boto3, same venv), native SSE via `StreamingResponse` |
+| Streaming | Server-Sent Events (SSE) | Simpler than WebSockets for one-directional agent response streaming |
 | State | React state + context | No Redux/Zustand — overkill for this scale |
-| Deployment | Single Dockerfile | Multi-stage: build frontend, serve with API |
+
+### Why Cloudscape Over Alternatives
+
+- **vs Tailwind + shadcn/ui:** Beautiful and fast to build, but looks like a startup SaaS product. Customers subconsciously trust it less for operations tooling. Also requires hundreds of design decisions (spacing, colors, density) that Cloudscape already made.
+- **vs Ant Design:** Strong enterprise library, but distinctly non-AWS visual identity. Customers notice the mismatch.
+- **vs Retool / Streamlit / Gradio:** Fastest to build, but look like internal tools. Limited control over streaming chat, custom status indicators, and interactive approval flows.
+
+### Why Vite Over Alternatives
+
+- **vs Next.js:** Overkill. No SSR, no file-based routing, no server components needed. Adds a Node.js server in production for features we won't use.
+- **vs CRA:** Dead project, unmaintained.
+- **vs @aws/nx-plugin:** Scaffolds React + Cloudscape + CDK deployment, but brings Nx monorepo tooling — heavy machinery for a single app.
 
 ### What NOT to Build
 
@@ -43,7 +57,23 @@ The browser can't call AgentCore directly (it's a boto3 SDK call, not an HTTP en
 - No custom dashboard widgets duplicating CloudWatch
 - No WebSocket server — SSE is sufficient
 - No state management library
-- No separate API and frontend deployments
+- No separate API and frontend deployments for demo
+
+---
+
+## Reference: sample-ai-agent-accelerator
+
+The [aws-samples/sample-ai-agent-accelerator](https://github.com/aws-samples/sample-ai-agent-accelerator) provides useful patterns to reference (not fork — the UI architecture is too different):
+
+**Reuse these patterns:**
+- `database.py` — Conversation history via AgentCore Memory `list_events` to reconstruct Q&A pairs. Use this for the sidebar conversation list.
+- Docker + ECS Fargate deployment with ALB — production hosting pattern if we move beyond localhost.
+- OTEL instrumentation — Flask + boto3 auto-instrumentation for CloudWatch GenAI Observability tracing.
+
+**Skip these patterns:**
+- Flask + HTMX approach — HTMX swaps HTML fragments, which is awkward for streaming text into chat bubbles, polling patch status, or updating multiple dashboard panels independently. React gives better control.
+- Non-streaming `orchestrator.py` — It does `response.read()` (reads entire response), then renders. Our `patch_client.py` already handles SSE streaming better. For 30-60 second agent responses, streaming is critical UX.
+- Bootstrap styling — Cloudscape is the right choice for AWS audience.
 
 ---
 
@@ -87,7 +117,22 @@ The browser can't call AgentCore directly (it's a boto3 SDK call, not an HTTP en
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Dashboard panels are populated by direct AWS API calls (Inspector, SSM, S3) for reliability. The chat panel uses the agent for interactive operations. This separation means dashboard data is always fast and predictable, while the agent handles the complex decision-making workflows.
+### Cloudscape Component Mapping
+
+| UI Element | Cloudscape Component |
+|-----------|---------------------|
+| Page shell | `AppLayout` (navigation, content, split panel) |
+| Environment cards | `Cards` with `StatusIndicator` |
+| Vulnerability list | `Table` with sorting, filtering, pagination |
+| Activity feed | `Table` (compact variant) |
+| Compliance summary | `BarChart` or `KeyValuePairs` with `StatusIndicator` |
+| Chat panel | `SplitPanel` or `Drawer` containing custom chat component |
+| Patching alerts | `Flashbar` |
+| Approval buttons | `ButtonGroup` inside chat messages |
+| Environment selector | `Select` in header |
+| Progress indicator | `ProgressBar` |
+
+The chat panel is the one custom piece — Cloudscape doesn't have a chat/messaging component. Build it as a custom component (~200 lines of React) inside a `SplitPanel`: text input, message list with markdown rendering, streaming indicators.
 
 ---
 
@@ -165,27 +210,27 @@ ui/
 ├── api/                          # FastAPI backend (thin proxy)
 │   ├── server.py                 # /chat (SSE), /dashboard/*, /health
 │   └── requirements.txt          # fastapi, uvicorn, boto3, pyyaml
-├── frontend/                     # React + Vite
+├── frontend/                     # React + Vite + Cloudscape
 │   ├── src/
-│   │   ├── App.tsx
+│   │   ├── App.tsx               # AppLayout shell
 │   │   ├── components/
-│   │   │   ├── ChatPanel.tsx         # Chat input + streaming messages
-│   │   │   ├── MessageBubble.tsx     # Single message with markdown rendering
+│   │   │   ├── ChatPanel.tsx         # Custom chat (SplitPanel content)
+│   │   │   ├── MessageBubble.tsx     # Single message with markdown
 │   │   │   ├── ToolIndicator.tsx     # "🔍 Consulting Vulnerability Analyst..."
-│   │   │   ├── DashboardPanel.tsx    # Left side layout
-│   │   │   ├── EnvironmentCard.tsx   # Dev/Staging/Prod status cards
-│   │   │   ├── VulnTable.tsx         # Active vulnerabilities table
-│   │   │   ├── ActivityFeed.tsx      # Recent patching activity
-│   │   │   └── ComplianceBar.tsx     # SLA compliance summary bar
+│   │   │   ├── ApprovalButtons.tsx   # Proceed / Verify / Stop buttons
+│   │   │   ├── DashboardPanel.tsx    # Left side layout (Cloudscape Cards/Tables)
+│   │   │   ├── EnvironmentCards.tsx  # Cloudscape Cards + StatusIndicator
+│   │   │   ├── VulnTable.tsx         # Cloudscape Table (sortable, filterable)
+│   │   │   ├── ActivityTable.tsx     # Cloudscape Table (compact)
+│   │   │   └── ComplianceSummary.tsx # KeyValuePairs + StatusIndicator
 │   │   ├── hooks/
 │   │   │   └── useAgentStream.ts     # SSE hook for streaming responses
 │   │   └── lib/
 │   │       └── api.ts                # fetch wrapper for API endpoints
 │   ├── index.html
 │   ├── package.json
-│   ├── tailwind.config.js
-│   ├── tsconfig.json
-│   └── vite.config.ts
+│   ├── vite.config.ts
+│   └── tsconfig.json
 ├── Dockerfile                    # Multi-stage: build frontend, serve with API
 └── docker-compose.yml            # Local dev: api + frontend hot-reload
 ```
@@ -197,7 +242,7 @@ ui/
 ```
 POST /api/chat              # Send message, returns SSE stream
   Body: { "message": "...", "session_id": "..." }
-  Response: text/event-stream (same SSE format as AgentCore)
+  Response: text/event-stream
 
 GET  /api/dashboard/environments    # Environment status cards
 GET  /api/dashboard/vulnerabilities # Active vulnerability findings
@@ -206,7 +251,7 @@ GET  /api/dashboard/compliance      # Compliance summary statistics
 GET  /api/health                    # Health check
 ```
 
-The `/api/chat` endpoint is the core — it wraps `invoke_agent_runtime`, parses the SSE stream, and re-emits it to the browser. The dashboard endpoints are direct boto3 calls.
+The `/api/chat` endpoint wraps `invoke_agent_runtime`, parses the SSE stream, and re-emits it to the browser. Dashboard endpoints are direct boto3 calls.
 
 ---
 
@@ -232,35 +277,35 @@ The React `useAgentStream` hook consumes this and updates component state increm
 ### Phase 1: API Proxy + Chat Panel (2 days)
 
 - FastAPI server wrapping `invoke_agent_runtime` with SSE
-- React app with chat panel only (right side of layout)
+- React + Cloudscape `AppLayout` with `SplitPanel` for chat
+- Custom chat component: input, message list, markdown rendering
 - `useAgentStream` hook parsing SSE events
 - Tool indicators ("🔍 Consulting Vulnerability Analyst...")
-- Markdown rendering in message bubbles
 - **Deliverable:** Terminal chat client replaced with browser version
 
 ### Phase 2: Dashboard Panels (2 days)
 
 - Direct boto3 API calls for dashboard data
-- Environment status cards (instance count, health)
-- Vulnerability table (severity, CVE ID, affected count)
-- Activity feed (recent compliance reports from S3)
-- Compliance summary bar (SLA met %, breach count)
+- Cloudscape `Cards` + `StatusIndicator` for environment status
+- Cloudscape `Table` for vulnerability findings (sortable, filterable)
+- Activity feed table (recent compliance reports from S3)
+- Compliance summary with `KeyValuePairs`
 - Auto-refresh every 60 seconds
 - **Deliverable:** Full dashboard + chat layout
 
 ### Phase 3: Interactive Operations (1 day)
 
-- Click CVE card → pre-fill chat input
+- Click CVE row → pre-fill chat input
 - Click environment card → pre-fill chat input
 - Approval buttons for phased rollout (Proceed / Verify / Stop)
-- Status polling for active patch operations
+- `ProgressBar` for active patch operations with status polling
 - **Deliverable:** Dashboard and chat are connected
 
 ### Phase 4: Polish + Deploy (2 days)
 
 - Loading states, error handling, empty states
 - Responsive layout (works on projector screens)
-- Dark mode (optional, looks great in presentations)
+- Cloudscape dark mode (visual mode toggle)
 - `./deploy.sh ui` integration
 - Dockerfile for containerized deployment
 - **Deliverable:** Demo-ready, deployable
@@ -286,15 +331,18 @@ The React `useAgentStream` hook consumes this and updates component state increm
 | Dashboard data stale | Auto-refresh + manual refresh button + timestamp display |
 | Agent response too slow for dashboard | Dashboard uses direct API calls, not agent |
 | CORS issues in local dev | Vite proxy config + FastAPI CORS middleware |
-| Large vulnerability lists | Paginate in API, show top 10 with "Show all" link |
+| Large vulnerability lists | Cloudscape Table pagination (built-in) |
 
 ---
 
 ## Future Considerations (Not in Scope)
 
 - Cognito authentication for multi-user deployment
-- API Gateway + CloudFront for production hosting
-- WebSocket upgrade if bidirectional communication needed
+- S3 + CloudFront hosting for frontend (Vite `dist/` output is static, drops straight into S3)
+- API Gateway in front of FastAPI for production
+- ECS Fargate deployment (reference: sample-ai-agent-accelerator pattern)
+- OTEL tracing on the API layer (reference: sample-ai-agent-accelerator pattern)
+- Conversation history sidebar via AgentCore Memory (reference: sample-ai-agent-accelerator `database.py` pattern)
 - Mobile-responsive layout
 - Notification system (SNS → browser push for SLA breaches)
 - Multi-account support
