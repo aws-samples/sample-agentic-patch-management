@@ -81,7 +81,7 @@ export default function ChatPanel({
 
       {/* Input area */}
       <div style={{ padding: "8px 0", borderTop: "1px solid #e9ebed" }}>
-        <SpaceBetween direction="horizontal" size="xs">
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <div style={{ flex: 1 }}>
             <Input
               value={input}
@@ -103,7 +103,7 @@ export default function ChatPanel({
               Send
             </Button>
           )}
-        </SpaceBetween>
+        </div>
         {messages.length > 0 && (
           <Box float="right" margin={{ top: "xxs" }}>
             <Button variant="link" onClick={onClear} disabled={isStreaming}>
