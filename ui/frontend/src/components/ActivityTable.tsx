@@ -23,8 +23,8 @@ function relativeTime(iso: string): string {
 }
 
 export default function ActivityTable({ items, loading, onRowClick }: Props) {
-  // Show only 5 most recent
-  const recent = items.slice(0, 5);
+  // Show 10 most recent with full tab space
+  const recent = items.slice(0, 10);
 
   return (
     <Table

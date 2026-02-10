@@ -1,5 +1,6 @@
+import { useState } from "react";
 import SpaceBetween from "@cloudscape-design/components/space-between";
-import Grid from "@cloudscape-design/components/grid";
+import Tabs from "@cloudscape-design/components/tabs";
 import Flashbar from "@cloudscape-design/components/flashbar";
 import Box from "@cloudscape-design/components/box";
 import Button from "@cloudscape-design/components/button";
@@ -17,10 +18,7 @@ interface Props {
 
 export default function DashboardPanel({ onChatPrefill }: Props) {
   const { data, loading, lastRefreshed, refresh } = useDashboard();
-
-  // Refresh when parent signals (e.g., after chat operation completes)
-  // This is a simple approach — refreshSignal changes trigger useEffect in parent
-  // For now, the 60s auto-refresh handles it
+  const [activeTab, setActiveTab] = useState("overview");
 
   if (loading && !data) {
     return (
@@ -47,53 +45,79 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
         />
       )}
 
-      {/* Refresh bar */}
-      <Box float="right">
-        <SpaceBetween direction="horizontal" size="xs">
-          {lastRefreshed && (
-            <Box variant="small" color="text-body-secondary" padding={{ top: "xxs" }}>
-              Last updated: {lastRefreshed.toLocaleTimeString()}
-            </Box>
-          )}
-          <Button iconName="refresh" variant="icon" onClick={refresh} ariaLabel="Refresh dashboard" />
-        </SpaceBetween>
-      </Box>
+      {/* KPI bar — always visible above tabs */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ flex: 1 }}>
+          <KpiBar data={data} />
+        </div>
+        <div style={{ marginLeft: "12px", paddingTop: "8px", whiteSpace: "nowrap" }}>
+          <SpaceBetween direction="horizontal" size="xs">
+            {lastRefreshed && (
+              <Box variant="small" color="text-body-secondary" padding={{ top: "xxs" }}>
+                {lastRefreshed.toLocaleTimeString()}
+              </Box>
+            )}
+            <Button iconName="refresh" variant="icon" onClick={refresh} ariaLabel="Refresh" />
+          </SpaceBetween>
+        </div>
+      </div>
 
-      {/* KPI summary strip */}
-      <KpiBar data={data} />
-
-      {/* Two-column layout */}
-      <Grid
-        gridDefinition={[
-          { colspan: { default: 12, m: 5 } },
-          { colspan: { default: 12, m: 7 } },
+      {/* Tabbed content */}
+      <Tabs
+        activeTabId={activeTab}
+        onChange={({ detail }) => setActiveTab(detail.activeTabId)}
+        tabs={[
+          {
+            id: "overview",
+            label: "Environments",
+            content: (
+              <Box padding={{ top: "s" }}>
+                <EnvironmentCards
+                  items={data.environments}
+                  loading={loading}
+                  onEnvClick={(env) => onChatPrefill?.(`Show instances in ${env} environment`)}
+                />
+              </Box>
+            ),
+          },
+          {
+            id: "vulnerabilities",
+            label: `Vulnerabilities (${data.findings.length})`,
+            content: (
+              <Box padding={{ top: "s" }}>
+                <VulnTable
+                  items={data.findings}
+                  severityCounts={data.severityCounts}
+                  loading={loading}
+                  onCveClick={(cve, env) => onChatPrefill?.(`Handle ${cve} in ${env} environment`)}
+                />
+              </Box>
+            ),
+          },
+          {
+            id: "activity",
+            label: `Activity (${data.activities.length})`,
+            content: (
+              <Box padding={{ top: "s" }}>
+                <ActivityTable
+                  items={data.activities}
+                  loading={loading}
+                  onRowClick={(cve) => onChatPrefill?.(`Show compliance report for ${cve}`)}
+                />
+              </Box>
+            ),
+          },
+          {
+            id: "compliance",
+            label: "Compliance",
+            content: (
+              <Box padding={{ top: "s" }}>
+                <ComplianceSummary data={data.compliance} loading={loading} />
+              </Box>
+            ),
+          },
         ]}
-      >
-        {/* Left column: status-oriented */}
-        <SpaceBetween size="l">
-          <EnvironmentCards
-            items={data.environments}
-            loading={loading}
-            onEnvClick={(env) => onChatPrefill?.(`Show instances in ${env} environment`)}
-          />
-          <ComplianceSummary data={data.compliance} loading={loading} />
-        </SpaceBetween>
-
-        {/* Right column: data-dense */}
-        <SpaceBetween size="l">
-          <VulnTable
-            items={data.findings}
-            severityCounts={data.severityCounts}
-            loading={loading}
-            onCveClick={(cve, env) => onChatPrefill?.(`Handle ${cve} in ${env} environment`)}
-          />
-          <ActivityTable
-            items={data.activities}
-            loading={loading}
-            onRowClick={(cve) => onChatPrefill?.(`Show compliance report for ${cve}`)}
-          />
-        </SpaceBetween>
-      </Grid>
+      />
     </SpaceBetween>
   );
 }
