@@ -1,8 +1,7 @@
-import Cards from "@cloudscape-design/components/cards";
+import Table from "@cloudscape-design/components/table";
 import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import Box from "@cloudscape-design/components/box";
 import Header from "@cloudscape-design/components/header";
-import SpaceBetween from "@cloudscape-design/components/space-between";
 import type { EnvironmentStatus } from "../lib/api";
 
 const STATUS_MAP: Record<string, "success" | "warning" | "error" | "stopped"> = {
@@ -20,62 +19,78 @@ interface Props {
 
 export default function EnvironmentCards({ items, loading, onEnvClick }: Props) {
   return (
-    <Cards
+    <Table
       loading={loading}
       loadingText="Loading environments..."
       header={<Header variant="h2">Environments</Header>}
-      cardDefinition={{
-        header: (item) => (
-          <span
-            style={{ cursor: onEnvClick ? "pointer" : "default" }}
-            onClick={() => onEnvClick?.(item.environment)}
-          >
-            {item.environment.toUpperCase()}
-          </span>
-        ),
-        sections: [
-          {
-            id: "status",
-            content: (item) => (
-              <StatusIndicator type={STATUS_MAP[item.status] ?? "stopped"}>
-                {item.online}/{item.total} instances online
-              </StatusIndicator>
-            ),
+      columnDefinitions={[
+        {
+          id: "env",
+          header: "Environment",
+          cell: (item) => (
+            <span
+              style={{ cursor: onEnvClick ? "pointer" : "default", color: "#0972d3", fontWeight: 600 }}
+              onClick={() => onEnvClick?.(item.environment)}
+            >
+              {item.environment.toUpperCase()}
+            </span>
+          ),
+        },
+        {
+          id: "status",
+          header: "Status",
+          cell: (item) => (
+            <StatusIndicator type={STATUS_MAP[item.status] ?? "stopped"}>
+              {item.status}
+            </StatusIndicator>
+          ),
+        },
+        {
+          id: "instances",
+          header: "Instances",
+          cell: (item) => `${item.online} / ${item.total} online`,
+        },
+        {
+          id: "critical",
+          header: "Critical",
+          cell: (item) => {
+            const count = item.vulns["CRITICAL"] ?? 0;
+            return count > 0
+              ? <StatusIndicator type="error">{count}</StatusIndicator>
+              : <Box color="text-status-inactive">0</Box>;
           },
-          {
-            id: "vulns",
-            content: (item) => {
-              if (item.vuln_total === 0) {
-                return (
-                  <Box variant="small" color="text-status-success">
-                    No vulnerabilities
-                  </Box>
-                );
-              }
-              const critical = item.vulns["CRITICAL"] ?? 0;
-              const high = item.vulns["HIGH"] ?? 0;
-              const other = item.vuln_total - critical - high;
-              return (
-                <SpaceBetween size="xxs" direction="horizontal">
-                  {critical > 0 && (
-                    <StatusIndicator type="error">{critical} CRITICAL</StatusIndicator>
-                  )}
-                  {high > 0 && (
-                    <StatusIndicator type="warning">{high} HIGH</StatusIndicator>
-                  )}
-                  {other > 0 && (
-                    <Box variant="small" color="text-body-secondary">
-                      +{other} other
-                    </Box>
-                  )}
-                </SpaceBetween>
-              );
-            },
+        },
+        {
+          id: "high",
+          header: "High",
+          cell: (item) => {
+            const count = item.vulns["HIGH"] ?? 0;
+            return count > 0
+              ? <StatusIndicator type="warning">{count}</StatusIndicator>
+              : <Box color="text-status-inactive">0</Box>;
           },
-        ],
-      }}
+        },
+        {
+          id: "medium",
+          header: "Medium",
+          cell: (item) => {
+            const count = item.vulns["MEDIUM"] ?? 0;
+            return count > 0
+              ? <Box>{count}</Box>
+              : <Box color="text-status-inactive">0</Box>;
+          },
+        },
+        {
+          id: "total_vulns",
+          header: "Total Vulnerabilities",
+          cell: (item) => item.vuln_total > 0
+            ? <Box fontWeight="bold">{item.vuln_total}</Box>
+            : <Box color="text-status-success">None</Box>,
+        },
+      ]}
       items={items}
-      cardsPerRow={[{ cards: 3 }]}
+      variant="container"
+      empty={<Box textAlign="center" color="text-body-secondary">No environments found</Box>}
     />
   );
 }

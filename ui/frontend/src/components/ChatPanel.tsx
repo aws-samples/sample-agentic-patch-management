@@ -81,7 +81,7 @@ export default function ChatPanel({
       </div>
 
       {/* Input area */}
-      <div style={{ padding: "8px 0", borderTop: "1px solid #e9ebed" }}>
+      <div style={{ padding: "8px 0", borderTop: "1px solid #e9ebed", marginTop: "auto" }}>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <div style={{ flex: 1 }}>
             <Input
