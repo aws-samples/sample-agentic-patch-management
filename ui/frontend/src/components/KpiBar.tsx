@@ -10,64 +10,59 @@ interface Props {
 export default function KpiBar({ data }: Props) {
   const totalInstances = data.environments.reduce((s, e) => s + e.total, 0);
   const onlineInstances = data.environments.reduce((s, e) => s + e.online, 0);
+  const offlineInstances = totalInstances - onlineInstances;
   const criticalVulns = data.severityCounts["CRITICAL"] ?? 0;
   const highVulns = data.severityCounts["HIGH"] ?? 0;
+  const mediumVulns = data.severityCounts["MEDIUM"] ?? 0;
+  const totalVulns = data.findings.length;
   const slaRate = data.compliance?.sla_rate_percent ?? 0;
   const totalReports = data.compliance?.total_reports ?? 0;
   const slaBreached = data.compliance?.sla_breached ?? 0;
+  const envCount = data.environments.length;
 
   return (
     <Container>
-      <ColumnLayout columns={5} variant="text-grid">
+      <ColumnLayout columns={6} variant="text-grid">
         <KpiItem
-          label="Instances"
+          label="Environments"
+          value={envCount.toString()}
+          detail={`${totalInstances} instances · ${offlineInstances > 0 ? `${offlineInstances} offline` : "all online"}`}
+        />
+        <KpiItem
+          label="Instances Online"
           value={`${onlineInstances} / ${totalInstances}`}
-          status={onlineInstances === totalInstances ? "success" : "warning"}
-          detail="online"
+          detail={onlineInstances === totalInstances ? "all healthy" : `${offlineInstances} need attention`}
         />
         <KpiItem
-          label="Critical Vulns"
+          label="Critical Vulnerabilities"
           value={criticalVulns.toString()}
-          status={criticalVulns === 0 ? "success" : "error"}
-          detail={criticalVulns === 0 ? "none found" : "action needed"}
+          detail={criticalVulns === 0 ? "none detected" : "immediate action needed"}
         />
         <KpiItem
-          label="High Vulns"
+          label="High Vulnerabilities"
           value={highVulns.toString()}
-          status={highVulns === 0 ? "success" : "warning"}
-          detail={`of ${data.findings.length} total`}
+          detail={`${mediumVulns} medium · ${totalVulns} total`}
         />
         <KpiItem
           label="SLA Compliance"
           value={totalReports > 0 ? `${slaRate}%` : "—"}
-          status={slaRate >= 95 ? "success" : slaRate >= 80 ? "warning" : "error"}
-          detail={totalReports > 0 ? `${totalReports} reports (30d)` : "no data"}
+          detail={totalReports > 0 ? `${totalReports} reports · 30 days` : "no reports yet"}
         />
         <KpiItem
           label="SLA Breaches"
           value={slaBreached.toString()}
-          status={slaBreached === 0 ? "success" : "error"}
-          detail="last 30 days"
+          detail={slaBreached === 0 ? "none in 30 days" : "review required"}
         />
       </ColumnLayout>
     </Container>
   );
 }
 
-function KpiItem({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  status: "success" | "warning" | "error";
-  detail: string;
-}) {
+function KpiItem({ label, detail, value }: { label: string; value: string; detail: string }) {
   return (
     <div style={{ textAlign: "center" }}>
       <Box variant="awsui-key-label">{label}</Box>
-      <div style={{ fontSize: "36px", fontWeight: 700, lineHeight: 1.2, margin: "4px 0" }}>
+      <div style={{ fontSize: "24px", fontWeight: 700, lineHeight: 1.3, margin: "4px 0" }}>
         {value}
       </div>
       <Box variant="small" color="text-body-secondary">

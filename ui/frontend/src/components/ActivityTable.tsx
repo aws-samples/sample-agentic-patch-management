@@ -31,7 +31,7 @@ export default function ActivityTable({ items, loading, onRowClick }: Props) {
       loading={loading}
       loadingText="Loading activity..."
       header={
-        <Header variant="h2" counter={`(${items.length} total)`}>
+        <Header variant="h2">
           Recent Activity
         </Header>
       }

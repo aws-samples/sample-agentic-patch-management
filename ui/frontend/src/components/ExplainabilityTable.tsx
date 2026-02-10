@@ -32,7 +32,6 @@ export default function ExplainabilityTable({ items, loading, onCveClick }: Prop
           <Header
             variant="h2"
             description="Full audit trail of agent decisions — why each patch was applied, what SLA framework governed it, and the outcome."
-            counter={`(${items.length})`}
           >
             Decision Audit Trail
           </Header>

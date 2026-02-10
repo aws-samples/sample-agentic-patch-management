@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import Container from "@cloudscape-design/components/container";
 import Header from "@cloudscape-design/components/header";
-import ColumnLayout from "@cloudscape-design/components/column-layout";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import Table from "@cloudscape-design/components/table";
 import Select from "@cloudscape-design/components/select";
@@ -62,31 +61,13 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
     <SpaceBetween size="l">
       {/* Overall SLA bar */}
       <Container header={<Header variant="h2">SLA Compliance — Last 30 Days</Header>}>
-        <ColumnLayout columns={2}>
-          <ProgressBar
-            value={data.sla_rate_percent}
-            status={data.sla_rate_percent >= 95 ? "success" : data.sla_rate_percent >= 80 ? "in-progress" : "error"}
-            description={`${data.sla_met} met / ${data.sla_breached} breached out of ${data.total_reports} total`}
-            label="SLA Compliance Rate"
-            resultText={`${data.sla_rate_percent}%`}
-          />
-          <ColumnLayout columns={3} variant="text-grid">
-            <div style={{ textAlign: "center" }}>
-              <Box variant="awsui-key-label">Total</Box>
-              <div style={{ fontSize: "28px", fontWeight: 700 }}>{data.total_reports}</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <Box variant="awsui-key-label">Met</Box>
-              <div style={{ fontSize: "28px", fontWeight: 700, color: "#037f0c" }}>{data.sla_met}</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <Box variant="awsui-key-label">Breached</Box>
-              <div style={{ fontSize: "28px", fontWeight: 700, color: data.sla_breached > 0 ? "#d91515" : "#037f0c" }}>
-                {data.sla_breached}
-              </div>
-            </div>
-          </ColumnLayout>
-        </ColumnLayout>
+        <ProgressBar
+          value={data.sla_rate_percent}
+          status={data.sla_rate_percent >= 95 ? "success" : data.sla_rate_percent >= 80 ? "in-progress" : "error"}
+          description={`${data.sla_met} met / ${data.sla_breached} breached out of ${data.total_reports} total reports`}
+          label="SLA Compliance Rate"
+          resultText={`${data.sla_rate_percent}%`}
+        />
       </Container>
 
       {/* Filterable reports table */}
