@@ -1,7 +1,6 @@
 import Container from "@cloudscape-design/components/container";
 import ColumnLayout from "@cloudscape-design/components/column-layout";
 import Box from "@cloudscape-design/components/box";
-import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import type { DashboardData } from "../lib/api";
 
 interface Props {
@@ -22,7 +21,7 @@ export default function KpiBar({ data }: Props) {
       <ColumnLayout columns={5} variant="text-grid">
         <KpiItem
           label="Instances"
-          value={`${onlineInstances}/${totalInstances}`}
+          value={`${onlineInstances} / ${totalInstances}`}
           status={onlineInstances === totalInstances ? "success" : "warning"}
           detail="online"
         />
@@ -58,7 +57,6 @@ export default function KpiBar({ data }: Props) {
 function KpiItem({
   label,
   value,
-  status,
   detail,
 }: {
   label: string;
@@ -68,10 +66,8 @@ function KpiItem({
 }) {
   return (
     <div>
-      <Box variant="awsui-key-label">{label}</Box>
-      <Box variant="awsui-value-large">
-        <StatusIndicator type={status}>{value}</StatusIndicator>
-      </Box>
+      <Box variant="awsui-key-label" margin={{ bottom: "xxs" }}>{label}</Box>
+      <Box variant="awsui-value-large">{value}</Box>
       <Box variant="small" color="text-body-secondary">
         {detail}
       </Box>
