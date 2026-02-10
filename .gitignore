@@ -67,3 +67,5 @@ infra/cdk.out/
 # Personal files
 conversations/
 .DS_Store
+ui/frontend/node_modules/
+ui/frontend/dist/
