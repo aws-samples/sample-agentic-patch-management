@@ -10,6 +10,7 @@ export function useDashboard() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async (force = false) => {
+    setLoading(true);
     try {
       const result = await fetchDashboard(force);
       setData(result);

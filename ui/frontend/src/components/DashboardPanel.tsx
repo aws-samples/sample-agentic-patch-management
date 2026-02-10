@@ -57,7 +57,7 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
                 {lastRefreshed.toLocaleTimeString()}
               </Box>
             )}
-            <Button iconName="refresh" variant="icon" onClick={() => refresh(true)} ariaLabel="Refresh" />
+            <Button iconName="refresh" variant="icon" onClick={() => refresh(true)} loading={loading} ariaLabel="Refresh" />
           </SpaceBetween>
         </div>
       </div>
