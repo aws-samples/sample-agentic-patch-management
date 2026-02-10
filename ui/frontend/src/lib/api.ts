@@ -1,4 +1,4 @@
-/** Typed fetch wrappers for dashboard API endpoints. */
+/** Typed API client for the single /api/dashboard endpoint. */
 
 export interface EnvironmentStatus {
   environment: string;
@@ -39,7 +39,6 @@ export interface ComplianceSummary {
   by_severity: Record<string, { total: number; met: number; breached: number }>;
 }
 
-/** All dashboard data in one bundle for coordinated refresh. */
 export interface DashboardData {
   environments: EnvironmentStatus[];
   findings: VulnerabilityFinding[];
@@ -49,34 +48,38 @@ export interface DashboardData {
   errors: string[];
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`API ${url}: ${res.status}`);
-  return res.json();
+/** Compute per-environment vuln counts from findings (avoids extra API calls). */
+function enrichEnvironments(
+  envs: Array<Omit<EnvironmentStatus, "vulns" | "vuln_total">>,
+  findings: VulnerabilityFinding[]
+): EnvironmentStatus[] {
+  const envVulns: Record<string, Record<string, number>> = {};
+  for (const f of findings) {
+    if (!envVulns[f.environment]) envVulns[f.environment] = {};
+    envVulns[f.environment][f.severity] = (envVulns[f.environment][f.severity] ?? 0) + 1;
+  }
+  return envs.map((e) => {
+    const vulns = envVulns[e.environment] ?? {};
+    return { ...e, vulns, vuln_total: Object.values(vulns).reduce((s, n) => s + n, 0) };
+  });
 }
 
-/** Fetch all dashboard data in parallel. Partial failures are captured, not thrown. */
+/**
+ * Single fetch — server runs all 4 data sources concurrently via asyncio.gather.
+ * One HTTP request, no event-loop blocking, no queuing.
+ */
 export async function fetchDashboard(): Promise<DashboardData> {
-  const errors: string[] = [];
+  const res = await fetch("/api/dashboard");
+  if (!res.ok) throw new Error(`Dashboard API: ${res.status}`);
 
-  const [envRes, vulnRes, actRes, compRes] = await Promise.allSettled([
-    fetchJson<{ environments: EnvironmentStatus[] }>("/api/dashboard/environments"),
-    fetchJson<{ findings: VulnerabilityFinding[]; severity_counts: Record<string, number> }>("/api/dashboard/vulnerabilities"),
-    fetchJson<{ activities: ActivityItem[] }>("/api/dashboard/activity"),
-    fetchJson<{ summary: ComplianceSummary }>("/api/dashboard/compliance"),
-  ]);
-
-  if (envRes.status === "rejected") errors.push(`Environments: ${envRes.reason}`);
-  if (vulnRes.status === "rejected") errors.push(`Vulnerabilities: ${vulnRes.reason}`);
-  if (actRes.status === "rejected") errors.push(`Activity: ${actRes.reason}`);
-  if (compRes.status === "rejected") errors.push(`Compliance: ${compRes.reason}`);
+  const raw = await res.json();
 
   return {
-    environments: envRes.status === "fulfilled" ? envRes.value.environments : [],
-    findings: vulnRes.status === "fulfilled" ? vulnRes.value.findings : [],
-    severityCounts: vulnRes.status === "fulfilled" ? vulnRes.value.severity_counts : {},
-    activities: actRes.status === "fulfilled" ? actRes.value.activities : [],
-    compliance: compRes.status === "fulfilled" ? compRes.value.summary : null,
-    errors,
+    environments: enrichEnvironments(raw.environments ?? [], raw.findings ?? []),
+    findings: raw.findings ?? [],
+    severityCounts: raw.severity_counts ?? {},
+    activities: raw.activities ?? [],
+    compliance: raw.compliance ?? null,
+    errors: raw.errors ?? [],
   };
 }

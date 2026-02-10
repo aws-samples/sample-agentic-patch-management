@@ -26,14 +26,7 @@ export default function App() {
           href: "/",
           title: "Intelligent Patch Automation",
         }}
-        utilities={[
-          {
-            type: "button",
-            text: "Chat",
-            iconName: "contact",
-            onClick: () => setSplitOpen((prev) => !prev),
-          },
-        ]}
+        utilities={[]}
       />
       <AppLayout
         contentType="default"
