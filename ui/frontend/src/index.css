@@ -1,63 +1,135 @@
-/* Agent markdown content styling — matches Cloudscape typography */
+/* Agent markdown content styling */
+.agent-markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
 .agent-markdown h1,
 .agent-markdown h2,
-.agent-markdown h3 {
-  margin: 0.6em 0 0.3em;
+.agent-markdown h3,
+.agent-markdown h4 {
+  margin: 0.8em 0 0.4em;
   font-weight: 700;
+  line-height: 1.3;
 }
-.agent-markdown h1 { font-size: 1.1em; }
-.agent-markdown h2 { font-size: 1em; }
+.agent-markdown h1 { font-size: 1.15em; }
+.agent-markdown h2 { font-size: 1.05em; }
 .agent-markdown h3 { font-size: 0.95em; }
+.agent-markdown h4 { font-size: 0.9em; }
+
+/* First heading shouldn't have top margin */
+.agent-markdown > h1:first-child,
+.agent-markdown > h2:first-child,
+.agent-markdown > h3:first-child {
+  margin-top: 0;
+}
 
 .agent-markdown p {
-  margin: 0.3em 0;
+  margin: 0.4em 0;
+}
+
+/* First paragraph — no top margin */
+.agent-markdown > p:first-child {
+  margin-top: 0;
 }
 
 .agent-markdown ul, .agent-markdown ol {
-  margin: 0.3em 0;
-  padding-left: 1.4em;
+  margin: 0.4em 0;
+  padding-left: 1.5em;
 }
 
 .agent-markdown li {
-  margin: 0.15em 0;
+  margin: 0.2em 0;
 }
 
+.agent-markdown li > p {
+  margin: 0.1em 0;
+}
+
+/* Tables — scrollable, clean borders */
 .agent-markdown table {
   border-collapse: collapse;
   width: 100%;
-  margin: 0.5em 0;
-  font-size: 13px;
+  margin: 0.6em 0;
+  font-size: 12.5px;
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 
 .agent-markdown th,
 .agent-markdown td {
-  border: 1px solid rgba(0,0,0,0.15);
-  padding: 4px 8px;
+  border: 1px solid rgba(0,0,0,0.12);
+  padding: 6px 10px;
   text-align: left;
+  white-space: normal;
 }
 
 .agent-markdown th {
   background: rgba(0,0,0,0.04);
   font-weight: 600;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
+.agent-markdown tr:nth-child(even) {
+  background: rgba(0,0,0,0.02);
+}
+
+/* Inline code */
 .agent-markdown code {
   background: rgba(0,0,0,0.06);
-  padding: 1px 4px;
+  padding: 2px 5px;
   border-radius: 3px;
-  font-size: 0.9em;
+  font-size: 0.88em;
+  font-family: "Monaco", "Menlo", "Consolas", monospace;
 }
 
+/* Code blocks */
 .agent-markdown pre {
-  background: rgba(0,0,0,0.06);
-  padding: 8px;
-  border-radius: 4px;
+  background: #1b2836;
+  color: #d4dae1;
+  padding: 12px;
+  border-radius: 6px;
   overflow-x: auto;
   font-size: 0.85em;
+  margin: 0.5em 0;
+}
+
+.agent-markdown pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
 }
 
 .agent-markdown hr {
   border: none;
   border-top: 1px solid rgba(0,0,0,0.1);
+  margin: 0.8em 0;
+}
+
+/* Bold text — slightly more prominent */
+.agent-markdown strong {
+  font-weight: 700;
+}
+
+/* Blockquotes */
+.agent-markdown blockquote {
+  border-left: 3px solid #0972d3;
   margin: 0.5em 0;
+  padding: 4px 12px;
+  color: #5f6b7a;
+  background: rgba(9, 114, 211, 0.04);
+  border-radius: 0 4px 4px 0;
+}
+
+/* Links */
+.agent-markdown a {
+  color: #0972d3;
+  text-decoration: none;
+}
+.agent-markdown a:hover {
+  text-decoration: underline;
 }
