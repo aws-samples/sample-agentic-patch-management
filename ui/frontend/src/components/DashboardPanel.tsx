@@ -47,24 +47,19 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
       )}
 
       {/* KPI bar — always visible above tabs */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div style={{ flex: 1 }}>
-          <KpiBar data={data} />
-        </div>
-        <div style={{ marginLeft: "12px", paddingTop: "8px", whiteSpace: "nowrap" }}>
-          <SpaceBetween direction="horizontal" size="xs">
-            {lastRefreshed && (
-              <Box variant="small" color="text-body-secondary" padding={{ top: "xxs" }}>
-                {lastRefreshed.toLocaleTimeString()}
-              </Box>
-            )}
-            <Button iconName="refresh" variant="icon" onClick={() => refresh(true)} loading={loading} ariaLabel="Refresh" />
-          </SpaceBetween>
-        </div>
-      </div>
+      <KpiBar data={data} />
 
-      {/* Tabbed content */}
-      <Tabs
+      {/* Tabbed content with refresh controls */}
+      <div style={{ position: "relative" }}>
+        <div style={{ position: "absolute", right: 0, top: "4px", display: "flex", alignItems: "center", gap: "6px", zIndex: 1 }}>
+          {lastRefreshed && (
+            <Box variant="small" color="text-body-secondary">
+              {lastRefreshed.toLocaleTimeString()}
+            </Box>
+          )}
+          <Button iconName="refresh" variant="icon" onClick={() => refresh(true)} loading={loading} ariaLabel="Refresh" />
+        </div>
+        <Tabs
         activeTabId={activeTab}
         onChange={({ detail }) => setActiveTab(detail.activeTabId)}
         tabs={[
@@ -132,6 +127,7 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
           },
         ]}
       />
+      </div>
     </SpaceBetween>
   );
 }

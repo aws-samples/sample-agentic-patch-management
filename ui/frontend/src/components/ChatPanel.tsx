@@ -43,7 +43,7 @@ export default function ChatPanel({
   // TopNav ~48px, SplitPanel header ~56px, input bar measured dynamically
   const recalcHeight = useCallback(() => {
     const inputH = inputBarRef.current?.offsetHeight ?? 60;
-    const chrome = 48 + 56; // TopNavigation + SplitPanel header
+    const chrome = 48 + 120; // TopNavigation + SplitPanel header + padding/margins
     setMessagesHeight(window.innerHeight - chrome - inputH);
   }, []);
 
@@ -98,7 +98,7 @@ export default function ChatPanel({
       </div>
 
       {/* Input bar */}
-      <div ref={inputBarRef} style={{ padding: "8px 8px", borderTop: "1px solid #e9ebed", background: "#fff" }}>
+      <div ref={inputBarRef} style={{ padding: "4px 8px", borderTop: "1px solid #e9ebed", background: "#fff" }}>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <div style={{ flex: 1 }}>
             <Input

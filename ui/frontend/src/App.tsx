@@ -24,7 +24,7 @@ export default function App() {
       <TopNavigation
         identity={{
           href: "/",
-          title: "Intelligent Patch Automation",
+          title: "🛡️ Patchy — Intelligent Patch Automation",
         }}
         utilities={[]}
       />
@@ -58,11 +58,8 @@ export default function App() {
         content={
           <ContentLayout
             header={
-              <Header
-                variant="h1"
-                description="Vulnerability-driven patch management powered by AI agents"
-              >
-                🛡️ Patch Automation Dashboard
+              <Header variant="h2">
+                Dashboard
               </Header>
             }
           >

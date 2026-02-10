@@ -1,13 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { fetchDashboard, type DashboardData } from "../lib/api";
-
-const AUTO_REFRESH_MS = 60_000; // 60 seconds
 
 export function useDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async (force = false) => {
     setLoading(true);
@@ -22,13 +19,9 @@ export function useDashboard() {
     }
   }, []);
 
-  // Initial load + auto-refresh (auto-refresh uses cache, initial load forces)
+  // Load once on mount
   useEffect(() => {
     refresh(true);
-    timerRef.current = setInterval(() => refresh(false), AUTO_REFRESH_MS);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
   }, [refresh]);
 
   return { data, loading, lastRefreshed, refresh };
