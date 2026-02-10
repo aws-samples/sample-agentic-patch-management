@@ -1,35 +1,49 @@
-import { useEffect, useState } from "react";
 import Table from "@cloudscape-design/components/table";
 import Header from "@cloudscape-design/components/header";
 import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import Box from "@cloudscape-design/components/box";
 import type { ActivityItem } from "../lib/api";
-import { api } from "../lib/api";
 
 interface Props {
+  items: ActivityItem[];
+  loading: boolean;
   onRowClick?: (cveId: string) => void;
 }
 
-export default function ActivityTable({ onRowClick }: Props) {
-  const [items, setItems] = useState<ActivityItem[]>([]);
-  const [loading, setLoading] = useState(true);
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
 
-  useEffect(() => {
-    api.activity().then((d) => { setItems(d.activities); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
+export default function ActivityTable({ items, loading, onRowClick }: Props) {
+  // Show only 5 most recent
+  const recent = items.slice(0, 5);
 
   return (
     <Table
       loading={loading}
       loadingText="Loading activity..."
-      header={<Header variant="h2">Recent Patching Activity</Header>}
+      header={
+        <Header variant="h2" counter={`(${items.length} total)`}>
+          Recent Activity
+        </Header>
+      }
       columnDefinitions={[
         {
           id: "time",
-          header: "Time",
-          cell: (item) => new Date(item.timestamp).toLocaleString(),
-          sortingField: "timestamp",
+          header: "When",
+          cell: (item) => (
+            <Box variant="small">
+              {relativeTime(item.timestamp)}
+            </Box>
+          ),
         },
         {
           id: "cve",
@@ -60,17 +74,18 @@ export default function ActivityTable({ onRowClick }: Props) {
         {
           id: "sla",
           header: "SLA",
-          cell: (item) => (
-            item.sla_met === "True"
-              ? <StatusIndicator type="success">Met</StatusIndicator>
-              : item.sla_met === "False"
-              ? <StatusIndicator type="error">Breached</StatusIndicator>
-              : <Box color="text-status-inactive">—</Box>
-          ),
+          cell: (item) =>
+            item.sla_met === "True" ? (
+              <StatusIndicator type="success">Met</StatusIndicator>
+            ) : item.sla_met === "False" ? (
+              <StatusIndicator type="error">Breached</StatusIndicator>
+            ) : (
+              <Box color="text-status-inactive">—</Box>
+            ),
         },
       ]}
-      items={items}
-      variant="embedded"
+      items={recent}
+      variant="container"
       empty={<Box textAlign="center" color="text-body-secondary">No patching activity yet</Box>}
     />
   );

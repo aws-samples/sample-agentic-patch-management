@@ -3,7 +3,6 @@ import Button from "@cloudscape-design/components/button";
 import Input from "@cloudscape-design/components/input";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import Box from "@cloudscape-design/components/box";
-import Header from "@cloudscape-design/components/header";
 import MessageBubble from "./MessageBubble";
 import type { ChatMessage } from "../hooks/useAgentStream";
 
@@ -22,6 +21,7 @@ const EXAMPLE_PROMPTS = [
   "What critical vulnerabilities do we have?",
   "Show EC2 instances in dev environment",
   "Show me patch compliance status",
+  "Handle CVE-2025-38527 in dev",
 ];
 
 export default function ChatPanel({
@@ -30,19 +30,16 @@ export default function ChatPanel({
   onSend,
   onStop,
   onClear,
-  sessionId,
   prefillText,
   onPrefillConsumed,
 }: Props) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Handle prefill from dashboard clicks
   useEffect(() => {
     if (prefillText) {
       setInput(prefillText);
@@ -59,34 +56,17 @@ export default function ChatPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Header */}
-      <Header
-        variant="h3"
-        actions={
-          <Button
-            iconName="remove"
-            variant="icon"
-            onClick={onClear}
-            disabled={isStreaming}
-            ariaLabel="Clear chat"
-          />
-        }
-        description={`Session: ${sessionId.slice(0, 16)}...`}
-      >
-        🤖 Patchy
-      </Header>
-
       {/* Messages area */}
       <div
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: "16px 8px",
+          padding: "12px 8px",
           minHeight: 0,
         }}
       >
         {messages.length === 0 ? (
-          <EmptyState onSelect={(text) => { setInput(text); }} />
+          <EmptyState onSelect={(text) => setInput(text)} />
         ) : (
           messages.map((msg) => (
             <MessageBubble
@@ -109,7 +89,7 @@ export default function ChatPanel({
               onKeyDown={({ detail }) => {
                 if (detail.key === "Enter") handleSend();
               }}
-              placeholder="Ask Patchy about vulnerabilities, patching, compliance..."
+              placeholder="Ask about vulnerabilities, patching, compliance..."
               disabled={isStreaming}
               autoFocus
             />
@@ -124,6 +104,13 @@ export default function ChatPanel({
             </Button>
           )}
         </SpaceBetween>
+        {messages.length > 0 && (
+          <Box float="right" margin={{ top: "xxs" }}>
+            <Button variant="link" onClick={onClear} disabled={isStreaming}>
+              New conversation
+            </Button>
+          </Box>
+        )}
       </div>
     </div>
   );
@@ -131,19 +118,15 @@ export default function ChatPanel({
 
 function EmptyState({ onSelect }: { onSelect: (text: string) => void }) {
   return (
-    <Box textAlign="center" padding={{ top: "xxl" }}>
-      <SpaceBetween size="m">
-        <Box variant="h2">🛡️</Box>
+    <Box textAlign="center" padding={{ top: "l" }}>
+      <SpaceBetween size="s">
         <Box variant="p" color="text-body-secondary">
-          Ask Patchy about vulnerabilities, patching operations, or compliance.
+          Ask Patchy about vulnerabilities, patching, or compliance.
+          Or click items on the dashboard to get started.
         </Box>
-        <SpaceBetween size="xs">
+        <SpaceBetween size="xxs">
           {EXAMPLE_PROMPTS.map((prompt) => (
-            <Button
-              key={prompt}
-              variant="link"
-              onClick={() => onSelect(prompt)}
-            >
+            <Button key={prompt} variant="link" onClick={() => onSelect(prompt)}>
               {prompt}
             </Button>
           ))}

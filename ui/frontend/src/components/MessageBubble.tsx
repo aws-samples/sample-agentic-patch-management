@@ -21,33 +21,45 @@ export default function MessageBubble({ message, isStreaming }: Props) {
     >
       <div
         style={{
-          maxWidth: "85%",
-          padding: "12px 16px",
-          borderRadius: isUser ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-          backgroundColor: isUser ? "#0972d3" : "#f2f3f3",
-          color: isUser ? "#fff" : "#000716",
+          maxWidth: "90%",
+          padding: "10px 14px",
+          borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+          backgroundColor: isUser ? "var(--color-background-button-primary-default, #0972d3)" : "var(--color-background-layout-toggle-default, #f2f3f3)",
+          color: isUser ? "#fff" : "var(--color-text-body-default, #000716)",
+          fontSize: "14px",
+          lineHeight: "1.5",
         }}
       >
         {isUser ? (
-          <Box color="inherit" variant="p">
-            {message.content}
-          </Box>
+          <Box color="inherit" variant="p">{message.content}</Box>
         ) : (
           <>
-            {/* Tool indicators */}
+            {/* Tool indicators as a workflow timeline */}
             {message.tools.length > 0 && (
-              <div style={{ marginBottom: "8px" }}>
-                {message.tools.map((tool, i) => (
-                  <div key={i} style={{ fontSize: "13px", opacity: 0.8, marginBottom: "2px" }}>
-                    {tool}
-                  </div>
-                ))}
+              <div style={{
+                marginBottom: "8px",
+                paddingBottom: "8px",
+                borderBottom: "1px solid rgba(0,0,0,0.08)",
+              }}>
+                {message.tools.map((tool, i) => {
+                  const isLast = i === message.tools.length - 1;
+                  const isDone = !isLast || (isLast && message.content.length > 0);
+                  return (
+                    <div key={i} style={{ marginBottom: "2px" }}>
+                      <StatusIndicator
+                        type={isDone ? "success" : "in-progress"}
+                      >
+                        <span style={{ fontSize: "12px" }}>{tool}</span>
+                      </StatusIndicator>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
             {/* Message content */}
             {message.content ? (
-              <div className="agent-markdown">
+              <div className="agent-markdown" style={markdownStyles}>
                 <Markdown>{cleanAgentText(message.content)}</Markdown>
               </div>
             ) : isStreaming ? (
@@ -56,12 +68,14 @@ export default function MessageBubble({ message, isStreaming }: Props) {
 
             {/* Error */}
             {message.error && (
-              <StatusIndicator type="error">{message.error}</StatusIndicator>
+              <div style={{ marginTop: "6px" }}>
+                <StatusIndicator type="error">{message.error}</StatusIndicator>
+              </div>
             )}
 
             {/* Duration */}
             {message.durationMs != null && (
-              <div style={{ fontSize: "12px", opacity: 0.5, marginTop: "6px" }}>
+              <div style={{ fontSize: "11px", opacity: 0.45, marginTop: "6px" }}>
                 ⏱️ {(message.durationMs / 1000).toFixed(1)}s
               </div>
             )}
@@ -72,15 +86,26 @@ export default function MessageBubble({ message, isStreaming }: Props) {
   );
 }
 
+/** Inline styles for markdown content to match Cloudscape typography. */
+const markdownStyles: React.CSSProperties = {
+  fontSize: "14px",
+  lineHeight: "1.6",
+  wordBreak: "break-word",
+};
+
 /** Strip <answer>/<thinking> XML tags the agent wraps responses in. */
 function cleanAgentText(raw: string): string {
   let text = raw;
+  // Extract answer block if present
   const answerMatch = text.match(/<answer>([\s\S]*?)<\/answer>/);
   if (answerMatch) {
     text = answerMatch[1];
   }
+  // Strip any remaining tags
   for (const tag of ["<answer>", "</answer>", "<thinking>", "</thinking>"]) {
     text = text.replaceAll(tag, "");
   }
+  // Strip thinking content entirely
+  text = text.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
   return text.trim();
 }

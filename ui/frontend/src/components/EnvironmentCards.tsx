@@ -1,11 +1,9 @@
-import { useEffect, useState } from "react";
 import Cards from "@cloudscape-design/components/cards";
 import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import Box from "@cloudscape-design/components/box";
 import Header from "@cloudscape-design/components/header";
 import SpaceBetween from "@cloudscape-design/components/space-between";
 import type { EnvironmentStatus } from "../lib/api";
-import { api } from "../lib/api";
 
 const STATUS_MAP: Record<string, "success" | "warning" | "error" | "stopped"> = {
   healthy: "success",
@@ -15,23 +13,17 @@ const STATUS_MAP: Record<string, "success" | "warning" | "error" | "stopped"> = 
 };
 
 interface Props {
+  items: EnvironmentStatus[];
+  loading: boolean;
   onEnvClick?: (env: string) => void;
 }
 
-export default function EnvironmentCards({ onEnvClick }: Props) {
-  const [items, setItems] = useState<EnvironmentStatus[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api.environments().then((d) => { setItems(d.environments); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
-
+export default function EnvironmentCards({ items, loading, onEnvClick }: Props) {
   return (
     <Cards
       loading={loading}
       loadingText="Loading environments..."
-      header={<Header variant="h2">Environment Status</Header>}
+      header={<Header variant="h2">Environments</Header>}
       cardDefinition={{
         header: (item) => (
           <span
@@ -46,19 +38,39 @@ export default function EnvironmentCards({ onEnvClick }: Props) {
             id: "status",
             content: (item) => (
               <StatusIndicator type={STATUS_MAP[item.status] ?? "stopped"}>
-                {item.online}/{item.total} online
+                {item.online}/{item.total} instances online
               </StatusIndicator>
             ),
           },
           {
-            id: "details",
-            content: (item) => (
-              <SpaceBetween size="xxs">
-                <Box variant="small">
-                  Instances: {item.total} &nbsp;|&nbsp; Offline: {item.offline}
-                </Box>
-              </SpaceBetween>
-            ),
+            id: "vulns",
+            content: (item) => {
+              if (item.vuln_total === 0) {
+                return (
+                  <Box variant="small" color="text-status-success">
+                    No vulnerabilities
+                  </Box>
+                );
+              }
+              const critical = item.vulns["CRITICAL"] ?? 0;
+              const high = item.vulns["HIGH"] ?? 0;
+              const other = item.vuln_total - critical - high;
+              return (
+                <SpaceBetween size="xxs" direction="horizontal">
+                  {critical > 0 && (
+                    <StatusIndicator type="error">{critical} CRITICAL</StatusIndicator>
+                  )}
+                  {high > 0 && (
+                    <StatusIndicator type="warning">{high} HIGH</StatusIndicator>
+                  )}
+                  {other > 0 && (
+                    <Box variant="small" color="text-body-secondary">
+                      +{other} other
+                    </Box>
+                  )}
+                </SpaceBetween>
+              );
+            },
           },
         ],
       }}

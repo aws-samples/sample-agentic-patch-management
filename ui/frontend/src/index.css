@@ -1,0 +1,63 @@
+/* Agent markdown content styling — matches Cloudscape typography */
+.agent-markdown h1,
+.agent-markdown h2,
+.agent-markdown h3 {
+  margin: 0.6em 0 0.3em;
+  font-weight: 700;
+}
+.agent-markdown h1 { font-size: 1.1em; }
+.agent-markdown h2 { font-size: 1em; }
+.agent-markdown h3 { font-size: 0.95em; }
+
+.agent-markdown p {
+  margin: 0.3em 0;
+}
+
+.agent-markdown ul, .agent-markdown ol {
+  margin: 0.3em 0;
+  padding-left: 1.4em;
+}
+
+.agent-markdown li {
+  margin: 0.15em 0;
+}
+
+.agent-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 13px;
+}
+
+.agent-markdown th,
+.agent-markdown td {
+  border: 1px solid rgba(0,0,0,0.15);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.agent-markdown th {
+  background: rgba(0,0,0,0.04);
+  font-weight: 600;
+}
+
+.agent-markdown code {
+  background: rgba(0,0,0,0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.agent-markdown pre {
+  background: rgba(0,0,0,0.06);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+.agent-markdown hr {
+  border: none;
+  border-top: 1px solid rgba(0,0,0,0.1);
+  margin: 0.5em 0;
+}

@@ -25,7 +25,6 @@ export default function App() {
         identity={{
           href: "/",
           title: "Intelligent Patch Automation",
-          logo: { src: "", alt: "🛡️" },
         }}
         utilities={[
           {
@@ -42,7 +41,7 @@ export default function App() {
         toolsHide
         splitPanel={
           <SplitPanel
-            header="Agent Chat"
+            header="🤖 Patchy — Agent Chat"
             hidePreferencesButton
             closeBehavior="hide"
           >

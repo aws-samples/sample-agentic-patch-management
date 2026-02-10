@@ -217,11 +217,12 @@ def _aws_session():
 
 @app.get("/api/dashboard/environments")
 async def dashboard_environments():
-    """Environment status cards — instance counts + SSM health per env."""
+    """Environment status cards — instance counts, SSM health, vuln counts per env."""
     try:
         session = _aws_session()
         ec2 = session.client("ec2")
         ssm = session.client("ssm")
+        inspector = session.client("inspector2")
 
         # Get all tagged instances in one call
         ec2_resp = ec2.describe_instances(
@@ -251,10 +252,28 @@ async def dashboard_environments():
                 if info.get("PingStatus") == "Online":
                     ssm_online.add(info["InstanceId"])
 
+        # Get vuln counts per environment from Inspector
+        env_vulns: dict[str, dict[str, int]] = {e: {} for e in ENVIRONMENTS}
+        try:
+            for env in ENVIRONMENTS:
+                resp = inspector.list_findings(
+                    filterCriteria={
+                        "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
+                        "resourceTags": [{"comparison": "EQUALS", "key": "Environment", "value": env}],
+                    },
+                    maxResults=100,
+                )
+                for f in resp.get("findings", []):
+                    sev = f.get("severity", "UNKNOWN")
+                    env_vulns[env][sev] = env_vulns[env].get(sev, 0) + 1
+        except Exception as ve:
+            logger.warning(f"Could not fetch per-env vulns: {ve}")
+
         results = []
         for env in ENVIRONMENTS:
             ids = env_instances[env]
             online = sum(1 for i in ids if i in ssm_online)
+            vulns = env_vulns.get(env, {})
             results.append({
                 "environment": env,
                 "total": len(ids),
@@ -264,6 +283,8 @@ async def dashboard_environments():
                           else "warning" if online > 0
                           else "error" if len(ids) > 0
                           else "inactive",
+                "vulns": vulns,
+                "vuln_total": sum(vulns.values()),
             })
 
         return {"environments": results}
