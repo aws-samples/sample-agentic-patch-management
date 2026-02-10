@@ -66,8 +66,10 @@ function KpiItem({
 }) {
   return (
     <div>
-      <Box variant="awsui-key-label" margin={{ bottom: "xxs" }}>{label}</Box>
-      <Box variant="awsui-value-large">{value}</Box>
+      <Box variant="awsui-key-label">{label}</Box>
+      <div style={{ fontSize: "36px", fontWeight: 700, lineHeight: 1.2, margin: "4px 0" }}>
+        {value}
+      </div>
       <Box variant="small" color="text-body-secondary">
         {detail}
       </Box>
