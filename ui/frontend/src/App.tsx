@@ -34,7 +34,7 @@ export default function App() {
         toolsHide
         splitPanel={
           <SplitPanel
-            header="🤖 Patchy — Agent Chat"
+            header="🤖 Patchy"
             hidePreferencesButton
             closeBehavior="hide"
           >
