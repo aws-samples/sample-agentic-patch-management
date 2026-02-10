@@ -7,7 +7,7 @@ import type { ActivityItem } from "../lib/api";
 interface Props {
   items: ActivityItem[];
   loading: boolean;
-  onRowClick?: (cveId: string) => void;
+  onRowClick?: (cveId: string, environment: string) => void;
 }
 
 function relativeTime(iso: string): string {
@@ -51,7 +51,7 @@ export default function ActivityTable({ items, loading, onRowClick }: Props) {
           cell: (item) => (
             <span
               style={{ cursor: onRowClick ? "pointer" : "default", color: "#0972d3" }}
-              onClick={() => onRowClick?.(item.cve_id)}
+              onClick={() => onRowClick?.(item.cve_id, item.environment)}
             >
               {item.cve_id}
             </span>

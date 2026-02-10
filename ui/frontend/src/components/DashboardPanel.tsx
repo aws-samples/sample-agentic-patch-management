@@ -102,7 +102,7 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
                 <ActivityTable
                   items={data.activities}
                   loading={loading}
-                  onRowClick={(cve) => onChatPrefill?.(`Show compliance report for ${cve}`)}
+                  onRowClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
                 />
               </Box>
             ),
