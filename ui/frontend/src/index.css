@@ -1,9 +1,15 @@
-/* Inter font from Google Fonts */
+/* Inter font from Google Fonts — single font family for the entire app */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* Global font override — ensures consistency across Cloudscape + custom components */
+:root,
+body,
+#root {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
 
 /* Agent markdown content styling */
 .agent-markdown {
-  font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 14px;
   line-height: 1.6;
   word-break: break-word;
