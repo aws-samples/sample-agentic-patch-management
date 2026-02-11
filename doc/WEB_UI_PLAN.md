@@ -224,7 +224,9 @@ ui/
 │   │   │   ├── ActivityTable.tsx     # Cloudscape Table (compact)
 │   │   │   └── ComplianceSummary.tsx # KeyValuePairs + StatusIndicator
 │   │   ├── hooks/
-│   │   │   └── useAgentStream.ts     # SSE hook for streaming responses
+│   │   │   ├── useAgentStream.ts     # SSE hook for streaming responses
+│   │   │   ├── useWorkflowState.ts   # Workflow state reducer + ETA estimation
+│   │   │   └── useDashboard.ts       # Dashboard data fetching + caching
 │   │   └── lib/
 │   │       └── api.ts                # fetch wrapper for API endpoints
 │   ├── index.html
@@ -268,7 +270,48 @@ data: {"type": "text", "content": "Initiating emergency"}
 data: {"type": "done", "duration_ms": 12340}
 ```
 
-The React `useAgentStream` hook consumes this and updates component state incrementally.
+Additionally, workflow events are injected inline from an SQS FIFO queue:
+
+```
+data: {"type": "workflow_start", "cve_id": "CVE-2025-38527", "severity": "CRITICAL", "environments": ["dev"]}
+data: {"type": "workflow_step", "step": "discovery", "tool": "get_patch_compliance", "status": "started"}
+data: {"type": "workflow_step", "step": "discovery", "tool": "get_patch_compliance", "status": "complete"}
+data: {"type": "workflow_data", "step": "discovery", "tool": "get_patch_compliance", "data": {...}}
+data: {"type": "workflow_env_done", "environment": "dev"}
+```
+
+### Workflow Event Transport Architecture
+
+The agent runs inside an AgentCore container (remote). The FastAPI SSE endpoint runs locally. These are separate processes on separate machines, so in-memory queues cannot work.
+
+**Solution: SQS FIFO queue** (`patch-automation-workflow-events.fifo`)
+
+```
+AgentCore Container                    Local Machine
++---------------------+               +----------------------+
+| Specialist Agent    |               | FastAPI SSE Endpoint |
+|   |                 |               |   |                  |
+| WorkflowTrackingHook|--SQS FIFO--> | emitter.drain()      |
+|   |                 |               |   |                  |
+| sqs.send_message()  |               | yield evt.to_sse()   |
++---------------------+               +----------------------+
+                                              |
+                                        Browser (SSE)
+                                              |
+                                      useWorkflowState reducer
+                                              |
+                                      WorkflowTracker UI
+```
+
+**Why SQS FIFO over alternatives:**
+- Purpose-built for producer/consumer message passing (vs DynamoDB polling)
+- MessageGroupId per session ensures ordered delivery
+- Messages auto-delete after receive + delete (no cleanup needed)
+- No infrastructure to manage (no tables, no TTL, no cursors)
+- Both processes already have boto3 + IAM permissions
+- EventBridge requires a reachable target (FastAPI runs on localhost)
+
+The React `useAgentStream` hook consumes both text and workflow events, forwarding workflow events to the `useWorkflowState` reducer which drives the `WorkflowTracker` UI component.
 
 ---
 

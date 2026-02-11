@@ -42,7 +42,7 @@ export interface WorkflowState {
 
 export type WorkflowEvent =
   | { type: "workflow_start"; cve_id?: string; severity?: string; environments?: string[] }
-  | { type: "workflow_step"; step: string; tool: string; status: "started" | "complete" }
+  | { type: "workflow_step"; step: string; tool: string; status: "started" | "complete" | "failed"; error_message?: string }
   | { type: "workflow_data"; step: string; tool: string; data: Record<string, unknown> }
   | { type: "workflow_env_done"; environment: string }
   | { type: "reset" };
@@ -125,7 +125,10 @@ function workflowReducer(state: WorkflowState, event: WorkflowEvent): WorkflowSt
 
       env.steps = env.steps.map((s) => {
         if (s.id !== event.step) return s;
-        return { ...s, status: event.status === "started" ? "active" : "complete" };
+        const newStatus = event.status === "started" ? "active" as const
+          : event.status === "failed" ? "failed" as const
+          : "complete" as const;
+        return { ...s, status: newStatus };
       });
 
       envs[idx] = env;
@@ -196,6 +199,64 @@ function workflowReducer(state: WorkflowState, event: WorkflowEvent): WorkflowSt
               : inst.status;
             return { ...inst, status };
           });
+        }
+        // Fix #6: Populate instances from execute results if discovery didn't provide them
+        if (Array.isArray(data.instance_ids) && env.instances.length === 0) {
+          env.instances = (data.instance_ids as string[]).map((id) => ({
+            instanceId: id,
+            team: "",
+            status: "running" as const,
+            elapsedMs: null,
+          }));
+        }
+      }
+
+      // SLA Decision: store decision, SLA hours, framework
+      if (event.step === "sla_decision" || event.step === "window_check") {
+        if (typeof data.decision === "string") {
+          env.decision = data.decision;
+        }
+        if (typeof data.sla_hours === "number") {
+          env.slaHours = data.sla_hours;
+        }
+        if (typeof data.hours_until_window === "number") {
+          env.windowHours = data.hours_until_window;
+        }
+        if (typeof data.framework === "string") {
+          env.framework = data.framework;
+        }
+      }
+
+      // Health check: update instance health statuses
+      if (event.step === "health_check" && Array.isArray(data.instances)) {
+        const healthMap = new Map<string, string>();
+        for (const inst of data.instances as { instance_id: string; status: string }[]) {
+          healthMap.set(inst.instance_id, inst.status);
+        }
+        env.instances = env.instances.map((inst) => {
+          const health = healthMap.get(inst.instanceId);
+          if (!health) return inst;
+          return {
+            ...inst,
+            status: health === "Online" || health === "healthy" ? "success" as const
+              : health === "Offline" || health === "unhealthy" ? "failed" as const
+              : inst.status,
+          };
+        });
+      }
+
+      // Alarm check: store alarm data in step
+      if (event.step === "alarm_check" && Array.isArray(data.alarms)) {
+        // Alarm data is already stored in step data above; no extra env-level state needed
+        // If any alarm is in ALARM state, mark instances as potentially failed
+        const hasAlarm = (data.alarms as { state: string }[]).some(
+          (a) => a.state === "ALARM"
+        );
+        if (hasAlarm) {
+          // Don't override individual instance statuses — just store the flag
+          env.steps = env.steps.map((s) =>
+            s.id === "alarm_check" ? { ...s, data: { ...s.data, hasAlarm: true } } : s
+          );
         }
       }
 

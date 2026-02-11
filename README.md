@@ -229,6 +229,18 @@ You: What critical vulnerabilities do we have?
 
 ## What's Implemented
 
+### ✅ Web UI (Operations Console)
+- **Dashboard**: Environment status cards, vulnerability table, activity feed, compliance summary, explainability table
+- **Chat Panel**: Conversational agent with streaming responses, tool indicators, approval buttons
+- **Real-Time Workflow Tracker**: Live progress visualization during patching operations
+  - SQS FIFO-based event transport between AgentCore (remote) and FastAPI (local)
+  - Strands hooks on specialist agents emit structured events (discovery, patch execute, health check, etc.)
+  - Per-environment step progress, instance status table, ETA estimation
+  - Collapsible tracker with summary on completion
+- **Error Boundaries**: Isolated crash recovery for dashboard and chat panels
+- **Click-to-Action**: Dashboard elements pre-fill chat input for common operations
+- **Collapsible Layout**: Dashboard (72%) + Chat side-by-side with smooth collapse/expand
+
 ### ✅ Core Capabilities
 - **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
 - **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
@@ -251,9 +263,9 @@ You: What critical vulnerabilities do we have?
 
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
-- **Security Stack**: Security groups, IAM roles, AWS Config, S3 compliance reports bucket
+- **Security Stack**: Security groups, IAM roles, AWS Config, S3 compliance reports bucket, SQS FIFO queue for workflow events
 - **Sample Environment**: 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows for testing
-- **Permissions Stack**: AgentCore IAM policies (EC2, SSM, Inspector, Config, S3)
+- **Permissions Stack**: AgentCore IAM policies (EC2, SSM, Inspector, Config, S3, SQS)
 
 ### ✅ Workflows
 - **Information Queries**: "What is CVE-X?", "Show me my instances"
@@ -301,7 +313,8 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   │   ├── tools.py                # 12 AWS tools + structured error handling
 │   │   ├── error_handling.py       # Error classification (RETRYABLE/SKIP/ABORT)
 │   │   ├── decision_logger.py      # Decision audit trail (CloudWatch + S3)
-│   │   ├── agent_factory.py        # Common agent creation
+│   │   ├── agent_factory.py        # Common agent creation with workflow hooks
+│   │   ├── workflow_events.py      # SQS-based workflow event transport
 │   │   ├── memory_hooks.py         # AgentCore memory integration
 │   │   └── globals.py              # Shared state
 │   ├── config/
@@ -310,16 +323,24 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 ├── infra/                          # AWS CDK infrastructure
 │   ├── lib/
 │   │   ├── networking-stack.ts
-│   │   ├── security-stack.ts
+│   │   ├── security-stack.ts       # IAM, SGs, S3, SQS workflow queue, Config
 │   │   ├── agentcore-permissions-stack.ts
 │   │   └── vulnerability-driven-patching-stack.ts
 │   └── bin/app.ts
-├── chatbot-client/                 # Chat client (boto3 + SSE streaming)
+├── ui/                             # Web UI (operations console)
+│   ├── api/
+│   │   └── server.py               # FastAPI proxy + SSE streaming + dashboard
+│   └── frontend/                   # React + Vite + Cloudscape
+│       └── src/
+│           ├── App.tsx              # Layout with error boundaries
+│           ├── components/          # Dashboard, Chat, WorkflowTracker, etc.
+│           └── hooks/               # useAgentStream, useWorkflowState, useDashboard
+├── chatbot-client/                 # CLI chat client (boto3 + SSE streaming)
 ├── doc/                            # Documentation
 │   ├── architecture.md             # Technical architecture
-│   ├── observability.md            # Decision log queries (CloudWatch, Athena, Splunk)
+│   ├── WEB_UI_PLAN.md              # Web UI design document
+│   ├── observability.md            # Decision log queries
 │   ├── PRESENTATION_GUIDE.md       # Live presentation script
-│   ├── code_talk.md                # Technical deep-dive talk
 │   └── troubleshooting.md          # Operational troubleshooting
 ├── deploy.sh                       # One-command deployment
 ├── chat.sh                         # Chat client wrapper

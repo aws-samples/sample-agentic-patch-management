@@ -28,9 +28,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Patch Automation API")
 
+# CORS origins — configurable via environment for production deployments
+_cors_origins = os.environ.get(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://localhost:3000"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[o.strip() for o in _cors_origins],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -79,16 +85,15 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
     Generator that reads the raw AgentCore SSE byte stream and yields
     simplified SSE events for the browser.
 
-    Workflow events come from two sources:
-    1. The WorkflowEventEmitter queue (populated by WorkflowTrackingHook on
-       specialist agents) — this is the primary, reliable source.
-    2. Supervisor-level tool calls visible in this stream — used only for
-       tool_start labels in the chat UI.
+    Workflow events are stored in DynamoDB by the WorkflowTrackingHook
+    running inside the AgentCore container. This endpoint polls DynamoDB
+    after each chunk to pick up new events and forward them to the browser.
 
-    After each chunk of stream data, we drain the workflow event queue and
-    yield any pending events inline.
+    This design solves the process isolation problem: the agent runs in
+    AgentCore (remote container) while this SSE endpoint runs in FastAPI
+    (local process). DynamoDB provides the shared event transport.
     """
-    # Import here to avoid circular imports at module level
+    # Import workflow emitter for SQS-based drain
     import sys
     sys.path.insert(0, str(AGENT_DIR))
     try:
@@ -105,7 +110,7 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
     start_time = time.time()
 
     def _drain_workflow_events():
-        """Yield any pending workflow events from the emitter queue."""
+        """Yield any pending workflow events from SQS."""
         if not emitter or not session_id:
             return
         for evt in emitter.drain(session_id):
@@ -159,7 +164,7 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
                 except json.JSONDecodeError:
                     pass
 
-            # After processing each chunk, drain workflow events from the queue
+            # After processing each chunk, drain workflow events from DynamoDB
             yield from _drain_workflow_events()
 
     except Exception as e:
@@ -172,7 +177,7 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
             pass
         # Final drain — catch any events emitted during the last tool call
         yield from _drain_workflow_events()
-        # Cleanup session queue
+        # Cleanup any remaining session messages from SQS
         if emitter and session_id:
             emitter.cleanup(session_id)
 
@@ -198,6 +203,7 @@ async def chat(request: Request):
     if not message:
         return {"error": "message is required"}, 400
 
+    logger.info(f"Chat request: session_id={session_id} message={message[:80]}")
     client = _get_client()
     payload = json.dumps({"prompt": message}).encode()
 

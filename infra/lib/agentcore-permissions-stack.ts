@@ -139,6 +139,22 @@ export class AgentCorePermissionsStack extends cdk.Stack {
           }
         }),
         
+        // SQS Permissions for Workflow Event Transport
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'sqs:SendMessage',
+            'sqs:ReceiveMessage',
+            'sqs:DeleteMessage',
+            'sqs:DeleteMessageBatch',
+            'sqs:GetQueueUrl',
+            'sqs:GetQueueAttributes',
+          ],
+          resources: [
+            `arn:aws:sqs:*:${this.account}:patch-automation-workflow-events.fifo`,
+          ]
+        }),
+
         // Broad Read Permissions for use_aws tool (demo purposes)
         // Allows querying Lambda, S3, RDS, and other AWS services
         new iam.PolicyStatement({

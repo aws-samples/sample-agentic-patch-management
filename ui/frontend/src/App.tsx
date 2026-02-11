@@ -4,6 +4,7 @@ import Header from "@cloudscape-design/components/header";
 import Button from "@cloudscape-design/components/button";
 import ChatPanel from "./components/ChatPanel";
 import DashboardPanel from "./components/DashboardPanel";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
 import { useWorkflowState } from "./hooks/useWorkflowState";
 
@@ -44,13 +45,15 @@ export default function App() {
                 ariaLabel="Collapse dashboard"
               />
             </div>
-            <DashboardPanel
-              onChatPrefill={handleChatPrefill}
-              workflowState={workflowState}
-              estimatedRemainingMs={estimatedRemainingMs}
-              onSend={sendMessage}
-              isStreaming={isStreaming}
-            />
+            <ErrorBoundary fallbackLabel="Dashboard">
+              <DashboardPanel
+                onChatPrefill={handleChatPrefill}
+                workflowState={workflowState}
+                estimatedRemainingMs={estimatedRemainingMs}
+                onSend={sendMessage}
+                isStreaming={isStreaming}
+              />
+            </ErrorBoundary>
           </div>
         </div>
 
@@ -87,16 +90,18 @@ export default function App() {
 
           {/* Chat content */}
           <div style={{ flex: 1, overflow: "hidden" }}>
-            <ChatPanel
-              messages={messages}
-              isStreaming={isStreaming}
-              onSend={sendMessage}
-              onStop={stopStreaming}
-              onClear={clearMessages}
-              sessionId={sessionId}
-              prefillText={chatPrefill}
-              onPrefillConsumed={() => setChatPrefill("")}
-            />
+            <ErrorBoundary fallbackLabel="Chat">
+              <ChatPanel
+                messages={messages}
+                isStreaming={isStreaming}
+                onSend={sendMessage}
+                onStop={stopStreaming}
+                onClear={clearMessages}
+                sessionId={sessionId}
+                prefillText={chatPrefill}
+                onPrefillConsumed={() => setChatPrefill("")}
+              />
+            </ErrorBoundary>
           </div>
         </div>
       </div>

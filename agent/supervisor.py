@@ -205,8 +205,22 @@ async def agent_invocation(payload, context):
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
     logger.info(f"New request: {user_message[:100]}")
     
-    # Hardcoded memory_id (updated by reset_memory.py script)
-    memory_id = "intelligent_patch_automation_mem_20251201144427-55J3BSGwvF"
+    # Load memory_id from AgentCore config (set during agentcore launch)
+    # Falls back to environment variable for local testing
+    memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
+    if not memory_id:
+        try:
+            import yaml
+            config_path = os.path.join(os.path.dirname(__file__), ".bedrock_agentcore.yaml")
+            with open(config_path) as f:
+                ac_config = yaml.safe_load(f)
+            default_agent = ac_config.get("default_agent", "")
+            memory_id = ac_config.get("agents", {}).get(default_agent, {}).get("memory", {}).get("memory_id")
+        except Exception as e:
+            logger.warning(f"Failed to load memory_id from config: {e}")
+    
+    if not memory_id:
+        logger.warning("No memory_id found — memory will not persist across sessions")
     
     logger.info(f"✓ Memory enabled: {memory_id}")
     logger.info(f"Session ID: {context.session_id}")
