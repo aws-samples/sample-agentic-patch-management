@@ -47,23 +47,41 @@ OUTPUT:
 - Lead with status emoji (✅ ⚠️ ❌) and 1-line summary
 - Tables for >3 items (max 3 columns). Lists >10: show first 10 with "Showing 10 of X"
 - Target <500 words. No conditional language.
+- Always end with "## 🎯 Next Steps" (exactly this heading)
 
-NEXT STEPS — always end your response with this exact format:
+RESPONSE TEMPLATES — pick the template matching the specialist you just consulted:
 
+AFTER vulnerability analysis:
 ## 🎯 Next Steps
-1. [Verb] [specific action] — [target instances/CVEs] in [environment]
-2. [Verb] [specific action] — [target instances/CVEs] in [environment]
-3. [Verb] [specific action] — [target instances/CVEs] in [environment]
+1. Patch [critical CVE] on [instance] in [lowest env] — emergency if SLA < window
+2. Create staged patch plan: dev → staging → prod for [N] HIGH CVEs across [N] instances
+3. [If compliance-tagged instance]: Prioritize [instance] ([framework]) — SLA [N]hr
+4. Review [N] MEDIUM CVEs for next maintenance window
+
+AFTER patch execution:
+## 🎯 Next Steps
+1. Verify health checks passed for [instance(s)] in [environment]
+2. Proceed with [next environment] patching? (dev → staging → prod)
+3. Generate compliance report for [CVE] in [environment]
+4. [If failures]: Rollback [instance] and investigate [error]
+
+AFTER compliance report:
+## 🎯 Next Steps
+1. Address [N] SLA breaches in [environment] — [severity] patches overdue by [N]hr
+2. Review [environment] patching trend: [↑↓→] [N]% vs previous period
+3. Schedule recurring scan for [environment] to track remediation progress
 
 Rules for next steps:
 - Always use "## 🎯 Next Steps" as the heading (exactly this)
 - Numbered list, 2-5 items, ordered by urgency
-- Each item starts with a verb (Patch, Remediate, Review, Schedule, Investigate)
-- Each item includes the specific target (instance IDs, CVE IDs, or environment)
+- Each item starts with a verb (Patch, Create, Verify, Proceed, Generate, Review, Address, Schedule, Rollback)
+- Each item includes specific targets (instance IDs, CVE IDs, environment names)
 - No sub-lists, no "Priority X" labels, no prose paragraphs between items
 - No duplicate numbering — single sequence 1, 2, 3...
-- If user can take an action via chat, phrase it as a question: "Proceed with patching i-xxx in staging?"
-"""
+- Actionable items the user can execute via chat should be phrased as questions
+- Always follow staged approach: dev → staging → prod (never jump to prod first)
+- For CRITICAL/HIGH CVEs with SLA pressure, recommend emergency targeted patching
+- For MEDIUM/LOW, recommend scheduling in next maintenance window"""
 
 @tool
 def consult_vulnerability_analyst(query: str) -> str:

@@ -16,11 +16,14 @@ interface Props {
 export default function MessageBubble({ message, isStreaming, onAction }: Props) {
   const isUser = message.role === "user";
 
-  // Parse next steps from completed assistant messages
+  // Always extract actions to strip "Next Steps" from rendered body (avoids
+  // a flash where next-steps markdown appears then gets replaced by buttons).
+  // Only show action buttons after streaming completes.
   const cleaned = !isUser ? cleanAgentText(message.content) : "";
-  const { body, actions } = !isUser && !isStreaming && cleaned
+  const { body, actions } = !isUser && cleaned
     ? extractActions(cleaned)
     : { body: cleaned, actions: [] };
+  const showActions = !isStreaming && actions.length > 0;
 
   return (
     <div
@@ -93,14 +96,14 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
               </div>
             )}
 
-            {/* Message content (without next steps section) */}
-            {(isStreaming ? cleaned : body) ? (
+            {/* Message content (next steps always stripped from body) */}
+            {body ? (
               <div className="agent-markdown">
                 <Markdown
                   remarkPlugins={[remarkGfm]}
                   components={{ table: CollapsibleTable }}
                 >
-                  {isStreaming ? cleaned : body}
+                  {body}
                 </Markdown>
               </div>
             ) : isStreaming ? (
@@ -111,7 +114,7 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
             ) : null}
 
             {/* Action buttons from Next Steps */}
-            {actions.length > 0 && onAction && (
+            {showActions && onAction && (
               <div style={{
                 marginTop: "12px",
                 padding: "10px 12px",
