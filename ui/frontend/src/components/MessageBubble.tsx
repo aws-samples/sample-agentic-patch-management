@@ -98,14 +98,21 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
 
             {/* Message content (next steps always stripped from body) */}
             {body ? (
-              <div className="agent-markdown">
-                <Markdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{ table: CollapsibleTable }}
-                >
-                  {body}
-                </Markdown>
-              </div>
+              <>
+                <div className="agent-markdown">
+                  <Markdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{ table: CollapsibleTable }}
+                  >
+                    {body}
+                  </Markdown>
+                </div>
+                {isStreaming && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 0" }}>
+                    <Spinner size="normal" />
+                  </div>
+                )}
+              </>
             ) : isStreaming ? (
               <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0" }}>
                 <Spinner size="normal" />
