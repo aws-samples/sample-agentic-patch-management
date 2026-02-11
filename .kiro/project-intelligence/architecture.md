@@ -98,3 +98,37 @@ get_maintenance_windows() → window_hours
 IF window_hours <= sla_hours → SCHEDULED (register with window)
 ELSE → EMERGENCY (patch immediately)
 ```
+
+### Workflow Event Transport (SQS FIFO)
+```
+AgentCore Container                    Local Machine
++---------------------+               +----------------------+
+| Specialist Agent    |               | FastAPI SSE Endpoint |
+|   |                 |               |   |                  |
+| WorkflowTrackingHook|--SQS FIFO--> | emitter.drain()      |
+|   |                 |               |   |                  |
+| sqs.send_message()  |               | yield evt.to_sse()   |
++---------------------+               +----------------------+
+                                              |
+                                        Browser (SSE)
+                                              |
+                                      useWorkflowState reducer
+                                              |
+                                      WorkflowTracker UI
+```
+
+Queue: `patch-automation-workflow-events.fifo`
+MessageGroupId: session_id (per-session ordering)
+Tool→step mapping in `TOOL_STEP_MAP` (workflow_events.py)
+
+### Web UI Architecture
+```
+Browser (React + Cloudscape)  ←→  FastAPI (server.py)  ←→  AgentCore Runtime
+                                        ↓
+                                  /api/chat → SSE stream (agent + workflow events)
+                                  /api/dashboard → concurrent boto3 calls (30s cache)
+                                  /api/health → config validation
+```
+
+Dashboard uses direct AWS API calls (not agent) for speed and reliability.
+Chat panel streams agent responses via SSE with inline workflow events.

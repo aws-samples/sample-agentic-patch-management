@@ -13,7 +13,8 @@ agent/
 │   ├── error_handling.py     # Error classification (RETRYABLE/SKIP/ABORT)
 │   ├── decision_logger.py    # Decision audit trail (CloudWatch + S3)
 │   ├── agent_factory.py      # Common agent creation with workflow hooks
-│   ├── workflow_events.py    # SQS-based workflow event transport
+│   ├── workflow_events.py    # SQS FIFO workflow event transport
+│   ├── context_helper.py     # Cross-agent context sharing
 │   ├── memory_hooks.py       # AgentCore memory integration
 │   └── globals.py            # Shared state
 └── config/
@@ -305,28 +306,31 @@ Returns EC2 instance list
 **Parameters**:
 - `cve_id` (optional): Specific CVE ID
 - `severity` (optional): CRITICAL, HIGH, MEDIUM, LOW
-- `environment` (optional): dev, staging, prod
-- `limit` (default: 50): Max results
+- `environment` (optional): dev, staging, prod, test
+- `limit` (default: 50): Max results in response payload
 
 **Implementation**:
 - Requires at least one filter (prevents unbounded queries)
-- Single API call: `inspector_client.list_findings()`
+- Paginates through all findings via `nextToken` for accurate total counts
 - Filters by: findingStatus=ACTIVE, cveId, severity, resourceTags
+- Normalizes environment names via `_normalize_environment()`
 - Sorts by severity (DESC)
-- Returns: findings[], total_count
+- Returns: findings[] (capped at `limit`), total_count (accurate across all pages)
 
 ### get_patch_compliance()
 **Purpose**: Get patch states + SLA calculation
 
 **Parameters**:
-- `environment` (required): dev, staging, prod
+- `environment` (required): dev, staging, prod, test
 - `instance_ids` (optional): Specific instances
 - `severity` (optional): If provided, includes SLA calculation
 
 **Implementation**:
-- Discovers instances by environment tag if not provided
+- Discovers instances by environment tag using paginated `describe_instances` if not provided
+- Normalizes environment names via `_normalize_environment()`
 - Single API call: `ssm_client.describe_instance_patch_states()`
 - Extracts ComplianceFrameworks tag from instances
+- SLA calculation unions frameworks across ALL instances (not just first), uses strictest
 - Calls `_calculate_sla_requirement(frameworks, severity)` if severity provided
 - Returns: instances[], total_count, summary{}, sla_requirement{} (optional)
 
@@ -406,12 +410,18 @@ Returns EC2 instance list
 - `environment` (required): dev, staging, prod
 - `command_id` (required): SSM command ID
 - `decision` (required): EMERGENCY or SCHEDULED
+- `severity` (optional): Vulnerability severity
+- `cvss_score` (optional): CVSS score
+- `sla_hours` (optional): SLA requirement hours
+- `sla_source` (optional): SLA source framework
 
 **Implementation**:
+- Paginates `list_command_invocations` to discover all instance IDs (was capped at 50)
 - Generates JSON report with timestamp, metadata, decision rationale
 - Uploads to S3: `s3://patch-compliance-reports-{account}/YYYY/MM/DD/{env}-{cve}.json`
+- S3 metadata: `cve-id`, `environment`, `severity`, `decision-type`, `sla-met`, `team`, `product`
 - Date-partitioned for efficient querying
-- Returns: s3_key, report_summary
+- Returns: report_id, s3_location, sla_met, summary
 
 ### query_compliance_reports()
 **Purpose**: Query compliance reports from S3
@@ -420,14 +430,16 @@ Returns EC2 instance list
 - `days_back` (default: 7): How many days to look back
 - `severity` (optional): Filter by severity
 - `environment` (optional): Filter by environment
-- `sla_breaches_only` (default: false): Only show breaches
+- `sla_breaches_only` (default: false): Only show confirmed breaches (sla_met=False)
+- `limit` (default: 50): Max reports to return
 
 **Implementation**:
-- Lists S3 objects with date prefix filtering
-- Downloads and parses JSON reports
-- Aggregates statistics: total reports, breach count, severity distribution
-- Calculates trends: current vs previous period
-- Returns: reports[], statistics{}, trends{}
+- Uses month-prefix strategy for efficient S3 listing (few API calls vs per-day)
+- Parallel `head_object` calls (ThreadPoolExecutor, max 10) for metadata
+- Filters by severity, environment, sla_breaches_only
+- `sla_breaches_only` only includes confirmed breaches (sla_met=False), not unknown
+- Aggregates statistics: total reports, breach count, breach rate, by_severity, by_team, by_decision, sla_unknown
+- Returns: reports[], statistics{}, total_count
 
 ---
 
@@ -656,8 +668,8 @@ SESSION_ID = None  # Per conversation
 
 ### CDK Stacks (4 stacks)
 1. **Networking**: VPC, subnets, NAT gateway
-2. **Security**: Security groups, IAM roles, AWS Config
-3. **AgentCore Permissions**: IAM policies for agent
+2. **Security**: Security groups, IAM roles, AWS Config, S3 bucket, SQS FIFO queue
+3. **AgentCore Permissions**: IAM policies for agent (EC2, SSM, Inspector, Config, S3, SQS)
 4. **Demo Instances**: 15 EC2 instances with tags
 
 ### Deployment Script
@@ -686,6 +698,69 @@ SESSION_ID = None  # Per conversation
 4. **Health checks**: "Check health of dev instances"
 5. **Rollback**: "Rollback dev patches"
 6. **Compliance**: "Show SLA breaches this week"
+
+---
+
+## Web UI Architecture
+
+### Overview
+Browser-based operations console replacing the terminal chat client. Dashboard with vulnerability cards, environment status, and embedded conversational agent.
+
+### Stack
+- **Frontend**: React + TypeScript + Vite + Cloudscape Design System
+- **Backend**: FastAPI (Python) — thin proxy, not a backend
+- **Streaming**: Server-Sent Events (SSE) for agent responses + workflow events
+- **Font**: Inter (consistent across all components)
+
+### API Endpoints
+```
+POST /api/chat              # Send message, returns SSE stream
+GET  /api/dashboard         # All dashboard data (concurrent fetches, 30s cache)
+GET  /api/health            # Config validation
+```
+
+### Layout
+Two-column flex layout: Dashboard (72%, min 500px) on left, Chat on right. Collapse/expand with smooth CSS transition. Chat never moves to bottom — always stays on the right.
+
+### Components (16 total)
+- **DashboardPanel**: Tabbed layout (KPI bar + environment cards + vulnerability table + activity + compliance + explainability)
+- **ChatPanel**: Message list + input + streaming indicators + approval buttons
+- **WorkflowTracker**: Real-time patching progress (EnvPipeline + StepProgress + InstanceStatusTable + WorkflowHeader + WorkflowActions)
+- **MessageBubble**: Markdown rendering + action button extraction
+- **ErrorBoundary**: Isolated crash recovery per panel
+
+### Hooks
+- **useAgentStream**: SSE connection, parses text + tool_start + workflow events, forwards workflow events to dispatch
+- **useWorkflowState**: Reducer managing workflow lifecycle (idle → active → complete), step tracking, ETA estimation
+- **useDashboard**: Dashboard data fetching with 60s auto-refresh and manual refresh
+
+### Workflow Event Flow
+```
+Agent (WorkflowTrackingHook) → SQS FIFO → FastAPI (drain) → SSE → useAgentStream → useWorkflowState → WorkflowTracker
+```
+
+---
+
+## Testing & Validation
+
+### Chat Client
+**File**: `chat.sh` (wrapper for `chatbot-client/src/patch_client.py`)
+- Direct boto3 integration (no CLI subprocess)
+- Server-Sent Events (SSE) streaming
+- Real-time tool indicators
+- Rich terminal UI with markdown
+- Session management
+
+### Test Patterns
+1. **Information queries**: "What is CVE-X?"
+2. **AWS service queries**: "List Lambda functions"
+3. **Patching workflow**: "Handle CVE-X in dev"
+4. **Health checks**: "Check health of dev instances"
+5. **Rollback**: "Rollback dev patches"
+6. **Compliance**: "Show SLA breaches this week"
+
+### Test Plan
+See `doc/TEST_PLAN.md` — 74 test cases across 6 areas: dashboard data accuracy, workflow tracker event flow, agent chat interactions, dashboard↔agent consistency, UI/UX, and infrastructure.
 
 ---
 

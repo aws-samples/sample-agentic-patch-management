@@ -6,7 +6,7 @@
 |-----------|---------|---------|
 | AWS Strands SDK | Agent framework | 1.4.0+ |
 | Amazon Bedrock AgentCore | Managed agent runtime | Latest |
-| Claude Sonnet 4.5 | Foundation model (`anthropic.claude-sonnet-4-5-v2:0`) | Latest |
+| Claude Sonnet 4.5 | Foundation model (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`) | Latest |
 | Python | Agent code | 3.9+ |
 | AWS CDK (TypeScript) | Infrastructure as Code | Latest |
 | Docker/Finch | Container runtime (ARM64) | Latest |

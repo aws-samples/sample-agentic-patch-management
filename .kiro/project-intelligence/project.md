@@ -25,6 +25,7 @@ Multi-agent patch automation system built for AWS re:Invent 2025 session COP407.
 5. **Compliance Reporting** — Automated audit trails in S3 (date-partitioned, queryable metadata)
 6. **Structured Error Recovery** — Tools return classified errors (RETRYABLE/SKIP/ABORT), agent follows recovery guidance
 7. **Decision Audit Trail** — Every routing, SLA, and error recovery decision logged to CloudWatch + S3
+8. **Web UI** — Operations console with dashboard (KPI bar, environment cards, vulnerability table, compliance summary), chat panel with streaming, and real-time workflow tracker via SQS FIFO events
 
 ## How It Works
 
@@ -58,6 +59,11 @@ Supervisor uses keyword-based routing (18-36% faster than LLM routing). OUT_OF_S
 - **Agents produce data, customers analyze it** — decisions stored in standard formats (JSON in CloudWatch + S3), queryable with existing tools (Athena, Splunk, Datadog)
 - **Determinism through prompts** — 7-step mandatory workflow enforced via system prompt, not external validation
 - **SSM handles constraints** — maintenance windows, patch baselines. No custom constraints.json needed.
+- **SQS FIFO for workflow events** — cross-process event transport between AgentCore container and local FastAPI
+- **Impact assessment over blast radius** — practical `safe_to_patch` check via ELB target health, not aspirational scoring
+- **Optimized prompts** — ~60% reduction across all 4 agents, redundancies removed, concise error handling tables
+- **Full pagination** — Inspector, EC2, SSM, S3 all paginated for accurate counts at any scale
+- **Dashboard uses direct API calls** — not agent, for speed and reliability
 
 ## Environment
 

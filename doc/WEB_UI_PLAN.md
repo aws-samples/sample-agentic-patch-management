@@ -81,41 +81,35 @@ The [aws-samples/sample-ai-agent-accelerator](https://github.com/aws-samples/sam
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  🛡️ Intelligent Patch Automation          [env: prod ▾] [⚙️]    │
-├────────────────────────────────┬─────────────────────────────────┤
-│                                │                                 │
-│   DASHBOARD PANEL (left 60%)   │   CHAT PANEL (right 40%)       │
-│                                │                                 │
-│  ┌──────────────────────────┐  │  ┌───────────────────────────┐  │
-│  │ Environment Status       │  │  │ 🤖 Patchy                │  │
-│  │ ┌─────┐ ┌─────┐ ┌─────┐ │  │  │                           │  │
-│  │ │ DEV │ │ STG │ │ PRD │ │  │  │ Agent: Found 3 CRITICAL   │  │
-│  │ │ ✅5 │ │ ✅5 │ │ ⚠️5 │ │  │  │ CVEs in dev...            │  │
-│  │ └─────┘ └─────┘ └─────┘ │  │  │                           │  │
-│  └──────────────────────────┘  │  │ 🔍 Consulting Vuln...     │  │
-│                                │  │ 🛠️ Consulting Patch...     │  │
-│  ┌──────────────────────────┐  │  │                           │  │
-│  │ Active Vulnerabilities   │  │  │ ✅ Patching complete.     │  │
-│  │ CVE-2025-38527  CRITICAL │  │  │ 5/5 instances patched.    │  │
-│  │ CVE-2025-12345  HIGH     │  │  │                           │  │
-│  │ CVE-2025-99999  MEDIUM   │  │  │                           │  │
-│  └──────────────────────────┘  │  ├───────────────────────────┤  │
-│                                │  │ [Type a message...]    ➤  │  │
-│  ┌──────────────────────────┐  │  └───────────────────────────┘  │
-│  │ Recent Patching Activity │  │                                 │
-│  │ 10:32 EMERGENCY dev ✅   │  │                                 │
-│  │ 10:28 SCHEDULED stg ⏳  │  │                                 │
-│  └──────────────────────────┘  │                                 │
-│                                │                                 │
-│  ┌──────────────────────────┐  │                                 │
-│  │ Compliance Summary       │  │                                 │
-│  │ SLA Met: 96% | Breach: 1 │  │                                 │
-│  └──────────────────────────┘  │                                 │
-│                                │                                 │
-├────────────────────────────────┴─────────────────────────────────┤
+│  🛡️ Intelligent Patch Automation                                │
+├──────────────────────────────────────┬───────────────────────────┤
+│                                      │                           │
+│   DASHBOARD PANEL (left 72%)         │   CHAT PANEL (right 28%) │
+│                                      │                           │
+│  ┌────────────────────────────────┐  │  ┌─────────────────────┐  │
+│  │ KPI Bar                       │  │  │ 🤖 Patchy           │  │
+│  │ High: 78 | Med: 128 | 206 tot│  │  │                     │  │
+│  └────────────────────────────────┘  │  │ Agent: Found 3 CVEs │  │
+│                                      │  │ in dev...           │  │
+│  ┌────────────────────────────────┐  │  │                     │  │
+│  │ [Workflow Tracker]            │  │  │ 🔍 Consulting Vuln..│  │
+│  │ ████████░░ 3/5 patched       │  │  │ 🛠️ Consulting Patch..│  │
+│  └────────────────────────────────┘  │  │                     │  │
+│                                      │  │ ✅ Patching complete│  │
+│  ┌────────────────────────────────┐  │  │                     │  │
+│  │ Tabs: Vulns | Envs | Activity │  │  ├─────────────────────┤  │
+│  │ | Compliance | Explainability │  │  │ [Type a message..] ➤│  │
+│  │                               │  │  └─────────────────────┘  │
+│  │ [Tab content here]            │  │                           │
+│  └────────────────────────────────┘  │                           │
+│                                      │                           │
+│  ◀ Collapse                          │                           │
+├──────────────────────────────────────┴───────────────────────────┤
 │  Last refresh: 10:35 UTC  |  Session: patch-session-abc123      │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+Dashboard is 72% width (min 500px) with smooth CSS collapse/expand. Chat always stays on the right side — never moves to bottom. Collapse arrow points left (toward dashboard) when collapsing.
 
 ### Cloudscape Component Mapping
 
@@ -208,21 +202,28 @@ Patching dev environment...  ████████░░  3/5 instances compl
 ```
 ui/
 ├── api/                          # FastAPI backend (thin proxy)
-│   ├── server.py                 # /chat (SSE), /dashboard/*, /health
+│   ├── server.py                 # /api/chat (SSE), /api/dashboard, /api/health
 │   └── requirements.txt          # fastapi, uvicorn, boto3, pyyaml
 ├── frontend/                     # React + Vite + Cloudscape
 │   ├── src/
-│   │   ├── App.tsx               # AppLayout shell
+│   │   ├── App.tsx               # Two-column layout with error boundaries
 │   │   ├── components/
-│   │   │   ├── ChatPanel.tsx         # Custom chat (SplitPanel content)
-│   │   │   ├── MessageBubble.tsx     # Single message with markdown
-│   │   │   ├── ToolIndicator.tsx     # "🔍 Consulting Vulnerability Analyst..."
-│   │   │   ├── ApprovalButtons.tsx   # Proceed / Verify / Stop buttons
-│   │   │   ├── DashboardPanel.tsx    # Left side layout (Cloudscape Cards/Tables)
-│   │   │   ├── EnvironmentCards.tsx  # Cloudscape Cards + StatusIndicator
-│   │   │   ├── VulnTable.tsx         # Cloudscape Table (sortable, filterable)
-│   │   │   ├── ActivityTable.tsx     # Cloudscape Table (compact)
-│   │   │   └── ComplianceSummary.tsx # KeyValuePairs + StatusIndicator
+│   │   │   ├── ChatPanel.tsx         # Chat with streaming + approval buttons
+│   │   │   ├── MessageBubble.tsx     # Message with markdown + action extraction
+│   │   │   ├── DashboardPanel.tsx    # Tabbed dashboard layout
+│   │   │   ├── KpiBar.tsx            # Top-level vulnerability/compliance KPIs
+│   │   │   ├── EnvironmentCards.tsx  # Environment status cards
+│   │   │   ├── VulnTable.tsx         # Vulnerability findings table
+│   │   │   ├── ActivityTable.tsx     # Recent patching activity
+│   │   │   ├── ComplianceSummary.tsx # Compliance statistics
+│   │   │   ├── ExplainabilityTable.tsx # Decision audit trail
+│   │   │   ├── WorkflowTracker.tsx   # Real-time patching progress
+│   │   │   ├── EnvPipeline.tsx       # Environment pipeline visualization
+│   │   │   ├── StepProgress.tsx      # Workflow step progress bars
+│   │   │   ├── InstanceStatusTable.tsx # Per-instance patch status
+│   │   │   ├── WorkflowHeader.tsx    # Workflow tracker header
+│   │   │   ├── WorkflowActions.tsx   # Workflow action buttons
+│   │   │   └── ErrorBoundary.tsx     # Isolated crash recovery
 │   │   ├── hooks/
 │   │   │   ├── useAgentStream.ts     # SSE hook for streaming responses
 │   │   │   ├── useWorkflowState.ts   # Workflow state reducer + ETA estimation
@@ -246,14 +247,17 @@ POST /api/chat              # Send message, returns SSE stream
   Body: { "message": "...", "session_id": "..." }
   Response: text/event-stream
 
-GET  /api/dashboard/environments    # Environment status cards
-GET  /api/dashboard/vulnerabilities # Active vulnerability findings
-GET  /api/dashboard/activity        # Recent patching activity from S3
-GET  /api/dashboard/compliance      # Compliance summary statistics
-GET  /api/health                    # Health check
+GET  /api/dashboard              # All dashboard data (single endpoint)
+  Query: ?force=true             # Bypass 30s cache
+  Response: { environments, findings, severity_counts, activities,
+              compliance, report_details, errors, cached }
+
+GET  /api/health                 # Health check
 ```
 
-The `/api/chat` endpoint wraps `invoke_agent_runtime`, parses the SSE stream, and re-emits it to the browser. Dashboard endpoints are direct boto3 calls.
+The `/api/chat` endpoint wraps `invoke_agent_runtime`, parses the SSE stream, drains SQS workflow events, and re-emits both to the browser. The `/api/dashboard` endpoint runs 3 concurrent boto3 fetches (environments, vulnerabilities, reports) with 30-second caching.
+
+> **Note:** The original plan specified separate dashboard endpoints (`/api/dashboard/environments`, `/api/dashboard/vulnerabilities`, etc.) but the implementation consolidated them into a single `/api/dashboard` endpoint for simplicity — one fetch from the frontend gets everything.
 
 ---
 

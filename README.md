@@ -230,8 +230,8 @@ You: What critical vulnerabilities do we have?
 ## What's Implemented
 
 ### ✅ Web UI (Operations Console)
-- **Dashboard**: Environment status cards, vulnerability table, activity feed, compliance summary, explainability table
-- **Chat Panel**: Conversational agent with streaming responses, tool indicators, approval buttons
+- **Dashboard**: KPI bar, environment status cards, vulnerability table, activity feed, compliance summary, explainability table
+- **Chat Panel**: Conversational agent with streaming responses, tool indicators, approval buttons, action extraction
 - **Real-Time Workflow Tracker**: Live progress visualization during patching operations
   - SQS FIFO-based event transport between AgentCore (remote) and FastAPI (local)
   - Strands hooks on specialist agents emit structured events (discovery, patch execute, health check, etc.)
@@ -240,6 +240,8 @@ You: What critical vulnerabilities do we have?
 - **Error Boundaries**: Isolated crash recovery for dashboard and chat panels
 - **Click-to-Action**: Dashboard elements pre-fill chat input for common operations
 - **Collapsible Layout**: Dashboard (72%) + Chat side-by-side with smooth collapse/expand
+- **API**: Single `/api/dashboard` endpoint (concurrent fetches, 30s cache), `/api/chat` (SSE streaming), `/api/health`
+- **Font**: Inter everywhere, consistent sizing hierarchy
 
 ### ✅ Core Capabilities
 - **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
@@ -249,6 +251,7 @@ You: What critical vulnerabilities do we have?
 - **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
 - **Dependency Analysis**: AWS Config-based impact assessment with load balancer health tracking
+- **Impact Safety Check**: `get_resource_dependencies` checks target group health to determine `safe_to_patch`
 - **Phased Rollout**: dev → staging → prod with human approval between environments
 - **Two-Layer Health Monitoring**: 
   - Infrastructure: SSM connectivity verification
@@ -264,7 +267,7 @@ You: What critical vulnerabilities do we have?
 ### ✅ Infrastructure (AWS CDK)
 - **Networking Stack**: VPC, subnets, routing
 - **Security Stack**: Security groups, IAM roles, AWS Config, S3 compliance reports bucket, SQS FIFO queue for workflow events
-- **Sample Environment**: 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows for testing
+- **Sample Environment**: 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows for testing. "test" environment supported via config aliases.
 - **Permissions Stack**: AgentCore IAM policies (EC2, SSM, Inspector, Config, S3, SQS)
 
 ### ✅ Workflows
@@ -314,7 +317,8 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   │   ├── error_handling.py       # Error classification (RETRYABLE/SKIP/ABORT)
 │   │   ├── decision_logger.py      # Decision audit trail (CloudWatch + S3)
 │   │   ├── agent_factory.py        # Common agent creation with workflow hooks
-│   │   ├── workflow_events.py      # SQS-based workflow event transport
+│   │   ├── workflow_events.py      # SQS FIFO workflow event transport
+│   │   ├── context_helper.py       # Cross-agent context sharing
 │   │   ├── memory_hooks.py         # AgentCore memory integration
 │   │   └── globals.py              # Shared state
 │   ├── config/
@@ -333,12 +337,34 @@ The Supervisor uses intelligent routing to direct queries to the right specialis
 │   └── frontend/                   # React + Vite + Cloudscape
 │       └── src/
 │           ├── App.tsx              # Layout with error boundaries
-│           ├── components/          # Dashboard, Chat, WorkflowTracker, etc.
-│           └── hooks/               # useAgentStream, useWorkflowState, useDashboard
+│           ├── components/
+│           │   ├── DashboardPanel.tsx    # Dashboard layout + tabs
+│           │   ├── ChatPanel.tsx         # Chat with streaming + approval buttons
+│           │   ├── WorkflowTracker.tsx   # Real-time patching progress
+│           │   ├── KpiBar.tsx            # Top-level vulnerability/compliance KPIs
+│           │   ├── EnvironmentCards.tsx   # Environment status cards
+│           │   ├── VulnTable.tsx         # Vulnerability findings table
+│           │   ├── ActivityTable.tsx      # Recent patching activity
+│           │   ├── ComplianceSummary.tsx  # Compliance statistics
+│           │   ├── ExplainabilityTable.tsx # Decision audit trail
+│           │   ├── MessageBubble.tsx      # Chat message with markdown + actions
+│           │   ├── ErrorBoundary.tsx      # Isolated crash recovery
+│           │   ├── EnvPipeline.tsx        # Environment pipeline visualization
+│           │   ├── StepProgress.tsx       # Workflow step progress bars
+│           │   ├── InstanceStatusTable.tsx # Per-instance patch status
+│           │   ├── WorkflowHeader.tsx     # Workflow tracker header
+│           │   └── WorkflowActions.tsx    # Workflow action buttons
+│           ├── hooks/
+│           │   ├── useAgentStream.ts      # SSE hook for streaming responses
+│           │   ├── useWorkflowState.ts    # Workflow state reducer + ETA
+│           │   └── useDashboard.ts        # Dashboard data fetching + caching
+│           └── lib/
+│               └── api.ts                # fetch wrapper for API endpoints
 ├── chatbot-client/                 # CLI chat client (boto3 + SSE streaming)
 ├── doc/                            # Documentation
 │   ├── architecture.md             # Technical architecture
 │   ├── WEB_UI_PLAN.md              # Web UI design document
+│   ├── TEST_PLAN.md                # Test plan (74 test cases)
 │   ├── observability.md            # Decision log queries
 │   ├── PRESENTATION_GUIDE.md       # Live presentation script
 │   └── troubleshooting.md          # Operational troubleshooting
