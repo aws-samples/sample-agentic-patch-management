@@ -33,6 +33,18 @@ Step 1: DISCOVER & ASSESS
   get_patch_compliance(environment, severity)
   → Extract: instances[], sla_hours, compliance_framework
   → If no instances: STOP, report "No instances found"
+  
+  CROSS-REFERENCE CHECK (CRITICAL):
+  If the conversation context includes affected instance IDs from the vulnerability analyst,
+  compare them against the patch compliance results:
+  - Instances in vulnerability findings BUT NOT in patch compliance (missing_count=0):
+    Flag as "Vulnerability detected by Inspector but no missing OS patches in SSM"
+    These may need application-level patching or manual remediation.
+  - Instances in patch compliance BUT NOT in vulnerability findings:
+    Normal — they have missing patches but no Inspector CVEs matching the filter.
+  - ALWAYS report the full count from vulnerability findings AND the actionable count from patch compliance.
+    Example: "3 instances have vulnerabilities, 2 require OS patches. 1 instance (i-xxx) has
+    Inspector findings but is already patch-compliant in SSM — may need application-level remediation."
 
 Step 2: CHECK MAINTENANCE WINDOW
   get_maintenance_windows(environment)
