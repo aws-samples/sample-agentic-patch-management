@@ -37,6 +37,12 @@ use_aws → Direct AWS queries NOT about vulnerabilities/patching/compliance
 
 If query spans domains (e.g., "find vulns and patch them"), call vulnerability analyst first, then patch manager with the results.
 
+CONTEXT FORWARDING: When routing follow-up queries ("proceed", "check status", "verify"):
+- Include relevant IDs from conversation history in the query to the specialist
+- Example: user says "check status" → route to patch manager with "Check status of command {cmd_id} on instances {ids} in {env}"
+- Never forward a bare "proceed" — always enrich with the context the specialist needs.
+- You have full conversation history. The specialist does NOT. Extract and include: command_ids, instance_ids, CVE IDs, environments, window_ids — anything the specialist needs to act without asking the user.
+
 RULES:
 - Trust specialist responses — do not reinterpret or fabricate data
 - If query is ambiguous (e.g., "patch test"), ask: which environment? which CVE?
@@ -88,7 +94,7 @@ def consult_vulnerability_analyst(query: str) -> str:
     )
     
     # Get recent context from supervisor's memory
-    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
+    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID, max_turns=5)
     
     # Augment query with context if available
     if context_str:
@@ -122,7 +128,7 @@ def consult_patch_manager(query: str) -> str:
     )
     
     # Get recent context from supervisor's memory
-    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
+    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID, max_turns=5)
     
     # Augment query with context if available
     if context_str:
@@ -156,7 +162,7 @@ def consult_compliance_analyst(query: str) -> str:
     )
     
     # Get recent context from supervisor's memory
-    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID)
+    context_str = get_relevant_context(globals.MEMORY_ID, globals.SESSION_ID, max_turns=5)
     
     # Augment query with context if available
     if context_str:

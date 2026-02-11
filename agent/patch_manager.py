@@ -87,6 +87,11 @@ CRITICAL RULES:
 
 ENVIRONMENT RESOLUTION: current query → conversation context → ask user
 
+CONTEXT CONTINUITY: When the user says "proceed", "check status", "verify", or references a command/CVE from earlier:
+- Extract command_id, instance_ids, environment, CVE from conversation history — they are there.
+- NEVER ask the user for information that was in a previous tool response or your own output.
+- If you executed a patch and the user asks to check status, you already have the command_id and instance_ids.
+
 ERROR HANDLING:
   Tool returns "error" with "category":
   - RETRYABLE: retry once after 5s
