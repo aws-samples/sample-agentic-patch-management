@@ -4,6 +4,7 @@ import StatusIndicator from "@cloudscape-design/components/status-indicator";
 import Spinner from "@cloudscape-design/components/spinner";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useState, type ReactNode } from "react";
 import type { ChatMessage } from "../hooks/useAgentStream";
 
 interface Props {
@@ -61,6 +62,7 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
           lineHeight: "1.6",
         }}
       >
+
         {isUser ? (
           <Box color="inherit" variant="p">{message.content}</Box>
         ) : (
@@ -94,7 +96,10 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
             {/* Message content (without next steps section) */}
             {(isStreaming ? cleaned : body) ? (
               <div className="agent-markdown">
-                <Markdown remarkPlugins={[remarkGfm]}>
+                <Markdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{ table: CollapsibleTable }}
+                >
                   {isStreaming ? cleaned : body}
                 </Markdown>
               </div>
@@ -150,6 +155,67 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
   );
 }
 
+const VISIBLE_ROWS = 10;
+
+/** Show first 10 rows of large tables with a "Show more" toggle. */
+function CollapsibleTable({ children }: { children?: ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Count body rows to decide if truncation is needed
+  const totalRows = countBodyRows(children);
+  if (totalRows <= VISIBLE_ROWS) {
+    return <table>{children}</table>;
+  }
+
+  return (
+    <div>
+      <table style={expanded ? undefined : { display: "block", overflow: "hidden" }}>
+        {expanded ? children : truncateTableBody(children, VISIBLE_ROWS)}
+      </table>
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          background: "none",
+          border: "none",
+          color: "#0972d3",
+          cursor: "pointer",
+          fontSize: "12px",
+          fontWeight: 600,
+          padding: "6px 0",
+        }}
+      >
+        {expanded ? "Show less" : `Show all ${totalRows} rows`}
+      </button>
+    </div>
+  );
+}
+
+/** Count <tr> elements inside <tbody>. */
+function countBodyRows(children: ReactNode): number {
+  const arr = Array.isArray(children) ? children : [children];
+  for (const section of arr) {
+    if (section && typeof section === "object" && "props" in section && section.type === "tbody") {
+      const rows = section.props.children;
+      return Array.isArray(rows) ? rows.length : rows ? 1 : 0;
+    }
+  }
+  return 0;
+}
+
+/** Clone the table children but limit tbody to `max` rows. */
+function truncateTableBody(children: ReactNode, max: number): ReactNode {
+  const arr = Array.isArray(children) ? children : [children];
+  return arr.map((section, i) => {
+    if (section && typeof section === "object" && "props" in section && section.type === "tbody") {
+      const rows = Array.isArray(section.props.children)
+        ? section.props.children.slice(0, max)
+        : section.props.children;
+      return <tbody key={i}>{rows}</tbody>;
+    }
+    return section;
+  });
+}
+
 /** Strip <answer>/<thinking> XML tags the agent wraps responses in. */
 function cleanAgentText(raw: string): string {
   let text = raw;
@@ -167,15 +233,8 @@ function cleanAgentText(raw: string): string {
 /**
  * Extract "Next Steps" section from agent markdown and return
  * the body (without next steps) and an array of action strings.
- *
- * Matches patterns like:
- *   **Next Steps:**           / **Next steps:**
- *   ### Next Steps            / ## ⚡ Next Steps
- *   - Handle CVE-2025-38527 in dev
- *   - Check compliance status
  */
 function extractActions(text: string): { body: string; actions: string[] } {
-  // Match "Next Steps" heading or bold label with optional emoji prefix, case-insensitive
   const pattern = /(?:^|\n)(?:#{1,4}\s*(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?Next\s*Steps[:\s]*|[*_]{2}(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?Next\s*Steps[:\s]*[*_]{2}[:\s]*)\n([\s\S]*?)$/iu;
   const match = text.match(pattern);
 
@@ -184,14 +243,13 @@ function extractActions(text: string): { body: string; actions: string[] } {
   const body = text.slice(0, match.index!).trim();
   const stepsBlock = match[1].trim();
 
-  // Parse list items (- item, * item, 1. item, or lines starting with action-like text)
   const actions: string[] = [];
   for (const line of stepsBlock.split("\n")) {
     const cleaned = line
-      .replace(/^[\s]*[-*•]\s*/, "")       // unordered list markers
-      .replace(/^[\s]*\d+[.)]\s*/, "")     // ordered list markers
-      .replace(/[*_`]/g, "")               // strip markdown formatting
-      .replace(/^\s*>\s*/, "")             // blockquote markers
+      .replace(/^[\s]*[-*•]\s*/, "")
+      .replace(/^[\s]*\d+[.)]\s*/, "")
+      .replace(/[*_`]/g, "")
+      .replace(/^\s*>\s*/, "")
       .trim();
 
     if (cleaned.length > 5 && cleaned.length < 120) {
@@ -199,5 +257,5 @@ function extractActions(text: string): { body: string; actions: string[] } {
     }
   }
 
-  return { body, actions: actions.slice(0, 5) }; // max 5 action buttons
+  return { body, actions: actions.slice(0, 5) };
 }
