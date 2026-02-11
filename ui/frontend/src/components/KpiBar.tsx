@@ -14,7 +14,7 @@ export default function KpiBar({ data }: Props) {
   const criticalVulns = data.severityCounts["CRITICAL"] ?? 0;
   const highVulns = data.severityCounts["HIGH"] ?? 0;
   const mediumVulns = data.severityCounts["MEDIUM"] ?? 0;
-  const totalVulns = data.findings.length;
+  const totalVulns = Object.values(data.severityCounts).reduce((s, n) => s + n, 0);
   const slaRate = data.compliance?.sla_rate_percent ?? 0;
   const totalReports = data.compliance?.total_reports ?? 0;
   const slaBreached = data.compliance?.sla_breached ?? 0;

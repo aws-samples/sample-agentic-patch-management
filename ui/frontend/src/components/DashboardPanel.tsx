@@ -92,7 +92,7 @@ export default function DashboardPanel({ onChatPrefill, workflowState, estimated
           },
           {
             id: "vulnerabilities",
-            label: `Vulnerabilities (${data.findings.length})`,
+            label: `Vulnerabilities (${Object.values(data.severityCounts).reduce((s, n) => s + n, 0)})`,
             content: (
               <Box padding={{ top: "s" }}>
                 <VulnTable
