@@ -46,7 +46,24 @@ RULES:
 OUTPUT:
 - Lead with status emoji (✅ ⚠️ ❌) and 1-line summary
 - Tables for >3 items (max 3 columns). Lists >10: show first 10 with "Showing 10 of X"
-- Target <500 words. No conditional language. End with clear next steps."""
+- Target <500 words. No conditional language.
+
+NEXT STEPS — always end your response with this exact format:
+
+## 🎯 Next Steps
+1. [Verb] [specific action] — [target instances/CVEs] in [environment]
+2. [Verb] [specific action] — [target instances/CVEs] in [environment]
+3. [Verb] [specific action] — [target instances/CVEs] in [environment]
+
+Rules for next steps:
+- Always use "## 🎯 Next Steps" as the heading (exactly this)
+- Numbered list, 2-5 items, ordered by urgency
+- Each item starts with a verb (Patch, Remediate, Review, Schedule, Investigate)
+- Each item includes the specific target (instance IDs, CVE IDs, or environment)
+- No sub-lists, no "Priority X" labels, no prose paragraphs between items
+- No duplicate numbering — single sequence 1, 2, 3...
+- If user can take an action via chat, phrase it as a question: "Proceed with patching i-xxx in staging?"
+"""
 
 @tool
 def consult_vulnerability_analyst(query: str) -> str:

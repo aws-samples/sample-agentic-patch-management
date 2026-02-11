@@ -235,7 +235,7 @@ function cleanAgentText(raw: string): string {
  * the body (without next steps) and an array of action strings.
  */
 function extractActions(text: string): { body: string; actions: string[] } {
-  const pattern = /(?:^|\n)(?:#{1,4}\s*(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?Next\s*Steps[:\s]*|[*_]{2}(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?Next\s*Steps[:\s]*[*_]{2}[:\s]*)\n([\s\S]*?)$/iu;
+  const pattern = /(?:^|\n)(?:#{1,4}\s*(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?(?:Next\s*Steps|Recommended\s*Actions)[:\s]*|[*_]{2}(?:[\p{Emoji_Presentation}\p{Emoji}\u200d]+\s*)?(?:Next\s*Steps|Recommended\s*Actions)[:\s]*[*_]{2}[:\s]*)\n([\s\S]*?)$/iu;
   const match = text.match(pattern);
 
   if (!match) return { body: text, actions: [] };
