@@ -6,12 +6,13 @@ import ChatPanel from "./components/ChatPanel";
 import DashboardPanel from "./components/DashboardPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
-import { useWorkflowState } from "./hooks/useWorkflowState";
+// Workflow tracker disabled — files kept for future use
+// import { useWorkflowState } from "./hooks/useWorkflowState";
 
 export default function App() {
-  const { state: workflowState, dispatch, estimatedRemainingMs } = useWorkflowState();
+  // const { state: workflowState, dispatch, estimatedRemainingMs } = useWorkflowState();
   const { messages, isStreaming, sessionId, sendMessage, stopStreaming, clearMessages } =
-    useAgentStream({ onWorkflowEvent: dispatch });
+    useAgentStream();
   const [chatPrefill, setChatPrefill] = useState("");
   const [dashboardOpen, setDashboardOpen] = useState(true);
 
@@ -48,10 +49,6 @@ export default function App() {
             <ErrorBoundary fallbackLabel="Dashboard">
               <DashboardPanel
                 onChatPrefill={handleChatPrefill}
-                workflowState={workflowState}
-                estimatedRemainingMs={estimatedRemainingMs}
-                onSend={sendMessage}
-                isStreaming={isStreaming}
               />
             </ErrorBoundary>
           </div>

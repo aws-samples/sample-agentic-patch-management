@@ -85,52 +85,12 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
     Generator that reads the raw AgentCore SSE byte stream and yields
     simplified SSE events for the browser.
 
-    Key design decisions for low-latency streaming:
-    1. Uses read1() on the underlying urllib3 stream to get bytes as soon as
-       they arrive from the socket — no buffering delay waiting to fill 4KB.
-    2. Workflow events (from SQS) are polled by a background thread every
-       500ms and flushed into the SSE stream without blocking text delivery.
+    Pure SSE proxy — no SQS, no threads, no workflow event polling.
+    Uses read1() on the underlying urllib3 stream for immediate byte delivery.
     """
-    import sys
-    import threading
-    import queue as queue_mod
-    sys.path.insert(0, str(AGENT_DIR))
-    try:
-        from helper.workflow_events import get_emitter
-        emitter = get_emitter()
-    except ImportError:
-        emitter = None
-        logger.warning("workflow_events module not available — workflow tracking disabled")
-
     current_tool = None
     start_time = time.time()
     line_buffer = ""
-
-    # ── Background SQS poller ───────────────────────────────────────
-    workflow_queue: queue_mod.Queue = queue_mod.Queue()
-    stop_poller = threading.Event()
-
-    def _sqs_poller():
-        if not emitter or not session_id:
-            return
-        while not stop_poller.is_set():
-            try:
-                events = emitter.drain(session_id, wait_seconds=0)
-                for evt in events:
-                    workflow_queue.put(evt.to_sse())
-            except Exception as e:
-                logger.warning(f"[workflow] Poller error: {e}")
-            stop_poller.wait(0.5)
-
-    poller_thread = threading.Thread(target=_sqs_poller, daemon=True)
-    poller_thread.start()
-
-    def _flush_workflow_queue():
-        while not workflow_queue.empty():
-            try:
-                yield workflow_queue.get_nowait()
-            except queue_mod.Empty:
-                break
 
     def _process_sse_line(line: str):
         """Parse a single SSE line and return an SSE string to yield, or None."""
@@ -164,16 +124,13 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
             pass
         return None
 
-    # ── Main read loop ──────────────────────────────────────────────
     # Use read1() on the underlying urllib3 stream for immediate delivery.
-    # read1(N) returns up to N bytes that are already in the socket buffer
-    # instead of blocking until N bytes accumulate (like read(N) does).
+    # read1(N) returns up to N bytes already in the socket buffer — no
+    # blocking wait to fill the buffer like read(N) does.
     raw_stream = getattr(event_stream, "_raw_stream", None)
 
     try:
         while True:
-            # read1() returns whatever's available (1 byte to 8KB), never blocks
-            # for more. Falls back to read(1) if _raw_stream isn't available.
             if raw_stream and hasattr(raw_stream, "read1"):
                 chunk = raw_stream.read1(8192)
             else:
@@ -189,35 +146,20 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
 
             line_buffer += text
 
-            # Process complete lines
             while "\n" in line_buffer:
                 line, line_buffer = line_buffer.split("\n", 1)
                 result = _process_sse_line(line)
                 if result:
                     yield result
 
-            # Flush any workflow events the background thread has buffered
-            yield from _flush_workflow_queue()
-
     except Exception as e:
         logger.error(f"Stream parse error: {e}")
         yield _sse_event("error", message=str(e))
     finally:
-        stop_poller.set()
-        poller_thread.join(timeout=3)
-
         try:
             event_stream.close()
         except Exception:
             pass
-
-        # Final drain — catch stragglers
-        if emitter and session_id:
-            for evt in emitter.drain(session_id, wait_seconds=1):
-                yield evt.to_sse()
-            emitter.cleanup(session_id)
-
-        yield from _flush_workflow_queue()
 
     duration_ms = int((time.time() - start_time) * 1000)
     yield _sse_event("done", duration_ms=duration_ms)

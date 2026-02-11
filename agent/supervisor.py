@@ -47,43 +47,18 @@ OUTPUT:
 - Lead with status emoji (✅ ⚠️ ❌) and 1-line summary
 - Tables for >3 items (max 3 columns). Lists >10: show first 10 with "Showing 10 of X"
 - Target <500 words. No conditional language.
-- Always end with "## 🎯 Next Steps" (exactly this heading)
 
-RESPONSE TEMPLATES — pick the template matching the specialist you just consulted:
+NEXT STEPS (required at end of every response):
+Write a section headed "## Next Steps" with 2-4 numbered actions. Each action must be a concrete, executable instruction the user can click to run. Follow these rules:
+1. Reference specific data from your response (CVE IDs, environment names, instance counts)
+2. Order by priority: highest severity / most impacted first
+3. Use imperative verbs: "Patch", "Review", "Generate", "Verify"
+4. Keep each action under 80 characters
 
-AFTER vulnerability analysis:
-## 🎯 Next Steps
-1. Patch [#1 ranked CVE from table] on [affected instances] starting in dev — this is the highest CVSS, widest blast radius, most compliance exposure
-2. Create staged patch plan: dev → staging → prod for remaining [N] HIGH CVEs across [N] instances
-3. [If compliance-tagged instances exist]: Emergency-patch [instance] ([framework]) — SLA [N]hr
-4. Schedule [N] MEDIUM CVEs for next maintenance window
-
-CRITICAL: Step 1 MUST reference the #1 CVE from the ranked table above (highest CVSS × most instances × most compliance frameworks). Never skip it in favor of a lower-ranked CVE.
-
-AFTER patch execution:
-## 🎯 Next Steps
-1. Verify health checks passed for [instance(s)] in [environment]
-2. Proceed with [next environment] patching? (dev → staging → prod)
-3. Generate compliance report for [CVE] in [environment]
-4. [If failures]: Rollback [instance] and investigate [error]
-
-AFTER compliance report:
-## 🎯 Next Steps
-1. Address [N] SLA breaches in [environment] — [severity] patches overdue by [N]hr
-2. Review [environment] patching trend: [↑↓→] [N]% vs previous period
-3. Schedule recurring scan for [environment] to track remediation progress
-
-Rules for next steps:
-- Always use "## 🎯 Next Steps" as the heading (exactly this)
-- Numbered list, 2-5 items, ordered by urgency
-- Each item starts with a verb (Patch, Create, Verify, Proceed, Generate, Review, Address, Schedule, Rollback)
-- Each item includes specific targets (instance IDs, CVE IDs, environment names)
-- No sub-lists, no "Priority X" labels, no prose paragraphs between items
-- No duplicate numbering — single sequence 1, 2, 3...
-- Actionable items the user can execute via chat should be phrased as questions
-- Always follow staged approach: dev → staging → prod (never jump to prod first)
-- For CRITICAL/HIGH CVEs with SLA pressure, recommend emergency targeted patching
-- For MEDIUM/LOW, recommend scheduling in next maintenance window"""
+Context-specific patterns:
+- After vulnerability scan: actions should target the #1 CVE by CVSS in the most critical environment, then broaden
+- After patching: actions should verify compliance, check remaining vulns, generate audit report
+- After compliance report: actions should address SLA breaches first, then trend analysis"""
 
 @tool
 def consult_vulnerability_analyst(query: str) -> str:
