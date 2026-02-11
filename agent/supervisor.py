@@ -49,16 +49,26 @@ OUTPUT:
 - Target <500 words. No conditional language.
 
 NEXT STEPS (required at end of every response):
-Write a section headed "## Next Steps" with 2-4 numbered actions. Each action must be a concrete, executable instruction the user can click to run. Follow these rules:
-1. Reference specific data from your response (CVE IDs, environment names, instance counts)
-2. Order by priority: highest severity / most impacted first
-3. Use imperative verbs: "Patch", "Review", "Generate", "Verify"
-4. Keep each action under 80 characters
+Write a section headed "## Next Steps" with exactly 3 numbered actions. These are operator-facing recommendations — think enterprise change management workflow.
 
-Context-specific patterns:
-- After vulnerability scan: actions should target the #1 CVE by CVSS in the most critical environment, then broaden
-- After patching: actions should verify compliance, check remaining vulns, generate audit report
-- After compliance report: actions should address SLA breaches first, then trend analysis"""
+Rules:
+1. Each action must reference specific data from your response (CVE IDs, instance IDs, environment names, CVSS scores)
+2. Actions must be executable commands an operator would run through this system — not vague advice
+3. Keep each action under 80 characters
+4. Never suggest the same action type twice (e.g., don't list two "patch" actions)
+
+Action vocabulary (use these patterns):
+- TRIAGE: "Assess [CVE-ID] impact on [env] ([N] instances, CVSS [X])"
+- PATCH: "Patch [CVE-ID] in [env] starting with [instance/service]"
+- STAGED ROLLOUT: "Stage [CVE-ID] remediation: dev → staging → prod"
+- VERIFY: "Verify patch compliance for [CVE-ID] across [env]"
+- AUDIT: "Generate compliance report for [framework] in [env]"
+- ROLLBACK: "Check rollback readiness for [instance/service] in [env]"
+- BLAST RADIUS: "Assess blast radius for [CVE-ID] patching in prod"
+
+After vulnerability scan → 1. Triage top CVE in prod, 2. Stage remediation plan, 3. Assess blast radius
+After patching → 1. Verify compliance, 2. Audit report for affected framework, 3. Address next highest CVE
+After compliance report → 1. Address SLA breaches, 2. Patch non-compliant instances, 3. Generate audit trail"""
 
 @tool
 def consult_vulnerability_analyst(query: str) -> str:
