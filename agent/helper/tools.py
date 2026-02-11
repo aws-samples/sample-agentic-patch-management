@@ -243,21 +243,22 @@ def get_patch_compliance(environment: str,
         # Get instance IDs by environment if specified
         if environment and not instance_ids:
             env_value = _normalize_environment(environment)
-            ec2_response = ec2_client.describe_instances(
+            instance_ids = []
+            paginator = ec2_client.get_paginator('describe_instances')
+            for page in paginator.paginate(
                 Filters=[
                     {'Name': 'tag:Environment', 'Values': [env_value]},
                     {'Name': 'instance-state-name', 'Values': ['running']}
                 ]
-            )
-            instance_ids = []
-            for reservation in ec2_response['Reservations']:
-                for instance in reservation['Instances']:
-                    instance_id = instance['InstanceId']
-                    instance_ids.append(instance_id)
-                    # Extract tags for SLA calculation
-                    if severity:
-                        tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
-                        instance_tags[instance_id] = tags
+            ):
+                for reservation in page['Reservations']:
+                    for instance in reservation['Instances']:
+                        instance_id = instance['InstanceId']
+                        instance_ids.append(instance_id)
+                        # Extract tags for SLA calculation
+                        if severity:
+                            tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                            instance_tags[instance_id] = tags
         
         if not instance_ids:
             return {"instances": [], "total_count": 0}
@@ -290,15 +291,16 @@ def get_patch_compliance(environment: str,
             }
         }
         
-        # Calculate SLA if severity provided
+        # Calculate SLA if severity provided — use strictest across ALL instances
         if severity and instance_tags:
-            # Get compliance frameworks from first instance
-            first_instance_tags = next(iter(instance_tags.values()), {})
-            frameworks_str = first_instance_tags.get('ComplianceFrameworks', '')
-            frameworks = [f.strip() for f in frameworks_str.split(',') if f.strip()] if frameworks_str else []
+            all_frameworks = set()
+            for tags in instance_tags.values():
+                frameworks_str = tags.get('ComplianceFrameworks', '')
+                if frameworks_str:
+                    all_frameworks.update(f.strip() for f in frameworks_str.split(',') if f.strip())
             
-            if frameworks:
-                sla_req = _calculate_sla_requirement(frameworks, severity)
+            if all_frameworks:
+                sla_req = _calculate_sla_requirement(list(all_frameworks), severity)
                 if sla_req:
                     result['sla_requirement'] = sla_req
         
@@ -1062,6 +1064,9 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
         dict: {'windows': list, 'instance_coverage': dict (optional)}
     """
     try:
+        # Normalize environment name for consistent matching
+        env_value = _normalize_environment(environment)
+        
         # Query all maintenance windows (filter by environment later)
         response = ssm_client.describe_maintenance_windows()
         
@@ -1160,7 +1165,7 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
                                 break
                 
                 # Skip if environment filter specified and doesn't match
-                if environment and window_environment != environment:
+                if env_value and window_environment != env_value:
                     continue
                 
                 window_info = {
@@ -1239,10 +1244,19 @@ def generate_compliance_report(
         dict: {'report_id': str, 's3_location': str, 'sla_met': bool}
     """
     try:
-        # First, get instance IDs from the command
+        # First, get instance IDs from the command (paginate to get all)
         try:
-            ssm_response = ssm_client.list_command_invocations(CommandId=command_id, MaxResults=50)
-            instance_ids = [inv['InstanceId'] for inv in ssm_response.get('CommandInvocations', [])]
+            instance_ids = []
+            next_token = None
+            while True:
+                kwargs = {'CommandId': command_id, 'MaxResults': 50}
+                if next_token:
+                    kwargs['NextToken'] = next_token
+                ssm_response = ssm_client.list_command_invocations(**kwargs)
+                instance_ids.extend(inv['InstanceId'] for inv in ssm_response.get('CommandInvocations', []))
+                next_token = ssm_response.get('NextToken')
+                if not next_token:
+                    break
         except Exception as e:
             logger.error(f"Could not fetch command invocations: {e}")
             return {'error': f'Command not found: {command_id}', 'report_id': None}
@@ -1460,33 +1474,27 @@ def query_compliance_reports(
 def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime, 
                            end_date: datetime, severity: Optional[str], 
                            environment: Optional[str], sla_breaches_only: bool) -> list:
-    """Fetch and filter reports from S3 with optimized queries."""
+    """Fetch and filter reports from S3 with optimized month-prefix queries."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     
-    reports = []
-    days_diff = (end_date - start_date).days + 1
+    # Collect unique year/month prefixes covering the date range (few API calls)
+    months: set[str] = set()
+    d = start_date
+    while d <= end_date:
+        months.add(f"{d.year}/{d.month:02d}/")
+        d += timedelta(days=28)
+    months.add(f"{end_date.year}/{end_date.month:02d}/")
     
-    # Collect all S3 objects first (with pagination)
     objects_to_check = []
-    for day_offset in range(days_diff):
-        check_date = start_date + timedelta(days=day_offset)
-        prefix = _get_date_prefix(check_date)
-        
+    for prefix in sorted(months):
         try:
-            # Paginate through list_objects_v2
-            continuation_token = None
-            while True:
-                params = {'Bucket': bucket_name, 'Prefix': prefix}
-                if continuation_token:
-                    params['ContinuationToken'] = continuation_token
-                
-                response = s3_client.list_objects_v2(**params)
-                objects_to_check.extend(response.get('Contents', []))
-                
-                if not response.get('IsTruncated'):
-                    break
-                continuation_token = response.get('NextContinuationToken')
-                
+            paginator = s3_client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    # Filter by actual date cutoff
+                    obj_date = obj["LastModified"].replace(tzinfo=None)
+                    if start_date <= obj_date <= end_date:
+                        objects_to_check.append(obj)
         except Exception as e:
             logger.debug(f"No reports for {prefix}: {e}")
             continue
@@ -1498,6 +1506,7 @@ def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime,
     def fetch_metadata(obj):
         return _parse_report_metadata(s3_client, bucket_name, obj)
     
+    reports = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fetch_metadata, obj): obj for obj in objects_to_check}
         for future in as_completed(futures):

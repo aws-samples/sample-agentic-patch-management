@@ -246,7 +246,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-ENVIRONMENTS = ["dev", "staging", "prod"]
+ENVIRONMENTS = ["dev", "test", "staging", "prod"]
 
 # Cache account ID — never changes during a server session
 _cached_account_id: str | None = None
@@ -276,30 +276,32 @@ def _fetch_environments():
     ec2 = session.client("ec2")
     ssm = session.client("ssm")
 
-    ec2_resp = ec2.describe_instances(
+    env_instances: dict[str, list[str]] = {e: [] for e in ENVIRONMENTS}
+    paginator = ec2.get_paginator("describe_instances")
+    for page in paginator.paginate(
         Filters=[
             {"Name": "tag:Environment", "Values": ENVIRONMENTS},
             {"Name": "instance-state-name", "Values": ["running"]},
         ]
-    )
-
-    env_instances: dict[str, list[str]] = {e: [] for e in ENVIRONMENTS}
-    for res in ec2_resp.get("Reservations", []):
-        for inst in res.get("Instances", []):
-            tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
-            env = tags.get("Environment", "")
-            if env in env_instances:
-                env_instances[env].append(inst["InstanceId"])
+    ):
+        for res in page.get("Reservations", []):
+            for inst in res.get("Instances", []):
+                tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+                env = tags.get("Environment", "")
+                if env in env_instances:
+                    env_instances[env].append(inst["InstanceId"])
 
     all_ids = [i for ids in env_instances.values() for i in ids]
     ssm_online: set[str] = set()
     if all_ids:
-        ssm_resp = ssm.describe_instance_information(
+        # Paginate SSM describe_instance_information
+        ssm_paginator = ssm.get_paginator("describe_instance_information")
+        for page in ssm_paginator.paginate(
             Filters=[{"Key": "InstanceIds", "Values": all_ids}]
-        )
-        for info in ssm_resp.get("InstanceInformationList", []):
-            if info.get("PingStatus") == "Online":
-                ssm_online.add(info["InstanceId"])
+        ):
+            for info in page.get("InstanceInformationList", []):
+                if info.get("PingStatus") == "Online":
+                    ssm_online.add(info["InstanceId"])
 
     results = []
     for env in ENVIRONMENTS:

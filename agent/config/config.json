@@ -3,7 +3,8 @@
   "version": "1.0",
   "environment_aliases": {
     "dev": ["dev", "development", "non prod", "non production"],
-    "staging": ["staging", "stage"],
+    "test": ["test", "testing", "qa"],
+    "staging": ["staging", "stage", "uat"],
     "prod": ["prod", "production"]
   },
   "frameworks": {
