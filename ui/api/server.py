@@ -319,40 +319,58 @@ def _fetch_environments():
 
 
 def _fetch_vulnerabilities():
-    """Sync: Active Inspector findings."""
+    """Sync: Active Inspector findings with full pagination.
+
+    Paginates through all active findings to get accurate severity counts.
+    Returns up to 200 findings for the table (sorted by severity) and
+    accurate total counts across all findings.
+    """
     session = _aws_session()
     inspector = session.client("inspector2")
 
-    resp = inspector.list_findings(
-        filterCriteria={
-            "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
-        },
-        sortCriteria={"field": "SEVERITY", "sortOrder": "DESC"},
-        maxResults=50,
-    )
-
     findings = []
     severity_counts: dict[str, int] = {}
-    for f in resp.get("findings", []):
-        vuln = f.get("packageVulnerabilityDetails", {})
-        sev = f.get("severity", "UNKNOWN")
-        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+    next_token = None
 
-        env = "unknown"
-        for r in f.get("resources", []):
-            for t in r.get("tags", {}).items():
-                if t[0] == "Environment":
-                    env = t[1]
+    while True:
+        kwargs: dict = {
+            "filterCriteria": {
+                "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
+            },
+            "sortCriteria": {"field": "SEVERITY", "sortOrder": "DESC"},
+            "maxResults": 100,  # Inspector API max per page
+        }
+        if next_token:
+            kwargs["nextToken"] = next_token
 
-        findings.append({
-            "cve_id": vuln.get("vulnerabilityId", "N/A"),
-            "severity": sev,
-            "cvss_score": vuln.get("cvss", [{}])[0].get("baseScore"),
-            "title": f.get("title", ""),
-            "environment": env,
-            "resource_id": f.get("resources", [{}])[0].get("id", ""),
-            "fix_available": f.get("fixAvailable", "UNKNOWN"),
-        })
+        resp = inspector.list_findings(**kwargs)
+
+        for f in resp.get("findings", []):
+            vuln = f.get("packageVulnerabilityDetails", {})
+            sev = f.get("severity", "UNKNOWN")
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+            env = "unknown"
+            for r in f.get("resources", []):
+                for t in r.get("tags", {}).items():
+                    if t[0] == "Environment":
+                        env = t[1]
+
+            # Keep up to 200 findings for the table display
+            if len(findings) < 200:
+                findings.append({
+                    "cve_id": vuln.get("vulnerabilityId", "N/A"),
+                    "severity": sev,
+                    "cvss_score": vuln.get("cvss", [{}])[0].get("baseScore"),
+                    "title": f.get("title", ""),
+                    "environment": env,
+                    "resource_id": f.get("resources", [{}])[0].get("id", ""),
+                    "fix_available": f.get("fixAvailable", "UNKNOWN"),
+                })
+
+        next_token = resp.get("nextToken")
+        if not next_token:
+            break
 
     return {"findings": findings, "severity_counts": severity_counts}
 

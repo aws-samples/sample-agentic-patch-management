@@ -164,38 +164,48 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
             env_value = _normalize_environment(environment)
             filters['resourceTags'] = [{'comparison': 'EQUALS', 'key': 'Environment', 'value': env_value}]
         
-        # Sort by severity (most critical first)
-        response = inspector_client.list_findings(
-            filterCriteria=filters,
-            sortCriteria={
-                'field': 'SEVERITY',
-                'sortOrder': 'DESC'
-            },
-            maxResults=min(limit, 100)  # Inspector max is 100
-        )
-        
-        # list_findings returns full finding objects, not just ARNs
-        findings_data = response.get('findings', [])
-        if not findings_data:
-            return {"findings": [], "total_count": 0}
-        
+        # Paginate through all findings for accurate counts
         findings = []
-        for finding in findings_data:
-            vuln_details = finding.get('packageVulnerabilityDetails', {})
-            findings.append({
-                'cve_id': vuln_details.get('vulnerabilityId'),
-                'severity': finding.get('severity'),
-                'cvss_score': vuln_details.get('cvss', [{}])[0].get('baseScore'),
-                'title': finding.get('title'),
-                'description': finding.get('description'),
-                'affected_resources': [r.get('id') for r in finding.get('resources', [])],
-                'status': finding.get('status'),
-                'fix_available': finding.get('fixAvailable')
-            })
-        
+        total_count = 0
+        next_token = None
+
+        while True:
+            kwargs = {
+                'filterCriteria': filters,
+                'sortCriteria': {
+                    'field': 'SEVERITY',
+                    'sortOrder': 'DESC'
+                },
+                'maxResults': 100,  # Inspector API max per page
+            }
+            if next_token:
+                kwargs['nextToken'] = next_token
+
+            response = inspector_client.list_findings(**kwargs)
+
+            for finding in response.get('findings', []):
+                total_count += 1
+                # Only keep up to `limit` findings for the response payload
+                if len(findings) < limit:
+                    vuln_details = finding.get('packageVulnerabilityDetails', {})
+                    findings.append({
+                        'cve_id': vuln_details.get('vulnerabilityId'),
+                        'severity': finding.get('severity'),
+                        'cvss_score': vuln_details.get('cvss', [{}])[0].get('baseScore'),
+                        'title': finding.get('title'),
+                        'description': finding.get('description'),
+                        'affected_resources': [r.get('id') for r in finding.get('resources', [])],
+                        'status': finding.get('status'),
+                        'fix_available': finding.get('fixAvailable')
+                    })
+
+            next_token = response.get('nextToken')
+            if not next_token:
+                break
+
         return {
             "findings": findings,
-            "total_count": len(findings)
+            "total_count": total_count
         }
     except ClientError as e:
         error_info = classify_error(e)
