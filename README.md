@@ -248,7 +248,7 @@ You: What critical vulnerabilities do we have?
 - **Fallback Tool**: use_aws for any AWS service with automatic pagination support
 - **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
 - **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
-- **Dependency Analysis**: AWS Config-based blast radius assessment with load balancer health tracking
+- **Dependency Analysis**: AWS Config-based impact assessment with load balancer health tracking
 - **Phased Rollout**: dev → staging → prod with human approval between environments
 - **Two-Layer Health Monitoring**: 
   - Infrastructure: SSM connectivity verification

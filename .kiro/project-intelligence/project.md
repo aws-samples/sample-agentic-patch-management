@@ -18,7 +18,7 @@ Multi-agent patch automation system built for AWS re:Invent 2025 session COP407.
 
 ### Core Capabilities
 
-1. **Intelligent Vulnerability Analysis** — Inspector integration, CVSS scoring, blast radius via Config
+1. **Intelligent Vulnerability Analysis** — Inspector integration, CVSS scoring, impact assessment via Config + ELB health
 2. **SLA-Aware Patch Management** — PCI-DSS/SOC2/HIPAA compliance detection from instance tags, EMERGENCY vs SCHEDULED decisions based on maintenance window timing vs SLA deadline
 3. **Phased Rollout** — dev → staging → prod with human approval gates
 4. **Two-Layer Health Monitoring** — SSM connectivity + CloudWatch alarm checks
@@ -64,7 +64,9 @@ Supervisor uses keyword-based routing (18-36% faster than LLM routing). OUT_OF_S
 - AWS Profile: set via `AWS_PROFILE` env var (default: `default`)
 - Region: set via `AWS_REGION` env var (default: `us-east-1`)
 - 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows
+- "test" environment supported via config aliases
 - S3 bucket: `patch-compliance-reports-{account_id}` (reports + decisions)
+- SQS FIFO queue: `patch-automation-workflow-events.fifo` (workflow events)
 - Deploy: `./deploy.sh agent` (CodeBuild ARM64)
 - Chat: `./chat.sh` (interactive, maintains session)
 - `agentcore invoke` is stateless — each invoke is a new session

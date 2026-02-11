@@ -10,7 +10,10 @@ agent/
 ├── compliance_analyst.py      # Reporting specialist
 ├── helper/                    # Helper modules
 │   ├── tools.py              # 12 AWS tools
-│   ├── agent_factory.py      # Common agent creation
+│   ├── error_handling.py     # Error classification (RETRYABLE/SKIP/ABORT)
+│   ├── decision_logger.py    # Decision audit trail (CloudWatch + S3)
+│   ├── agent_factory.py      # Common agent creation with workflow hooks
+│   ├── workflow_events.py    # SQS-based workflow event transport
 │   ├── memory_hooks.py       # AgentCore memory integration
 │   └── globals.py            # Shared state
 └── config/
@@ -48,12 +51,12 @@ agent/
 
 **Tools**:
 - `get_vulnerability_findings(cve_id, severity, environment)` - Query AWS Inspector
-- `get_resource_dependencies(instance_id)` - Blast radius analysis via AWS Config
+- `get_resource_dependencies(instance_id)` - Impact assessment via AWS Config + ELB health
 
 **Behavior**:
 - CVSS scoring and threat classification
 - Environment-based vulnerability filtering via Inspector resourceTags
-- Blast radius calculation for impact assessment
+- Impact assessment for patching safety
 - Returns OUT_OF_SCOPE for infrastructure/patching/AWS service queries
 
 
@@ -69,7 +72,7 @@ agent/
 - `check_instance_health(instance_ids)` - Verify SSM connectivity
 - `check_cloudwatch_alarms(instance_ids, alarm_name_pattern)` - Application health
 - `rollback_patches(instance_ids)` - Restore via yum history undo
-- `get_resource_dependencies(instance_id)` - Blast radius via AWS Config
+- `get_resource_dependencies(instance_id)` - Impact assessment via AWS Config + ELB health
 - `get_maintenance_windows(environment)` - Query maintenance schedules
 - `create_maintenance_window(name, schedule, duration, target_environment)` - Create windows
 - `verify_and_proceed(instance_ids, environment)` - Automated verification workflow
@@ -114,7 +117,8 @@ agent/
   "environment_aliases": {
     "dev": ["dev", "development", "non prod", "non production"],
     "staging": ["staging", "stage"],
-    "prod": ["prod", "production"]
+    "prod": ["prod", "production"],
+    "test": ["test", "testing", "qa"]
   },
   "frameworks": {
     "PCI-DSS": {"CRITICAL": 12, "HIGH": 48, "MEDIUM": 168, "LOW": 720},
@@ -227,7 +231,7 @@ Patch Manager: Detects alarms firing
   ↓
 get_resource_dependencies(failed_instance)
   ↓
-Analyzes blast radius (load balancers, target groups)
+Analyzes impact (load balancers, target group health)
   ↓
 User: Approves rollback
   ↓
@@ -271,6 +275,7 @@ Returns EC2 instance list
 - IAM roles for AgentCore (read-only + SSM execution)
 - AWS Config for resource tracking
 - S3 bucket for compliance reports (date-partitioned)
+- SQS FIFO queue for workflow events (`patch-automation-workflow-events.fifo`)
 - CloudWatch alarms for application monitoring (httpd)
 
 ### Demo Instances Stack
@@ -287,6 +292,7 @@ Returns EC2 instance list
 - Config read access (GetResourceConfigHistory)
 - CloudWatch read access (DescribeAlarms)
 - S3 write access (PutObject for compliance reports)
+- SQS access (SendMessage, ReceiveMessage, DeleteMessage for workflow events)
 - No admin access (least privilege)
 
 ---
@@ -367,7 +373,7 @@ Returns EC2 instance list
 **Performance**: O(1) API calls regardless of instance count
 
 ### get_resource_dependencies()
-**Purpose**: Analyze blast radius via AWS Config
+**Purpose**: Analyze patching impact via AWS Config + ELB target health
 
 **Parameters**:
 - `instance_id` (required): EC2 instance ID
@@ -376,7 +382,8 @@ Returns EC2 instance list
 - Queries AWS Config: `config_client.get_resource_config_history()`
 - Extracts relationships: target groups, load balancers
 - Checks target health: `elbv2_client.describe_target_health()`
-- Returns: dependencies[], load_balancer_health[], blast_radius_assessment
+- Determines `safe_to_patch`: true if other healthy targets exist in target groups
+- Returns: dependencies[], target_group_health[], impact_level, safe_to_patch
 
 ### verify_and_proceed()
 **Purpose**: Automated verification workflow (production mode)
@@ -450,7 +457,7 @@ Application Layer:
   Check alarm state → Recommendation
 ```
 
-### Blast Radius Analysis
+### Impact Assessment
 ```
 AWS Config GetResourceConfigHistory
   ↓
@@ -458,7 +465,9 @@ Extract relationships (target groups, load balancers)
   ↓
 ELBv2 DescribeTargetHealth
   ↓
-Impact assessment
+Determine safe_to_patch (other healthy targets exist?)
+  ↓
+Impact level + recommendation
 ```
 
 ### Compliance Reporting
@@ -548,7 +557,7 @@ Return statistics and trends
 ### AWS Config
 - Resource configuration history
 - Relationship tracking
-- Blast radius data source
+- Impact assessment data source
 
 ### GenAI Observability Dashboard
 - Token usage (input/output)

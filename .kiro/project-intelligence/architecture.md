@@ -68,8 +68,8 @@ Agent follows recovery guidance in system prompt. No separate error recovery fra
 ## Infrastructure (4 CDK Stacks)
 
 1. **Networking** — VPC, public/private subnets, NAT Gateway
-2. **Security** — Security groups, IAM roles, AWS Config, S3 compliance bucket (RETAIN policy)
-3. **AgentCore Permissions** — IAM policies (25+ services read, SSM write, S3 write, iam:CreateServiceLinkedRole, iam:PassRole)
+2. **Security** — Security groups, IAM roles, AWS Config, S3 compliance bucket (RETAIN policy), SQS FIFO queue for workflow events
+3. **AgentCore Permissions** — IAM policies (25+ services read, SSM write, S3 write, SQS send/receive, iam:CreateServiceLinkedRole, iam:PassRole)
 4. **VulnerabilityDriven** — 15 EC2 instances, maintenance windows, CloudWatch alarms
 
 `./deploy.sh destroy` only removes stack 4 (EC2 instances). S3 bucket lives in stack 2 and is never destroyed.

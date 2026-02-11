@@ -11,15 +11,27 @@
 | AWS CDK (TypeScript) | Infrastructure as Code | Latest |
 | Docker/Finch | Container runtime (ARM64) | Latest |
 
+## Web UI
+
+| Technology | Purpose | Version |
+|-----------|---------|---------|
+| React | Frontend framework | 18+ |
+| TypeScript | Type-safe frontend | 5+ |
+| Vite | Build tool + dev server | Latest |
+| Cloudscape Design System | AWS-native component library | Latest |
+| FastAPI | Backend API proxy + SSE streaming | Latest |
+| Inter | UI font family | Latest |
+
 ## AWS Services
 
 | Service | Usage |
 |---------|-------|
 | Systems Manager | Patch execution, compliance, maintenance windows |
 | Inspector | Vulnerability discovery, CVE findings |
-| Config | Resource dependency tracking, blast radius |
+| Config | Resource dependency tracking, impact assessment |
 | CloudWatch | Alarms (app health), Logs (agent + decisions), X-Ray |
 | S3 | Compliance reports + decision audit trail |
+| SQS | FIFO queue for workflow event transport |
 | EC2 | Target instances (15 across dev/staging/prod) |
 
 ## Key Dependencies

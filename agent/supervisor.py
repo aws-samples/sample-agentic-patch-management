@@ -30,7 +30,7 @@ ROUTING:
 2. Use conversation history for context (but current query overrides if conflicting)
 3. Route by intent:
 
-consult_vulnerability_analyst → CVE analysis, CVSS scores, affected instances, blast radius
+consult_vulnerability_analyst → CVE analysis, CVSS scores, affected instances, impact assessment
 consult_patch_manager → Patching, maintenance windows, SLA, health checks, rollback, "proceed/continue"
 consult_compliance_analyst → Compliance reports, SLA breaches, audit trails, trends
 use_aws → Direct AWS queries NOT about vulnerabilities/patching/compliance
