@@ -53,10 +53,12 @@ RESPONSE TEMPLATES — pick the template matching the specialist you just consul
 
 AFTER vulnerability analysis:
 ## 🎯 Next Steps
-1. Patch [critical CVE] on [instance] in [lowest env] — emergency if SLA < window
-2. Create staged patch plan: dev → staging → prod for [N] HIGH CVEs across [N] instances
-3. [If compliance-tagged instance]: Prioritize [instance] ([framework]) — SLA [N]hr
-4. Review [N] MEDIUM CVEs for next maintenance window
+1. Patch [#1 ranked CVE from table] on [affected instances] starting in dev — this is the highest CVSS, widest blast radius, most compliance exposure
+2. Create staged patch plan: dev → staging → prod for remaining [N] HIGH CVEs across [N] instances
+3. [If compliance-tagged instances exist]: Emergency-patch [instance] ([framework]) — SLA [N]hr
+4. Schedule [N] MEDIUM CVEs for next maintenance window
+
+CRITICAL: Step 1 MUST reference the #1 CVE from the ranked table above (highest CVSS × most instances × most compliance frameworks). Never skip it in favor of a lower-ranked CVE.
 
 AFTER patch execution:
 ## 🎯 Next Steps
