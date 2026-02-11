@@ -917,7 +917,12 @@ fi
 
 @tool
 def get_resource_dependencies(resource_id: str) -> dict:
-    """Analyze resource dependencies using AWS Config.
+    """Analyze instance dependencies and assess patching impact.
+    
+    Queries AWS Config for infrastructure relationships (VPC, subnets, security groups,
+    load balancers) and instance tags (criticality, team, compliance frameworks).
+    Checks target group health to determine if the instance can be safely patched
+    without service disruption.
     
     Args:
         resource_id: EC2 instance ID to analyze dependencies for
@@ -925,10 +930,11 @@ def get_resource_dependencies(resource_id: str) -> dict:
     Returns:
         dict: {
             'resource_id': str,
-            'relationships': list,
-            'load_balancers': list,
-            'blast_radius': str,
-            'recommendation': str
+            'impact_level': 'HIGH' | 'MEDIUM' | 'LOW',
+            'impact_reason': str,
+            'safe_to_patch': bool (true if other healthy targets exist in target group),
+            'business_context': { criticality, team, product, compliance_frameworks },
+            'dependencies': { load_balancers, target_group_health, infrastructure }
         }
     """
     try:
@@ -1001,17 +1007,44 @@ def get_resource_dependencies(resource_id: str) -> dict:
             except Exception as e:
                 logger.warning(f"Could not query target groups: {e}")
         
-        # Calculate blast radius
-        blast_radius = 'LOW'
-        impact_description = 'Infrastructure dependencies only'
+        # Assess impact level based on exposure and criticality
+        impact_level = 'LOW'
+        impact_reason = 'No external exposure detected'
         
         if load_balancers:
+            # Count how many targets share the same target groups
+            # (determines if patching this instance risks service availability)
+            target_count_info = []
+            if target_group_relationships:
+                try:
+                    for tg_arn in tg_arns:
+                        tg = tg_map.get(tg_arn)
+                        if not tg:
+                            continue
+                        health_resp = elbv2_client.describe_target_health(TargetGroupArn=tg_arn)
+                        healthy = sum(1 for t in health_resp.get('TargetHealthDescriptions', [])
+                                      if t.get('TargetHealth', {}).get('State') == 'healthy')
+                        total = len(health_resp.get('TargetHealthDescriptions', []))
+                        target_count_info.append({
+                            'target_group': tg['TargetGroupName'],
+                            'healthy_targets': healthy,
+                            'total_targets': total,
+                            'safe_to_patch': healthy > 1,  # At least 1 other healthy target
+                        })
+                except Exception as e:
+                    logger.warning(f"Could not check target health: {e}")
+            
             if criticality == 'High' or environment == 'prod':
-                blast_radius = 'HIGH'
-                impact_description = 'Customer-facing services affected'
+                impact_level = 'HIGH'
+                impact_reason = f'Production instance behind {len(load_balancers)} load balancer(s)'
             elif criticality == 'Medium' or environment == 'staging':
-                blast_radius = 'MEDIUM'
-                impact_description = 'Internal services affected'
+                impact_level = 'MEDIUM'
+                impact_reason = f'Staging instance behind {len(load_balancers)} load balancer(s)'
+            else:
+                impact_level = 'MEDIUM'
+                impact_reason = f'Behind {len(load_balancers)} load balancer(s)'
+        else:
+            target_count_info = []
         
         # Extract infrastructure relationships
         infrastructure = {
@@ -1023,8 +1056,8 @@ def get_resource_dependencies(resource_id: str) -> dict:
         return {
             'resource_id': resource_id,
             'environment': environment,
-            'blast_radius': blast_radius,
-            'impact_description': impact_description,
+            'impact_level': impact_level,
+            'impact_reason': impact_reason,
             'business_context': {
                 'criticality': criticality,
                 'team': team,
@@ -1033,9 +1066,11 @@ def get_resource_dependencies(resource_id: str) -> dict:
             },
             'dependencies': {
                 'load_balancers': load_balancers,
+                'target_group_health': target_count_info,
                 'infrastructure': infrastructure
             },
-            'summary': f"{blast_radius} blast radius - {impact_description}"
+            'safe_to_patch': all(t.get('safe_to_patch', True) for t in target_count_info) if target_count_info else True,
+            'summary': f"{impact_level} impact — {impact_reason}"
         }
         
     except ClientError as e:
