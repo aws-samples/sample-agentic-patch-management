@@ -171,11 +171,12 @@ class WorkflowEventEmitter:
             # Never let workflow tracking break the agent
             logger.warning(f"[workflow] Failed to emit event: {e}")
 
-    def drain(self, session_id: str) -> list[WorkflowEvent]:
+    def drain(self, session_id: str, wait_seconds: int = 0) -> list[WorkflowEvent]:
         """Receive and delete all available events for any session.
 
         SQS FIFO with MessageGroupId ensures per-session ordering.
-        We receive up to 10 messages at a time (SQS max) with short polling.
+        We receive up to 10 messages at a time (SQS max).
+        Default wait_seconds=0 (short poll) to avoid blocking the SSE stream.
         """
         events: list[WorkflowEvent] = []
         try:
@@ -185,7 +186,7 @@ class WorkflowEventEmitter:
             resp = self._client.receive_message(
                 QueueUrl=self._queue_url,
                 MaxNumberOfMessages=10,
-                WaitTimeSeconds=1,
+                WaitTimeSeconds=wait_seconds,
                 AttributeNames=["MessageGroupId"],
             )
 
@@ -218,9 +219,9 @@ class WorkflowEventEmitter:
         return events
 
     def cleanup(self, session_id: str) -> None:
-        """Drain any remaining messages for a session."""
+        """Drain any remaining messages for a session (with brief wait)."""
         try:
-            remaining = self.drain(session_id)
+            remaining = self.drain(session_id, wait_seconds=1)
             if remaining:
                 logger.debug(f"[workflow] Cleaned up {len(remaining)} remaining events")
         except Exception as e:
