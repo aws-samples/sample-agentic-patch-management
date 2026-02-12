@@ -37,15 +37,16 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Patch Automation API")
 
-# CORS origins — configurable via environment for production deployments
-_cors_origins = os.environ.get(
-    "CORS_ORIGINS",
-    "http://localhost:5173,http://localhost:3000"
-).split(",")
+# CORS origins — configurable via environment for production deployments.
+# When STATIC_DIR is set (container), frontend is same-origin so CORS isn't needed.
+# Default to localhost for local dev only.
+_default_cors = "" if os.environ.get("STATIC_DIR") else "http://localhost:5173,http://localhost:3000"
+_cors_origins = os.environ.get("CORS_ORIGINS", _default_cors).split(",")
+_cors_origins = [o.strip() for o in _cors_origins if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins],
+    allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Accept", "X-API-Key"],
 )
@@ -275,7 +276,7 @@ async def health():
     """Health check — verifies agent config is loadable."""
     try:
         _load_config()
-        return {"status": "ok", "agent_arn": _agent_arn, "region": _region}
+        return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
@@ -678,8 +679,9 @@ if _static_dir and Path(_static_dir).is_dir():
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         # Try to serve the exact file first (JS, CSS, images, etc.)
-        file_path = _static_path / full_path
-        if full_path and file_path.is_file():
+        file_path = (_static_path / full_path).resolve()
+        # Guard against path traversal — resolved path must stay within static dir
+        if full_path and file_path.is_file() and str(file_path).startswith(str(_static_path.resolve())):
             return FileResponse(file_path)
         # Fall back to index.html for SPA routing
         return FileResponse(_static_path / "index.html")

@@ -45,27 +45,43 @@ export class UIStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
     });
 
-    // The UI backend calls: EC2, SSM, Inspector, S3, STS, AgentCore
+    // The UI backend calls: EC2, SSM, Inspector, STS, AgentCore
+    // Read-only describe/list actions — resource-level scoping not supported
     taskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        // EC2 — dashboard environment cards
         'ec2:DescribeInstances',
         'ec2:DescribeTags',
-        // SSM — dashboard instance health
         'ssm:DescribeInstanceInformation',
-        // Inspector — dashboard vulnerability table
         'inspector2:ListFindings',
-        // S3 — compliance reports
+        'sts:GetCallerIdentity',
+      ],
+      resources: ['*'],
+    }));
+
+    // S3 — scoped to compliance reports bucket only
+    const accountId = cdk.Stack.of(this).account;
+    const complianceBucketArn = `arn:aws:s3:::patch-compliance-reports-${accountId}`;
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
         's3:GetObject',
         's3:ListBucket',
         's3:HeadBucket',
-        // STS — account ID for bucket name resolution
-        'sts:GetCallerIdentity',
-        // AgentCore — chat proxy
-        'bedrock-agentcore:InvokeAgentRuntime',
       ],
-      resources: ['*'],
+      resources: [
+        complianceBucketArn,
+        `${complianceBucketArn}/*`,
+      ],
+    }));
+
+    // AgentCore — scoped to specific agent ARN if provided, otherwise wildcard
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock-agentcore:InvokeAgentRuntime'],
+      resources: props.agentCoreRoleArn
+        ? [`arn:aws:bedrock-agentcore:${cdk.Stack.of(this).region}:${accountId}:*`]
+        : ['*'],
     }));
 
     // Log group

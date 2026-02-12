@@ -14,6 +14,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Install curl for container health check
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies
 COPY ui/api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
@@ -26,6 +29,11 @@ COPY agent/.bedrock_agentcore.yaml /app/agent/.bedrock_agentcore.yaml
 
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/static
+
+# Run as non-root user
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser \
+    && chown -R appuser:appuser /app
+USER appuser
 
 # Environment defaults
 ENV PORT=8000
