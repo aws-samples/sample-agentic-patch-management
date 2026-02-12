@@ -19,24 +19,27 @@ if (!env.account) {
   throw new Error('AWS account not resolved. Run: aws configure, or set CDK_DEFAULT_ACCOUNT / AWS_ACCOUNT_ID');
 }
 
-// Core networking infrastructure (foundational - keep deployed)
+// ── Solution Infrastructure (required) ─────────────────────────────
+// These 3 stacks are the core solution. Deploy with: ./deploy.sh infra
+
+// Core networking infrastructure
 const networkingStack = new NetworkingStack(app, 'PatchAutomationNetworking', {
   env,
   description: 'VPC, subnets, and networking for Intelligent Patch Automation'
 });
 
-// Security groups and IAM roles (foundational - keep deployed)
+// Security groups, IAM roles, S3 buckets, SQS queue, AWS Config
 const securityStack = new SecurityStack(app, 'PatchAutomationSecurity', {
   env,
   vpc: networkingStack.vpc,
-  description: 'Security groups and IAM roles for Intelligent Patch Automation'
+  description: 'Security groups, IAM roles, and compliance infrastructure for Intelligent Patch Automation'
 });
 
-// AgentCore permissions (foundational - keep deployed)
+// AgentCore IAM permissions
 const agentCoreRoleArn = app.node.tryGetContext('agentCoreRoleArn');
 if (!agentCoreRoleArn || agentCoreRoleArn === 'placeholder') {
-  console.warn('⚠️  agentCoreRoleArn not set. AgentCore permissions stack will be skipped.');
-  console.warn('   For deploy, pass: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
+  console.warn('⚠️  agentCoreRoleArn not set. AgentCore permissions will deploy but not attach to a role.');
+  console.warn('   Pass: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
 }
 
 const agentCorePermissionsStack = new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
@@ -45,15 +48,19 @@ const agentCorePermissionsStack = new AgentCorePermissionsStack(app, 'PatchAutom
   description: 'IAM permissions for AgentCore patch automation runtime'
 });
 
-// Vulnerability-Driven Patching Stack (idempotent - can destroy/recreate for demos)
+// ── Sample Environment (optional) ──────────────────────────────────
+// 15 EC2 instances across dev/staging/prod with maintenance windows,
+// ALBs, patch baselines, and CloudWatch alarms.
+// Deploy with: ./deploy.sh all  |  Destroy with: ./deploy.sh destroy-demo
+
 const vulnerabilityPatchingStack = new VulnerabilityDrivenPatchingStack(app, 'PatchAutomationVulnerabilityDriven', {
   env,
   vpc: networkingStack.vpc,
   securityGroup: securityStack.instanceSecurityGroup,
   instanceRole: securityStack.instanceRole,
-  description: 'Vulnerability-driven patch automation: 15 instances for phased rollout (dev/staging/prod)'
+  description: 'Sample environment: 15 EC2 instances for testing patch automation (optional)'
 });
 
-// Add dependencies
+// Dependencies
 securityStack.addDependency(networkingStack);
 vulnerabilityPatchingStack.addDependency(securityStack);

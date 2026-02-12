@@ -1,19 +1,18 @@
 #!/bin/bash
 
-# COP407 Intelligent Patch Automation - Fast Deployment Script
-# Usage: ./deploy.sh [all|infra|agent|frontend|env|destroy]
+# Intelligent Patch Automation — Deployment Script
+# Usage: ./deploy.sh [all|infra|solution|agent|frontend|env|destroy-demo|destroy-all]
 
-set -e  # Exit on any error
+set -e
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configuration (override via environment variables or .env file)
-# Source .env if it exists (won't override already-exported vars)
+# Source .env if it exists
 if [ -f ".env" ]; then
     set -a
     source .env
@@ -23,69 +22,53 @@ fi
 AWS_PROFILE="${AWS_PROFILE:-default}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-}"
-PYTHON_VERSION="3.9"
 
-# Parse deployment target
 DEPLOY_TARGET=${1:-}
 
-# Show usage if no argument provided
 if [ -z "$DEPLOY_TARGET" ]; then
-    echo -e "${BLUE}🚀 COP407 Fast Deployment${NC}"
+    echo -e "${BLUE}Intelligent Patch Automation — Deployment${NC}"
     echo "=================================================="
     echo ""
     echo "Usage: $0 <target>"
     echo ""
-    echo "Available targets:"
-    echo "  ${GREEN}all${NC}         - Deploy everything (env + infra + agent)"
-    echo "  ${GREEN}env${NC}         - Setup Python virtual environment only"
-    echo "  ${GREEN}infra${NC}       - Deploy AWS infrastructure (CDK stacks)"
-    echo "  ${GREEN}agent${NC}       - Deploy AgentCore agent only"
-    echo "  ${GREEN}frontend${NC}    - Deploy frontend (not implemented)"
-    echo "  ${RED}destroy${NC}     - Destroy demo stack only (keeps VPC, Security, IAM)"
-    echo "  ${RED}destroy-all${NC} - Destroy ALL infrastructure (complete cleanup)"
+    echo "Solution:"
+    echo "  ${GREEN}all${NC}           Deploy everything (env + infra + sample env + agent)"
+    echo "  ${GREEN}solution${NC}      Deploy solution only (env + core infra + agent, no sample instances)"
+    echo "  ${GREEN}env${NC}           Setup Python virtual environment"
+    echo "  ${GREEN}infra${NC}         Deploy all infrastructure (solution + sample environment)"
+    echo "  ${GREEN}agent${NC}         Deploy AgentCore agent"
+    echo ""
+    echo "Cleanup:"
+    echo "  ${RED}destroy-demo${NC}  Destroy sample environment only (keeps solution infra)"
+    echo "  ${RED}destroy-all${NC}   Destroy ALL infrastructure"
     echo ""
     echo "Examples:"
-    echo "  $0 all          # Full deployment"
-    echo "  $0 env          # Setup environment only"
-    echo "  $0 agent        # Deploy agent only"
-    echo "  $0 destroy      # Remove demo instances (quick cleanup)"
-    echo "  $0 destroy-all  # Remove everything (full cleanup)"
+    echo "  $0 solution       # Deploy for production (no sample instances)"
+    echo "  $0 all            # Deploy with sample instances for testing"
+    echo "  $0 agent          # Redeploy agent only"
+    echo "  $0 destroy-demo   # Remove sample instances (quick cleanup)"
     echo ""
     exit 0
 fi
 
-echo -e "${BLUE}🚀 COP407 Fast Deployment - Target: ${DEPLOY_TARGET}${NC}"
+echo -e "${BLUE}Intelligent Patch Automation — Target: ${DEPLOY_TARGET}${NC}"
 echo "=================================================="
 
-# Function to print status
-print_status() {
-    echo -e "${GREEN}✅ $1${NC}"
-}
+print_status() { echo -e "${GREEN}✅ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_error() { echo -e "${RED}❌ $1${NC}"; }
 
-print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}❌ $1${NC}"
-}
-
-print_skip() {
-    echo -e "${YELLOW}⏭️  Skipping $1${NC}"
-}
-
-# Fast prerequisite check (only what's needed)
 check_prereqs() {
     case $DEPLOY_TARGET in
-        "env"|"all")
+        "env"|"all"|"solution")
             if ! command -v python3 &> /dev/null; then
-                print_error "Python 3 required for environment setup"
+                print_error "Python 3 required"
                 exit 1
             fi
             ;;
         "infra")
             if ! command -v node &> /dev/null; then
-                print_error "Node.js required for infrastructure deployment"
+                print_error "Node.js required for CDK"
                 exit 1
             fi
             ;;
@@ -98,19 +81,13 @@ check_prereqs() {
     esac
 }
 
-# Environment setup (fast)
 setup_environment() {
-    echo -e "${BLUE}🐍 Environment setup...${NC}"
-    
-    # Quick venv check/create
+    echo -e "${BLUE}Setting up Python environment...${NC}"
     if [ ! -d "venv" ]; then
         python3 -m venv venv
         print_status "Virtual environment created"
     fi
-    
     source venv/bin/activate
-    
-    # Fast dependency install (skip if already installed)
     if [ ! -f "venv/.deps_installed" ]; then
         pip install --upgrade pip -q
         pip install -r agent/requirements.txt -q
@@ -119,12 +96,9 @@ setup_environment() {
     else
         print_status "Dependencies already installed"
     fi
-    
-    # AWS profile setup (fast check)
     export AWS_PROFILE=$AWS_PROFILE
     export AWS_DEFAULT_REGION=$AWS_REGION
     export AWS_DEFAULT_PROFILE=$AWS_PROFILE
-    
     if ! aws sts get-caller-identity &> /dev/null; then
         print_warning "AWS credentials not configured. Run: aws configure --profile $AWS_PROFILE"
         exit 1
@@ -132,170 +106,139 @@ setup_environment() {
     print_status "AWS environment ready"
 }
 
-# Infrastructure deployment (optimized)
-deploy_infrastructure() {
-    echo -e "${BLUE}🏗️  Infrastructure deployment...${NC}"
-    
+ensure_cdk_bootstrap() {
+    echo "Checking CDK bootstrap..."
+    if ! npx cdk bootstrap --show-template &> /dev/null 2>&1; then
+        echo "Bootstrapping CDK..."
+        npx cdk bootstrap "aws://${CDK_DEFAULT_ACCOUNT:-$(aws sts get-caller-identity --query Account --output text)}/${AWS_REGION}"
+        print_status "CDK bootstrapped"
+    else
+        print_status "CDK already bootstrapped"
+    fi
+}
+
+deploy_infra_solution() {
+    echo -e "${BLUE}Deploying solution infrastructure (3 stacks)...${NC}"
     cd infra
-    
-    # Fast npm install (skip if node_modules exists and package.json unchanged)
     if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
         npm ci --silent
-        print_status "CDK dependencies ready"
-    else
-        print_status "CDK dependencies up to date"
     fi
-    
-    # Validate agentCoreRoleArn is set
     if [ -z "$AGENTCORE_ROLE_ARN" ]; then
         print_error "AGENTCORE_ROLE_ARN is required for infrastructure deployment"
-        echo "  Set it via: export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/<agentcore-role-name>"
-        echo "  Find it via: aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text"
+        echo "  Set it in .env or: export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/<role>"
+        echo "  Find it: aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text"
         exit 1
     fi
-    
-    # Skip bootstrap check for speed (assume it's done)
-    echo "Deploying CDK stacks..."
-    npx cdk deploy --all --require-approval never --concurrency 10 -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
-    print_status "Infrastructure deployed"
-    
+    ensure_cdk_bootstrap
+    npx cdk deploy \
+        PatchAutomationNetworking \
+        PatchAutomationSecurity \
+        PatchAutomationAgentCorePermissions \
+        --require-approval never \
+        -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
+    print_status "Solution infrastructure deployed (3 stacks)"
     cd ..
 }
 
-# Infrastructure destruction (demo stack only)
-destroy_infrastructure() {
-    echo -e "${RED}🗑️  Destroying demo infrastructure...${NC}"
-    echo -e "${YELLOW}Note: Only destroying demo stack (PatchAutomationVulnerabilityDriven)${NC}"
-    echo -e "${YELLOW}Keeping foundational stacks: Networking, Security, AgentCore Permissions${NC}"
-    echo ""
-    
+deploy_infra_all() {
+    echo -e "${BLUE}Deploying all infrastructure (solution + sample environment)...${NC}"
     cd infra
-    
-    # Fast npm install check
-    if [ ! -d "node_modules" ]; then
+    if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
         npm ci --silent
     fi
-    
-    echo "Destroying demo stack (15 EC2 instances)..."
-    npx cdk destroy PatchAutomationVulnerabilityDriven --force -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
-    print_status "Demo infrastructure destroyed"
-    print_status "Foundational infrastructure preserved (VPC, Security Groups, IAM Roles)"
-    
+    if [ -z "$AGENTCORE_ROLE_ARN" ]; then
+        print_error "AGENTCORE_ROLE_ARN is required for infrastructure deployment"
+        echo "  Set it in .env or: export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/<role>"
+        echo "  Find it: aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text"
+        exit 1
+    fi
+    ensure_cdk_bootstrap
+    npx cdk deploy --all --require-approval never -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
+    print_status "All infrastructure deployed (4 stacks)"
     cd ..
 }
 
-# Complete infrastructure destruction (all stacks)
-destroy_all_infrastructure() {
-    echo -e "${RED}🗑️  Destroying ALL infrastructure...${NC}"
-    echo -e "${RED}⚠️  WARNING: This will destroy ALL stacks including VPC, Security Groups, and IAM Roles${NC}"
-    echo ""
-    
-    # Confirmation prompt
-    read -p "Are you sure you want to destroy ALL infrastructure? (yes/no): " confirm
+destroy_demo() {
+    echo -e "${RED}Destroying sample environment...${NC}"
+    cd infra
+    if [ ! -d "node_modules" ]; then npm ci --silent; fi
+    npx cdk destroy PatchAutomationVulnerabilityDriven --force -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
+    print_status "Sample environment destroyed (solution infrastructure preserved)"
+    cd ..
+}
+
+destroy_all() {
+    echo -e "${RED}Destroying ALL infrastructure...${NC}"
+    read -p "Are you sure? This removes everything including VPC, IAM, S3. (yes/no): " confirm
     if [ "$confirm" != "yes" ]; then
-        print_warning "Destruction cancelled"
+        print_warning "Cancelled"
         exit 0
     fi
-    
     cd infra
-    
-    # Fast npm install check
-    if [ ! -d "node_modules" ]; then
-        npm ci --silent
-    fi
-    
-    echo "Destroying all CDK stacks..."
+    if [ ! -d "node_modules" ]; then npm ci --silent; fi
     npx cdk destroy --all --force -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
     print_status "All infrastructure destroyed"
-    
     cd ..
 }
 
-# Agent deployment (fast)
 deploy_agent() {
-    echo -e "${BLUE}🤖 Agent deployment...${NC}"
-    
+    echo -e "${BLUE}Deploying agent...${NC}"
     cd agent
     source ../venv/bin/activate
-    
-    # Fast agentcore install check
     if ! command -v agentcore &> /dev/null; then
         pip install bedrock-agentcore -q
         print_status "AgentCore CLI installed"
     fi
-    
-    # Deploy with auto-update (fastest option)
     agentcore launch --auto-update-on-conflict
     print_status "Agent deployed"
-    
     cd ..
 }
 
-# Frontend deployment (placeholder)
-deploy_frontend() {
-    echo -e "${BLUE}🌐 Frontend deployment...${NC}"
-    print_warning "Frontend deployment not implemented yet"
-}
-
-# Fast testing (minimal)
-run_tests() {
-    print_skip "tests (disabled for speed)"
-}
-
-# Main execution logic
 main() {
     check_prereqs
-    
     case $DEPLOY_TARGET in
         "env")
             setup_environment
             ;;
+        "solution")
+            setup_environment
+            deploy_infra_solution
+            deploy_agent
+            ;;
         "infra")
-            deploy_infrastructure
+            deploy_infra_all
             ;;
         "agent")
             setup_environment
             deploy_agent
             ;;
-        "frontend")
-            deploy_frontend
-            ;;
-        "destroy")
-            destroy_infrastructure
+        "destroy-demo")
+            destroy_demo
             ;;
         "destroy-all")
-            destroy_all_infrastructure
+            destroy_all
             ;;
         "all")
             setup_environment
-            deploy_infrastructure
+            deploy_infra_all
             deploy_agent
             ;;
         *)
             print_error "Invalid target: $DEPLOY_TARGET"
-            echo "Usage: $0 [all|infra|agent|frontend|env|destroy|destroy-all]"
+            echo "Usage: $0 [all|solution|infra|agent|env|destroy-demo|destroy-all]"
             exit 1
             ;;
     esac
 }
 
-# Run main function
 main
 
-# Display summary
-echo -e "\n${GREEN}🎉 Deployment Complete: ${DEPLOY_TARGET}${NC}"
+echo -e "\n${GREEN}Done: ${DEPLOY_TARGET}${NC}"
 echo "=================================================="
-echo -e "Target: ${BLUE}$DEPLOY_TARGET${NC}"
-echo -e "AWS Profile: ${BLUE}$AWS_PROFILE${NC}"
-echo -e "AWS Region: ${BLUE}$AWS_REGION${NC}"
+echo -e "AWS Profile: ${BLUE}$AWS_PROFILE${NC} | Region: ${BLUE}$AWS_REGION${NC}"
 echo ""
-echo -e "${YELLOW}Quick Commands:${NC}"
-echo "• Status: cd agent && agentcore status"
-echo "• Test: agentcore invoke '{\"prompt\": \"Hello\"}'"
-echo "• Logs: aws logs tail /aws/bedrock-agentcore/runtimes/<your-runtime-name>-DEFAULT --follow"
-echo ""
-echo -e "${BLUE}Fast Deployments:${NC}"
-echo "• Environment only: ./deploy.sh env"
-echo "• Infrastructure only: ./deploy.sh infra"  
-echo "• Agent only: ./deploy.sh agent"
-echo "• Everything: ./deploy.sh all"
+echo "Quick commands:"
+echo "  agentcore status                    # Check agent"
+echo "  agentcore invoke '{\"prompt\": \"...\"}' # Test agent"
+echo "  cd ui/api && python3 server.py      # Start web UI backend"
+echo "  cd ui/frontend && npm run dev       # Start web UI frontend"

@@ -1,7 +1,7 @@
 {
   "name": "patch-automation-foundations",
   "version": "1.0.0",
-  "description": "AWS CDK foundations for Intelligent Patch Automation demo",
+  "description": "AWS CDK infrastructure for Intelligent Patch Automation",
   "scripts": {
     "build": "tsc",
     "cdk": "cdk",

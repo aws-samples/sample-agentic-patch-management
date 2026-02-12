@@ -6,585 +6,295 @@ Multi-agent system for automated vulnerability-driven patch management using Str
 
 ## Why This Matters
 
-**Traditional patching:** 15 browser tabs, 3 CLI tools, 45 minutes of manual work per CVE.
+Traditional patching: 15 browser tabs, 3 CLI tools, 45 minutes of manual work per CVE.
 
-**This approach:** Natural language query → intelligent decision → automated execution.
+This approach: natural language query → intelligent decision → automated execution.
 
-```bash
+```
 You: Handle CVE-2025-38527 in dev environment
-🤖 Agent: Checking maintenance window... Emergency patching required.
-         Patching dev → staging → prod with approval gates.
-         ✅ Complete. Compliance report saved to S3.
+Agent: Checking maintenance window... Emergency patching required.
+       Patching dev → staging → prod with approval gates.
+       Complete. Compliance report saved to S3.
 ```
 
-**Key differentiator:** Agents make intelligent, risk-based decisions using maintenance windows and CVSS scores, not just execute scripts.
-
-**Built with:** AWS native services (Bedrock AgentCore, SSM, Inspector, Config). No new infrastructure to manage.
+Agents make risk-based decisions using maintenance windows and CVSS scores. Application-layer health monitoring via CloudWatch alarms ensures safe patching. Built entirely on AWS native services.
 
 ---
-
-## What It Does
-
-When a critical vulnerability is discovered, this system automatically:
-1. Analyzes the CVE threat level and business impact
-2. Checks maintenance windows and calculates risk-based scheduling
-3. Decides between scheduled patching (wait for window) or emergency patching (immediate)
-4. Discovers affected EC2 instances across environments
-5. Executes phased patching (dev → staging → production) with approval gates
-6. Monitors health via CloudWatch alarms and recommends rollback if issues detected
-7. Generates compliance reports with audit trail
-
-**Key differentiator**: Agents make intelligent, risk-based decisions using maintenance windows and CVSS scores, not just execute scripts. Application-layer health monitoring via CloudWatch alarms ensures safe patching operations.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                 Patch Automation Supervisor                 │
-│         (Intelligent routing with fallback logic)           │
+│                 Patch Automation Supervisor                  │
+│              (Intelligent routing + fallback)                │
 ├─────────────┬───────────────────┬───────────────────────────┤
-│ Vulnerability│   Patch Manager   │   Compliance Analyst     │
-│ Analyst      │                   │                          │
-│              │                   │                          │
-│ • CVE        │ • Infrastructure  │ • Report Queries         │
-│   Analysis   │   Discovery       │ • SLA Tracking           │
-│ • Threat     │ • Patch Execution │ • Audit Trails           │
-│   Assessment │ • Health Checks   │ • Executive Reporting    │
-│ • Risk       │ • Rollback        │ • Trend Analysis         │
-│   Scoring    │                   │                          │
+│ Vulnerability│   Patch Manager   │   Compliance Analyst      │
+│ Analyst      │                   │                           │
+│ • CVE        │ • Patch Compliance│ • Report Queries          │
+│   Analysis   │ • Patch Execution │ • SLA Tracking            │
+│ • Threat     │ • Health Checks   │ • Audit Trails            │
+│   Assessment │ • Rollback        │ • Executive Reporting     │
+│ • Impact     │ • Maintenance     │ • Trend Analysis          │
+│   Analysis   │   Windows         │                           │
 └─────────────┴───────────────────┴───────────────────────────┘
-                              ↓
-                    use_aws (Fallback Tool)
-              For AWS services outside specialist scope
 ```
 
-**Technology**: Strands SDK (Python) + Amazon Bedrock AgentCore + AWS CDK
+The supervisor routes queries to the right specialist automatically. If a specialist can't handle a query, the supervisor re-routes or falls back to direct AWS API access via `use_aws`.
 
-## Key Features
+### Patching Workflow
 
-- **SLA-Aware Patching**: Automatic compliance-based decisions (PCI-DSS, SOC2, HIPAA)
-- **Risk-Based Scheduling**: EMERGENCY vs SCHEDULED patching based on maintenance windows
-- **Policy Enforcement**: Customer-configurable constraints (time windows, batch limits, approval requirements)
-- **Intelligent Routing**: Keyword-based specialist selection with fallback logic
-- **Phased Rollout**: dev → staging → prod with approval gates
-- **Health Monitoring**: Two-layer checks (infrastructure + application via CloudWatch alarms)
-- **Automated Rollback**: User-approved rollback with health verification
-- **Decision Transparency**: All decisions logged to CloudWatch + S3 for audit
-- **Compliance Reporting**: Automated audit trails with SLA tracking stored in S3
-- **Natural Language**: No rigid commands, just conversational queries
+Every patching operation follows a mandatory 7-step workflow:
+
+1. Discover affected instances and calculate SLA requirement
+2. Check next maintenance window
+3. Decide: SCHEDULED (wait for window) or EMERGENCY (patch now)
+4. Execute patching via SSM
+5. Verify instance health (SSM connectivity)
+6. Check application health (CloudWatch alarms)
+7. Generate compliance report (saved to S3)
+
+Decision logic: if the next maintenance window is within the SLA deadline → SCHEDULED. If the window would exceed the SLA → EMERGENCY.
+
+---
 
 ## Prerequisites
 
 - Python 3.9+
-- Node.js 18+ (for CDK infrastructure)
+- Node.js 18+ (for CDK)
 - AWS CLI v2 configured with a named profile
 - Bedrock AgentCore CLI (`pip install bedrock-agentcore`)
-- AWS account with Bedrock model access enabled (Claude Sonnet 4.5)
+- AWS account with Bedrock model access enabled (Claude Sonnet)
+
+---
 
 ## Quick Start
 
 ```bash
-# 1. Clone and setup
+# 1. Clone and configure
 git clone <repository-url>
-cd reinvent25-cop407-agentic-patch-management
-
-# 2. Create your .env file
+cd intelligent-patch-automation
 cp .env.example .env
 # Edit .env — set AWS_PROFILE and AWS_REGION
 
-# 3. Deploy agent first (creates the AgentCore role)
+# 2. Deploy agent first (creates the AgentCore role)
 ./deploy.sh agent
 
-# 4. Get your AgentCore role ARN and add it to .env
+# 3. Get your AgentCore role ARN and add it to .env
 aws iam list-roles \
   --query 'Roles[?starts_with(RoleName,`AmazonBedrockAgentCoreSDKRuntime`)].Arn' \
   --output text
-# Paste the ARN into .env as AGENTCORE_ROLE_ARN=...
+# Paste into .env as AGENTCORE_ROLE_ARN=...
 
-# 5. Deploy infrastructure
-./deploy.sh infra
+# 4a. Deploy solution + sample environment (recommended for first-time setup)
+./deploy.sh all
 
-# 6. Chat with the agent
-./chat.sh
+# 4b. OR deploy solution only (if you have your own EC2 instances)
+./deploy.sh solution
 ```
+
+---
 
 ## Deployment
 
-### Configuration via .env
+### Environment Variables
 
-Both `deploy.sh` and `chat.sh` auto-source a `.env` file from the project root — no manual exports needed.
+Both `deploy.sh` and `chat.sh` auto-source `.env` from the project root.
 
-```bash
-cp .env.example .env
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AWS_PROFILE` | Yes | AWS CLI named profile |
+| `AWS_REGION` | Yes | Defaults to `us-east-1` |
+| `AGENTCORE_ROLE_ARN` | For infra | AgentCore runtime role ARN (deploy agent first, then list roles) |
+| `API_KEY` | No | Enables API key auth on the web UI |
 
-Edit `.env` with your values:
-
-| Variable | Required For | How to Get It |
-|----------|-------------|---------------|
-| `AWS_PROFILE` | All commands | `aws configure --profile <name>` |
-| `AWS_REGION` | All commands | Defaults to `us-east-1` if not set |
-| `AGENTCORE_ROLE_ARN` | `./deploy.sh infra` | See below |
-
-Environment variables still work as overrides — `export AWS_PROFILE=foo` takes precedence over `.env`.
-
-**Account ID is auto-discovered** at runtime via `sts:GetCallerIdentity` — you never set it.
-
-### Finding Your AgentCore Role ARN
-
-The AgentCore role is created when you first run `agentcore launch`. If you've already deployed the agent once:
+### Deploy Targets
 
 ```bash
-aws iam list-roles \
-  --query 'Roles[?starts_with(RoleName,`AmazonBedrockAgentCoreSDKRuntime`)].Arn' \
-  --output text --profile <your-profile>
+./deploy.sh solution      # Solution only: core infra (3 stacks) + agent
+./deploy.sh all           # Everything: core infra + sample environment + agent
+./deploy.sh agent         # Redeploy agent only
+./deploy.sh infra         # All 4 CDK stacks (no agent)
+./deploy.sh env           # Python venv setup only
+./deploy.sh destroy-demo  # Remove sample environment (keeps solution infra)
+./deploy.sh destroy-all   # Full cleanup
 ```
 
-If you haven't deployed the agent yet, deploy the agent first (`./deploy.sh agent`), then get the role ARN and deploy infra.
+### Infrastructure Stacks
 
-### Deploy Infrastructure (CDK)
+| Stack | Type | What It Creates |
+|-------|------|-----------------|
+| `PatchAutomationNetworking` | Solution | VPC, subnets (public/private/isolated), NAT gateways, flow logs |
+| `PatchAutomationSecurity` | Solution | Security groups, instance IAM role, S3 compliance bucket, SQS workflow queue, AWS Config recorder |
+| `PatchAutomationAgentCorePermissions` | Solution | IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3) |
+| `PatchAutomationVulnerabilityDriven` | Sample Environment | 15 EC2 instances (5 dev/5 staging/5 prod), maintenance windows, ALBs, patch baselines, CloudWatch alarms |
 
-Deploys 4 stacks: Networking (VPC), Security (IAM, SGs, S3, Config), AgentCore Permissions, and Sample Environment (15 EC2 instances).
+The sample environment stack deploys and destroys independently. Use `./deploy.sh destroy-demo` to remove it while keeping the solution infrastructure intact.
 
+If your account already has an AWS Config recorder, pass `-c skipConfigRecorder=true` when deploying:
 ```bash
-# Ensure AGENTCORE_ROLE_ARN is set in .env
-./deploy.sh infra
+cd infra && npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
 ```
 
-The `AGENTCORE_ROLE_ARN` is needed so CDK can grant the AgentCore runtime S3 write access (compliance reports) and attach the patch automation IAM policy.
+S3 compliance buckets use `RETAIN` removal policy — they persist after stack deletion to preserve audit data.
 
-### Deploy Agent (AgentCore)
+### Instance Requirements
 
-Builds and deploys the agent container via CodeBuild (ARM64). No local Docker required.
+For the agent to manage your EC2 instances, they need:
+- SSM Agent installed and running
+- IAM instance profile with `AmazonSSMManagedInstanceCore`
+- Tag: `Environment` (e.g., `dev`, `staging`, `prod`)
+- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) for SLA policy enforcement
 
-```bash
-./deploy.sh agent
-```
+The sample environment stack creates instances with all of these pre-configured.
 
-### Deploy Everything
-
-```bash
-# Ensure AGENTCORE_ROLE_ARN is set in .env
-./deploy.sh all
-```
-
-### Tear Down
-
-```bash
-# Destroy demo instances only (keeps VPC, IAM, S3)
-./deploy.sh destroy
-
-# Destroy everything (full cleanup)
-./deploy.sh destroy-all
-```
-
-S3 buckets have `removalPolicy: RETAIN` — they persist after stack deletion to preserve compliance data.
-
-### Recommended First-Time Deploy Order
-
-1. `cp .env.example .env` — set `AWS_PROFILE` and `AWS_REGION`
-2. `./deploy.sh agent` — creates the AgentCore runtime and role
-3. Get the role ARN: `aws iam list-roles --query 'Roles[?starts_with(RoleName,\`AmazonBedrockAgentCoreSDKRuntime\`)].Arn' --output text`
-4. Add `AGENTCORE_ROLE_ARN=<arn>` to `.env`
-5. `./deploy.sh infra` — deploys VPC, security, permissions, and sample EC2 instances
-6. `./chat.sh` — start chatting
-
-## Chat Client
-
-Lightweight Python client using boto3 to communicate directly with the Bedrock AgentCore runtime. Clean streaming responses with real-time tool indicators.
-
-### Interactive Mode
-```bash
-./chat.sh                    # Start interactive chat
-./chat.sh -p <your-profile>  # Use specific AWS profile
-```
-
-### Single Message Mode
-```bash
-./chat.sh -m "What vulnerabilities do we have?"
-./chat.sh -m "Handle CVE-2025-38527" -p <your-profile>
-```
-
-### Features
-- **Real-time agent activity** - See which specialist is working (🔍 Vulnerability Analyst, 🛠️ Patch Manager, ⚙️ AWS)
-- **Streaming responses** - Watch answers appear as they're generated using SSE (Server-Sent Events)
-- **Direct boto3 integration** - No CLI subprocess overhead, clean JSON parsing
-- **Natural language** - No rigid commands, just ask
-- **Session management** - Maintains conversation context across messages
-
-### What You'll See
-```
-You: What critical vulnerabilities do we have?
-
-🔍 Consulting Vulnerability Analyst...
-
-🤖 Agent: I found 3 critical vulnerabilities in your environment:
-1. CVE-2025-38527 (CVSS 9.8)...
-```
-
-### Troubleshooting
-- **Missing dependencies**: `pip install boto3 pyyaml`
-- **Agent not deployed**: `./deploy.sh agent`
-- **AWS credentials**: Ensure AWS profile is configured (`aws configure --profile <your-profile>`)
-
-## What's Implemented
-
-### ✅ Web UI (Operations Console)
-- **Dashboard**: KPI bar, environment status cards, vulnerability table, activity feed, compliance summary, explainability table
-- **Chat Panel**: Conversational agent with streaming responses, tool indicators, approval buttons, action extraction
-- **Real-Time Workflow Tracker**: Live progress visualization during patching operations
-  - SQS FIFO-based event transport between AgentCore (remote) and FastAPI (local)
-  - Strands hooks on specialist agents emit structured events (discovery, patch execute, health check, etc.)
-  - Per-environment step progress, instance status table, ETA estimation
-  - Collapsible tracker with summary on completion
-- **Error Boundaries**: Isolated crash recovery for dashboard and chat panels
-- **Click-to-Action**: Dashboard elements pre-fill chat input for common operations
-- **Collapsible Layout**: Dashboard (72%) + Chat side-by-side with smooth collapse/expand
-- **API**: Single `/api/dashboard` endpoint (concurrent fetches, 30s cache), `/api/chat` (SSE streaming), `/api/health`
-- **Font**: Inter everywhere, consistent sizing hierarchy
-
-### ✅ Core Capabilities
-- **4 Agents**: Supervisor, Vulnerability Analyst, Patch Manager, Compliance Analyst
-- **Intelligent Routing**: Keyword-based classification with OUT_OF_SCOPE fallback
-- **12 AWS Tools**: EC2 discovery, SSM patching, Inspector integration, CloudWatch alarm monitoring, health checks, rollback, maintenance windows, compliance reporting, dependency analysis, report querying — all with structured error responses
-- **Fallback Tool**: use_aws for any AWS service with automatic pagination support
-- **SLA-Aware Patching**: Compliance framework integration (PCI-DSS, SOC2, HIPAA) with risk-based decisions
-- **Maintenance Window Integration**: Risk-based scheduling with CVSS-driven acceptable delay calculation
-- **Dependency Analysis**: AWS Config-based impact assessment with load balancer health tracking
-- **Impact Safety Check**: `get_resource_dependencies` checks target group health to determine `safe_to_patch`
-- **Phased Rollout**: dev → staging → prod with human approval between environments
-- **Two-Layer Health Monitoring**: 
-  - Infrastructure: SSM connectivity verification
-  - Application: CloudWatch alarm monitoring (requires alarms configured)
-- **Rollback**: User-approved rollback via `yum history undo` with health verification
-- **Compliance Reporting**: Automated audit trail generation with S3 storage and queryable reports
-- **Executive Reporting**: Compliance analyst for CISO/CRO/CTO queries (SLA breaches, team performance, trends)
-- **AWS Config Integration**: Resource dependency tracking and relationship discovery
-- **Structured Error Recovery**: Classified error responses (RETRYABLE, SKIP, ABORT) with agent-driven recovery
-- **Decision Audit Trail**: Every routing, SLA, and error recovery decision logged to CloudWatch + S3
-- **Observability**: AgentCore native observability with CloudWatch Logs, X-Ray tracing, and GenAI Dashboard
-
-### ✅ Infrastructure (AWS CDK)
-- **Networking Stack**: VPC, subnets, routing
-- **Security Stack**: Security groups, IAM roles, AWS Config, S3 compliance reports bucket, SQS FIFO queue for workflow events
-- **Sample Environment**: 15 EC2 instances (5 dev, 5 staging, 5 prod) with maintenance windows for testing. "test" environment supported via config aliases.
-- **Permissions Stack**: AgentCore IAM policies (EC2, SSM, Inspector, Config, S3, SQS)
-
-### ✅ Workflows
-- **Information Queries**: "What is CVE-X?", "Show me my instances"
-- **Vulnerability Analysis**: CVE assessment with CVSS scoring
-- **Maintenance-Aware Patching**: Risk-based scheduling (scheduled vs emergency modes)
-- **Patch Execution**: Phased deployment with approval gates
-  - Fast mode: User says "proceed" (quick progression, 2-3 min per environment)
-  - Verification mode: User says "verify and proceed" (automated verification, 10-12 min per environment)
-- **Health Checks**: Post-patch verification
-- **Rollback**: Restore previous package versions
-- **Compliance Reporting**: Automated audit trail with S3 storage
-
-### ✅ Routing Logic
-
-The Supervisor uses intelligent routing to direct queries to the right specialist:
-
-**Security Queries** → Vulnerability Analyst
-- Keywords: CVE, vulnerability, security, CVSS, threat, exploit
-- Examples: "Show critical vulnerabilities", "Analyze CVE-2024-1234"
-
-**Infrastructure Queries** → Patch Manager
-- Keywords: patch, deploy, instance, health, rollback, SSM, maintenance
-- Examples: "Show EC2 instances", "Check health of dev environment"
-
-**AWS Service Queries** → use_aws (direct)
-- Keywords: Lambda, S3, CloudWatch, RDS, billing, cost
-- Examples: "List Lambda functions", "Show S3 buckets"
-
-**OUT_OF_SCOPE Handling:**
-- Specialists explicitly reject queries outside their domain
-- Supervisor automatically retries with use_aws fallback
-- Ensures queries always get answered
-
-**Performance:** 18-36% faster than previous implementation by eliminating wrong specialist calls.
-
-## Project Structure
-
-```
-├── agent/                          # Strands agents
-│   ├── supervisor.py               # Orchestration + routing
-│   ├── vulnerability_agent.py      # Security analysis
-│   ├── patch_manager.py            # Patching operations
-│   ├── compliance_analyst.py       # Reporting & audit
-│   ├── helper/                     # Shared utilities
-│   │   ├── tools.py                # 12 AWS tools + structured error handling
-│   │   ├── error_handling.py       # Error classification (RETRYABLE/SKIP/ABORT)
-│   │   ├── decision_logger.py      # Decision audit trail (CloudWatch + S3)
-│   │   ├── agent_factory.py        # Common agent creation with workflow hooks
-│   │   ├── workflow_events.py      # SQS FIFO workflow event transport
-│   │   ├── context_helper.py       # Cross-agent context sharing
-│   │   ├── memory_hooks.py         # AgentCore memory integration
-│   │   └── globals.py              # Shared state
-│   ├── config/
-│   │   └── config.json             # SLA policies, environment aliases
-│   └── .bedrock_agentcore.yaml     # AgentCore config
-├── infra/                          # AWS CDK infrastructure
-│   ├── lib/
-│   │   ├── networking-stack.ts
-│   │   ├── security-stack.ts       # IAM, SGs, S3, SQS workflow queue, Config
-│   │   ├── agentcore-permissions-stack.ts
-│   │   └── vulnerability-driven-patching-stack.ts
-│   └── bin/app.ts
-├── ui/                             # Web UI (operations console)
-│   ├── api/
-│   │   └── server.py               # FastAPI proxy + SSE streaming + dashboard
-│   └── frontend/                   # React + Vite + Cloudscape
-│       └── src/
-│           ├── App.tsx              # Layout with error boundaries
-│           ├── components/
-│           │   ├── DashboardPanel.tsx    # Dashboard layout + tabs
-│           │   ├── ChatPanel.tsx         # Chat with streaming + approval buttons
-│           │   ├── WorkflowTracker.tsx   # Real-time patching progress
-│           │   ├── KpiBar.tsx            # Top-level vulnerability/compliance KPIs
-│           │   ├── EnvironmentCards.tsx   # Environment status cards
-│           │   ├── VulnTable.tsx         # Vulnerability findings table
-│           │   ├── ActivityTable.tsx      # Recent patching activity
-│           │   ├── ComplianceSummary.tsx  # Compliance statistics
-│           │   ├── ExplainabilityTable.tsx # Decision audit trail
-│           │   ├── MessageBubble.tsx      # Chat message with markdown + actions
-│           │   ├── ErrorBoundary.tsx      # Isolated crash recovery
-│           │   ├── EnvPipeline.tsx        # Environment pipeline visualization
-│           │   ├── StepProgress.tsx       # Workflow step progress bars
-│           │   ├── InstanceStatusTable.tsx # Per-instance patch status
-│           │   ├── WorkflowHeader.tsx     # Workflow tracker header
-│           │   └── WorkflowActions.tsx    # Workflow action buttons
-│           ├── hooks/
-│           │   ├── useAgentStream.ts      # SSE hook for streaming responses
-│           │   ├── useWorkflowState.ts    # Workflow state reducer + ETA
-│           │   └── useDashboard.ts        # Dashboard data fetching + caching
-│           └── lib/
-│               └── api.ts                # fetch wrapper for API endpoints
-├── chatbot-client/                 # CLI chat client (boto3 + SSE streaming)
-├── doc/                            # Documentation
-│   ├── architecture.md             # Technical architecture
-│   ├── WEB_UI_PLAN.md              # Web UI design document
-│   ├── TEST_PLAN.md                # Test plan (74 test cases)
-│   ├── observability.md            # Decision log queries
-│   ├── PRESENTATION_GUIDE.md       # Live presentation script
-│   └── troubleshooting.md          # Operational troubleshooting
-├── deploy.sh                       # One-command deployment
-├── chat.sh                         # Chat client wrapper
-└── README.md                       # This file
-```
-
-## Testing Examples
-
-### Basic Queries
-```bash
-# Instance discovery
-agentcore invoke '{"prompt": "List my EC2 instances in dev environment"}'
-
-# Vulnerability lookup
-agentcore invoke '{"prompt": "What is CVE-2025-38527?"}'
-
-# Compliance check
-agentcore invoke '{"prompt": "Check patch compliance status"}'
-```
-
-### Patching Workflow
-
-```bash
-# Scheduled patching (MEDIUM severity - waits for maintenance window)
-agentcore invoke '{"prompt": "Handle CVE-2025-12345 (CVSS 5.5) in dev environment"}'
-# Agent checks maintenance window, recommends waiting for scheduled window
-
-# Emergency patching (CRITICAL severity - immediate action)
-agentcore invoke '{"prompt": "Handle CVE-2025-99999 (CVSS 9.8) with active exploitation in prod"}'
-# Agent checks maintenance window, determines delay unacceptable, patches immediately
-
-# Phased rollout with status checks
-agentcore invoke '{"prompt": "Handle CVE-2025-12345 in dev"}'
-# Agent patches dev → user says "check status" → user says "proceed" → staging → prod
-```
-
-### Health Check & Rollback
-```bash
-# Check health after patching
-agentcore invoke '{"prompt": "Check health of dev instances"}'
-
-# Rollback if issues detected
-agentcore invoke '{"prompt": "Rollback dev patches"}'
-```
+---
 
 ## Configuration
 
-### SLA Policies (`agent/config/config.json`)
+### SLA Policies
 
-Define SLA requirements by compliance framework:
+Defined in `agent/config/config.json`. SLA hours by compliance framework and severity:
 
-```json
-{
-  "frameworks": {
-    "PCI-DSS": {"CRITICAL": 12, "HIGH": 48, "MEDIUM": 168, "LOW": 720},
-    "SOC2": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720},
-    "HIPAA": {"CRITICAL": 24, "HIGH": 72, "MEDIUM": 168, "LOW": 720}
-  }
-}
-```
+| Framework | CRITICAL | HIGH | MEDIUM | LOW |
+|-----------|----------|------|--------|-----|
+| PCI-DSS | 12h | 48h | 168h | 720h |
+| SOC2 | 24h | 72h | 168h | 720h |
+| HIPAA | 24h | 72h | 168h | 720h |
+| Default | 24h | 72h | 168h | 720h |
 
-Tag instances with `ComplianceFrameworks` to apply SLA policies automatically.
+When multiple frameworks apply to an instance, the strictest SLA wins.
 
----
+### Maintenance Windows
 
-### Maintenance Windows (SSM)
+The agent respects SSM maintenance windows:
+- SCHEDULED — next window is within SLA → wait for it
+- EMERGENCY — next window exceeds SLA → patch immediately
 
-The agent **respects** SSM maintenance windows through intelligent decision-making:
-
-**SCHEDULED patching** (window within SLA):
-- Agent registers task with maintenance window
-- SSM executes during window automatically
-- No immediate action
-
-**EMERGENCY patching** (window exceeds SLA):
-- Agent patches immediately via send_command
-- Bypasses maintenance window
-- Logged as emergency action
-
-**Decision logic**:
-```
-IF hours_until_window <= sla_hours:
-  → SCHEDULED (register with maintenance window)
-ELSE:
-  → EMERGENCY (patch immediately)
-```
-
-**Example**:
-- SLA: 12hr (CRITICAL PCI-DSS)
-- Window: 8hr away
-- Decision: SCHEDULED (8 < 12)
-- Action: Register with window
+Sample windows (deployed by sample environment stack): dev daily 1AM UTC, staging Tuesday 2AM UTC, prod 1st of month 2AM UTC.
 
 ---
 
-### Deterministic Workflow
+## Web UI
 
-The agent follows a **mandatory 7-step workflow** enforced through system prompt:
+Browser-based operations console with dashboard and conversational chat.
 
-```
-Step 1: get_patch_compliance(environment, severity)
-Step 2: get_maintenance_windows(environment)
-Step 3: Calculate decision (SCHEDULED vs EMERGENCY)
-Step 4: execute_patch_operation(execution_mode, ...)
-Step 5: check_instance_health() [if EMERGENCY]
-Step 6: check_cloudwatch_alarms() [if EMERGENCY]
-Step 7: generate_compliance_report() [always]
-```
+Dashboard: KPI bar, environment status cards, vulnerability table, activity feed, compliance summary, decision explainability table.
 
-**No external validation needed** - workflow is built into the prompt.
+Chat: Conversational agent with streaming responses, specialist indicators, and approval buttons for phased rollout.
 
-**Controls are in SSM**:
-- Maintenance windows define when
-- Patch baselines define what
-- Agent respects both automatically
-
----
-
-### Observability & Performance Monitoring
-
-AgentCore provides native observability out of the box:
-
-**CloudWatch Logs:**
 ```bash
+# Backend (port 8000)
+cd ui/api && python3 server.py
+
+# Frontend (port 5173)
+cd ui/frontend && npm run dev
+```
+
+---
+
+## CLI Chat Client
+
+Rich terminal client for testing agent interactions without the web UI.
+
+```bash
+# Interactive mode
+./chat.sh
+
+# Single message
+./chat.sh -m "What critical vulnerabilities do we have?"
+```
+
+---
+
+## Observability
+
+### CloudWatch Logs
+
+```bash
+# Real-time agent logs
 aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT --follow
+
+# Recent errors
+aws logs filter-log-events \
+  --log-group-name "/aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT" \
+  --filter-pattern "ERROR" \
+  --start-time $(date -v-1H +%s)000
+
+# Find your runtime name
+agentcore status | grep "Runtime:"
 ```
 
-**GenAI Observability Dashboard:**
-```
-https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#gen-ai-observability/agent-core
-```
+### Decision Audit
 
-**CloudWatch Insights Queries:**
-```
-# Request performance
-fields @timestamp, @message 
-| filter @message like /Request completed/ 
-| parse @message "Request completed in *ms" as duration
-| stats count() as requests, avg(duration) as avg_ms
+Every agent decision is logged to CloudWatch and S3 compliance reports in structured JSON. CloudWatch Insights query for all decisions:
 
-# Error tracking
-fields @timestamp, @message 
-| filter @level = "ERROR"
-| stats count() as errors by bin(5m)
+```
+fields @timestamp, agent, decision_type, decision, reasoning
+| filter @message like /DECISION:/
+| sort @timestamp desc
 ```
 
-**What's tracked automatically:**
-- Request/response times
-- Token usage (input/output)
-- Tool invocations
-- Error rates
-- X-Ray distributed tracing
-- **Agent decisions** (logged to CloudWatch + S3 for audit)
-
-**Decision Logs:**
-Every agent decision is logged with full context:
-```json
-{
-  "decision_type": "sla_calculation",
-  "decision": "EMERGENCY",
-  "reasoning": "Window (36hr) exceeds SLA (12hr) by 24 hours",
-  "context": {"cve_id": "CVE-2024-1234", "severity": "CRITICAL", ...}
-}
-```
-
-Stored in CloudWatch (real-time) and S3 (`decisions/YYYY/MM/DD/{agent}/{uuid}.json`) for long-term audit.  
-Query with CloudWatch Insights, Athena, or your existing tools (Splunk, Datadog).  
-See `doc/observability.md` for query examples.
+GenAI observability: `CloudWatch Console → GenAI Observability → AgentCore` for token usage, latency, and X-Ray tracing.
 
 ---
 
-### AWS Profile & Runtime
+## Security
 
-**AWS Profile**: Configure with `aws configure --profile <your-profile>`
+- API key authentication (opt-in via `API_KEY` env var)
+- Input validation and rate limiting (20 req/min) on the web UI API
+- Instance ID regex validation on all SSM operations
+- IAM least privilege — write access only for SSM commands and S3 compliance reports
+- Human approval gates between environments during phased rollout
 
-**Agent Runtime**: Deployed to Amazon Bedrock AgentCore in `us-east-1`
-
-**Sample Instances**: 15 EC2 instances tagged by environment (dev/staging/prod) for testing
-
-**Maintenance Windows**: 
-- dev-daily-patching: Daily at 1 AM UTC
-- staging-weekly-patching: Tuesday at 2 AM UTC  
-- prod-monthly-patching: 1st of month at 2 AM UTC
-
-## Current Limitations
-
-- **Two execution modes available:**
-  - **Fast mode (default):** User says "proceed" → agent moves to next environment immediately (2-3 min per environment)
-  - **Verification mode (recommended):** User says "verify and proceed" → agent waits for completion + runs health checks (10-12 min per environment)
-- **Manual approval required** - between each environment in phased rollout for safety
-- **CloudWatch alarm dependency** - Application health checks require CloudWatch alarms to be configured
-- **Linux-only rollback** - yum-based rollback for Amazon Linux/RHEL (Windows patching supported, rollback in development)
-
-## Monitoring
-
-```bash
-# View agent logs
-aws logs tail /aws/bedrock-agentcore/runtimes/<your-runtime-name>-DEFAULT --follow
-
-# Check agent status
-agentcore status
-
-# View recent tool calls
-aws logs filter-log-events \
-  --log-group-name "/aws/bedrock-agentcore/runtimes/<your-runtime-name>-DEFAULT" \
-  --filter-pattern "Tool" \
-  --start-time $(date -v-1H +%s)000
-```
+---
 
 ## Troubleshooting
 
-**Agent not responding**: `agentcore status` then `agentcore launch --auto-update-on-conflict`
+### Agent Not Responding
+```bash
+agentcore status
+agentcore launch --auto-update-on-conflict    # Redeploy
+```
 
-**Permission errors**: Check AgentCore permissions stack includes EC2, SSM, Inspector, Config
+### Permission Errors
+```bash
+aws cloudformation describe-stacks --stack-name PatchAutomationAgentCorePermissions
+```
 
-**No instances found**: Verify instances are SSM-managed and tagged with `Environment` tag
+### No Instances Found
+Instances must be SSM-managed and tagged with `Environment`:
+```bash
+aws ssm describe-instance-information --query 'InstanceInformationList[].InstanceId'
+```
 
-**Detailed guides**: See `doc/troubleshooting.md`
+### Config Recorder Conflict
+If your account already has an AWS Config recorder, deploy with:
+```bash
+cd infra && npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
+```
+
+### Known Limitations
+- Manual approval required between environments in phased rollout
+- CloudWatch alarms must be pre-configured for application-layer health checks
+- Linux-only rollback (yum-based, Amazon Linux/RHEL)
+- Single region deployment
 
 ---
 
+## Usage Examples
+
+```bash
+# Via web UI
+cd ui/api && python3 server.py    # Start backend
+cd ui/frontend && npm run dev     # Start frontend
+# Open http://localhost:5173
+
+# Via CLI
+./chat.sh
+./chat.sh -m "What critical vulnerabilities do we have?"
+./chat.sh -m "Handle CVE-2025-38527 in dev"
+./chat.sh -m "Show SLA breaches this week"
+
+# Direct agent invocation
+cd agent && agentcore invoke '{"prompt": "Show dev instances"}'
+```

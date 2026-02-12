@@ -1,129 +1,56 @@
-# Patch Automation Foundations Infrastructure
+# Infrastructure (CDK)
 
-Enterprise-grade AWS infrastructure for Intelligent Patch Automation demonstration.
+AWS CDK stacks for Intelligent Patch Automation.
 
-## Architecture
+## Stacks
 
-### Networking
-- **VPC**: 10.0.0.0/16 with 3 AZs
-- **Public Subnets**: /24 subnets for internet-facing resources
-- **Private Subnets**: /24 subnets with NAT Gateway egress
-- **Isolated Subnets**: /28 subnets for databases
-- **NAT Gateways**: 2 for high availability
-- **VPC Flow Logs**: CloudWatch monitoring
+### Solution (required)
 
-### Security
-- **Security Groups**: Least privilege access
-- **IAM Roles**: Instance and agent permissions
-- **Instance Profile**: Systems Manager integration
-- **AgentCore Permissions**: Comprehensive policy for patch automation
+| Stack | Resources |
+|-------|-----------|
+| `PatchAutomationNetworking` | VPC (10.0.0.0/16), 3 AZs, public/private/isolated subnets, 2 NAT gateways, VPC flow logs |
+| `PatchAutomationSecurity` | Security groups, instance IAM role + profile, S3 compliance bucket, SQS FIFO queue, AWS Config recorder |
+| `PatchAutomationAgentCorePermissions` | Managed IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3, SQS) |
 
-### Demo Infrastructure
-- **Production**: 2 web servers (high criticality)
-- **Staging**: 1 web server (medium criticality)  
-- **Development**: 2 web servers (low criticality)
-- **Patch Baselines**: Environment-specific policies
-- **Maintenance Windows**: Scheduled patching
+### Sample Environment (optional)
 
-## Deployment
+| Stack | Resources |
+|-------|-----------|
+| `PatchAutomationVulnerabilityDriven` | 15 t3.micro instances (5 dev/5 staging/5 prod), 3 ALBs, 3 maintenance windows, 3 patch baselines, CloudWatch alarms |
 
-### Prerequisites
+## Deploy
+
 ```bash
-# Install AWS CDK
-npm install -g aws-cdk
+# From project root (recommended)
+./deploy.sh infra         # All 4 stacks
+./deploy.sh solution      # Solution stacks only (3 stacks + agent)
 
-# Set your AWS profile
-export AWS_PROFILE=<your-profile>
+# Or directly with CDK
+cd infra
+npm ci
+npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
 
-# Create EC2 Key Pair for instances
-aws ec2 create-key-pair --key-name patch-automation-demo
+# Solution stacks only
+npx cdk deploy PatchAutomationNetworking PatchAutomationSecurity PatchAutomationAgentCorePermissions \
+  -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
+
+# Skip Config recorder (if account already has one)
+npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
 ```
 
-### Deploy Infrastructure
+## Destroy
+
 ```bash
-# Install dependencies
-npm install
+# Sample environment only (keeps solution infra)
+./deploy.sh destroy-demo
 
-# Bootstrap CDK (first time only)
-cdk bootstrap
-
-# Set the AgentCore role ARN (required)
-export AGENTCORE_ROLE_ARN=arn:aws:iam::<account>:role/AmazonBedrockAgentCoreSDKRuntime-<region>-<suffix>
-
-# Deploy all stacks (via deploy.sh — passes context automatically)
-cd .. && ./deploy.sh infra
-
-# Or deploy directly with CDK
-cdk deploy --all -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
-
-# Or deploy individually
-cdk deploy PatchAutomationNetworking -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
-cdk deploy PatchAutomationSecurity -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
-cdk deploy PatchAutomationAgentCorePermissions -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
-cdk deploy PatchAutomationVulnerabilityDriven -c agentCoreRoleArn=$AGENTCORE_ROLE_ARN
+# Everything
+./deploy.sh destroy-all
 ```
 
-### AgentCore Integration
-```bash
-# Get the policy ARN from stack outputs
-POLICY_ARN=$(aws cloudformation describe-stacks \
-  --stack-name PatchAutomationAgentCorePermissions \
-  --query 'Stacks[0].Outputs[?OutputKey==`AgentCorePolicyArn`].OutputValue' \
-  --output text)
+## Context Parameters
 
-# Attach to AgentCore runtime role
-aws iam attach-role-policy \
-  --role-name AmazonBedrockAgentCoreSDKRuntime-<region>-<suffix> \
-  --policy-arn $POLICY_ARN
-```
-
-### Cleanup
-```bash
-# Destroy all infrastructure
-npm run destroy
-```
-
-## Post-Deployment Setup
-
-### Enable Inspector
-```bash
-# Enable Inspector for vulnerability scanning
-aws inspector2 enable --resource-types ECR EC2
-```
-
-### Verify Systems Manager
-```bash
-# Check managed instances
-aws ssm describe-instance-information
-```
-
-## Infrastructure Outputs
-
-- **VPC ID**: For reference in other stacks
-- **Subnet IDs**: Public and private subnet references
-- **Security Group ID**: Instance security group
-- **IAM Role ARNs**: Instance and agent roles
-- **AgentCore Policy ARN**: For runtime role attachment
-
-## AgentCore Permissions
-
-The AgentCore permissions stack creates a comprehensive IAM policy with:
-
-- **EC2**: Instance discovery, tags, status, security groups, VPCs
-- **SSM**: Patch management, compliance, command execution, maintenance windows
-- **Inspector**: Vulnerability findings and details
-- **Config**: Compliance rules and resource assessment
-- **CloudWatch**: Metrics, logs, monitoring data
-
-## Cost Optimization
-
-- **Instance Types**: t3.micro (free tier eligible)
-- **NAT Gateways**: 2 for HA (can reduce to 1 for cost savings)
-- **EBS Volumes**: gp3 for cost efficiency
-
-## Security Considerations
-
-- **Private Subnets**: Instances not directly internet accessible
-- **Security Groups**: Minimal required ports
-- **IAM Policies**: Least privilege access
-- **VPC Flow Logs**: Network monitoring and security
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `agentCoreRoleArn` | Yes | ARN of the AgentCore runtime IAM role |
+| `skipConfigRecorder` | No | Set to `true` if account already has an AWS Config recorder |

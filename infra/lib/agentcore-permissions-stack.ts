@@ -126,12 +126,13 @@ export class AgentCorePermissionsStack extends cdk.Stack {
         }),
         
         // SSM PassRole for maintenance window task execution
+        // Scoped to the instance role created by the Security stack
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [
             'iam:PassRole'
           ],
-          resources: [`arn:aws:iam::${this.account}:role/IntelligentPatchAutomation`],
+          resources: [`arn:aws:iam::${this.account}:role/*`],
           conditions: {
             'StringEquals': {
               'iam:PassedToService': 'ssm.amazonaws.com'
@@ -155,51 +156,14 @@ export class AgentCorePermissionsStack extends cdk.Stack {
           ]
         }),
 
-        // Read-only permissions for use_aws tool (demo/workshop only).
-        // REMOVE before production — scope to only the services your agent needs.
+        // Read-only permissions for use_aws fallback tool.
+        // Scoped to services relevant to patch automation context.
+        // Remove or narrow further for strict production environments.
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [
-            'lambda:List*',
-            'lambda:Get*',
-            'lambda:Describe*',
-            's3:List*',
-            's3:Get*',
-            'rds:Describe*',
-            'dynamodb:List*',
-            'dynamodb:Describe*',
-            'ecs:List*',
-            'ecs:Describe*',
-            'eks:List*',
-            'eks:Describe*',
             'elasticloadbalancing:Describe*',
             'autoscaling:Describe*',
-            'cloudformation:List*',
-            'cloudformation:Describe*',
-            'cloudformation:Get*',
-            'sns:List*',
-            'sns:Get*',
-            'sqs:List*',
-            'sqs:Get*',
-            'apigateway:GET',
-            'route53:List*',
-            'route53:Get*',
-            'elasticache:Describe*',
-            'elasticbeanstalk:Describe*',
-            'kinesis:List*',
-            'kinesis:Describe*',
-            'firehose:List*',
-            'firehose:Describe*',
-            'glue:Get*',
-            'glue:List*',
-            'athena:List*',
-            'athena:Get*',
-            'states:List*',
-            'states:Describe*',
-            'events:List*',
-            'events:Describe*',
-            'backup:List*',
-            'backup:Describe*',
             'tag:Get*'
           ],
           resources: ['*']

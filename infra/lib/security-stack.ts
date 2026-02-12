@@ -78,10 +78,9 @@ export class SecurityStack extends cdk.Stack {
       resources: ['*']
     }));
 
-    // Instance Profile
+    // Instance Profile (no hardcoded name — avoids conflicts on redeploy)
     const instanceProfile = new iam.CfnInstanceProfile(this, 'InstanceProfile', {
       roles: [this.instanceRole.roleName],
-      instanceProfileName: 'PatchAutomationInstanceProfile'
     });
 
     // Agent permissions are defined in AgentCorePermissionsStack — no duplicates here.
@@ -98,58 +97,65 @@ export class SecurityStack extends cdk.Stack {
     });
 
     // AWS Config for resource dependency tracking
-    const configBucket = new s3.Bucket(this, 'ConfigBucket', {
-      bucketName: `aws-config-cop407-${cdk.Stack.of(this).account}`,
-      versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [{
-        expiration: cdk.Duration.days(90),
-        noncurrentVersionExpiration: cdk.Duration.days(30)
-      }]
-    });
+    // NOTE: Many accounts already have a Config recorder. If deployment fails with
+    // "ConfigurationRecorder already exists", set CDK context flag to skip:
+    //   cdk deploy -c skipConfigRecorder=true
+    const skipConfig = this.node.tryGetContext('skipConfigRecorder') === 'true' ||
+                       this.node.tryGetContext('skipConfigRecorder') === true;
 
-    const configRole = new iam.Role(this, 'ConfigRole', {
-      roleName: 'AWSConfigRole-cop407',
-      assumedBy: new iam.ServicePrincipal('config.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWS_ConfigRole')
-      ]
-    });
+    if (!skipConfig) {
+      const configBucket = new s3.Bucket(this, 'ConfigBucket', {
+        bucketName: `patch-automation-config-${cdk.Stack.of(this).account}`,
+        versioned: true,
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        lifecycleRules: [{
+          expiration: cdk.Duration.days(90),
+          noncurrentVersionExpiration: cdk.Duration.days(30)
+        }]
+      });
 
-    configBucket.grantWrite(configRole);
-
-    const deliveryChannel = new config.CfnDeliveryChannel(this, 'ConfigDeliveryChannel', {
-      s3BucketName: configBucket.bucketName
-    });
-
-    const configRecorder = new config.CfnConfigurationRecorder(this, 'ConfigRecorder', {
-      roleArn: configRole.roleArn,
-      recordingGroup: {
-        allSupported: false,
-        includeGlobalResourceTypes: false,
-        resourceTypes: [
-          'AWS::EC2::Instance',
-          'AWS::EC2::SecurityGroup',
-          'AWS::EC2::VPC',
-          'AWS::EC2::Subnet',
-          'AWS::IAM::Role',
-          'AWS::ElasticLoadBalancingV2::LoadBalancer',
-          'AWS::ElasticLoadBalancingV2::TargetGroup'
+      const configRole = new iam.Role(this, 'ConfigRole', {
+        assumedBy: new iam.ServicePrincipal('config.amazonaws.com'),
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWS_ConfigRole')
         ]
-      }
-    });
+      });
 
-    new cdk.CfnOutput(this, 'ConfigBucketName', {
-      value: configBucket.bucketName,
-      description: 'S3 bucket for AWS Config snapshots'
-    });
+      configBucket.grantWrite(configRole);
 
-    new cdk.CfnOutput(this, 'ConfigRoleArn', {
-      value: configRole.roleArn,
-      description: 'IAM Role ARN for AWS Config'
-    });
+      new config.CfnDeliveryChannel(this, 'ConfigDeliveryChannel', {
+        s3BucketName: configBucket.bucketName
+      });
+
+      new config.CfnConfigurationRecorder(this, 'ConfigRecorder', {
+        roleArn: configRole.roleArn,
+        recordingGroup: {
+          allSupported: false,
+          includeGlobalResourceTypes: false,
+          resourceTypes: [
+            'AWS::EC2::Instance',
+            'AWS::EC2::SecurityGroup',
+            'AWS::EC2::VPC',
+            'AWS::EC2::Subnet',
+            'AWS::IAM::Role',
+            'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            'AWS::ElasticLoadBalancingV2::TargetGroup'
+          ]
+        }
+      });
+
+      new cdk.CfnOutput(this, 'ConfigBucketName', {
+        value: configBucket.bucketName,
+        description: 'S3 bucket for AWS Config snapshots'
+      });
+
+      new cdk.CfnOutput(this, 'ConfigRoleArn', {
+        value: configRole.roleArn,
+        description: 'IAM Role ARN for AWS Config'
+      });
+    }
 
     // S3 bucket for compliance reports
     const complianceReportsBucket = new s3.Bucket(this, 'ComplianceReportsBucket', {

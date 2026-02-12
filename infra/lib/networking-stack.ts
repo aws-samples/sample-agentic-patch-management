@@ -48,7 +48,6 @@ export class NetworkingStack extends cdk.Stack {
 
     // Tag all VPC resources
     cdk.Tags.of(this.vpc).add('Project', 'IntelligentPatchAutomation');
-    cdk.Tags.of(this.vpc).add('Environment', 'Demo');
 
     // Output VPC details
     new cdk.CfnOutput(this, 'VPCId', {
