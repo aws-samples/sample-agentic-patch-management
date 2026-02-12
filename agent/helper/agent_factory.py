@@ -1,7 +1,6 @@
 """Common agent factory to eliminate duplication"""
 
 import os
-from helper import globals
 import logging
 from strands import Agent
 from strands.models import BedrockModel
@@ -21,7 +20,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
         name: Agent name (e.g., "supervisor", "vulnerability_analyst")
         system_prompt: Agent's system prompt
         tools: List of tools available to agent
-        context: AgentCore context with session_id
+        context: AgentCore context with session_id and memory_id
         max_tokens: Maximum tokens for response (default 6000, 12000 for patch_manager)
     
     Returns:
@@ -30,13 +29,10 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     # Initialize memory
     memory_client = MemoryClient()
     memory_id = getattr(context, 'memory_id', None)
+    session_id = getattr(context, 'session_id', None)
     
     if not memory_id:
         logger.warning(f"No memory_id in context for {name}, memory will not persist")
-    
-    # Set global context for cross-agent memory sharing
-    globals.MEMORY_ID = memory_id
-    globals.SESSION_ID = context.session_id
     
     # Create memory hook only if memory_id available
     hooks = []
@@ -45,16 +41,14 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             memory_client=memory_client,
             memory_id=memory_id,
             actor_id=f"{name}_agent",
-            session_id=context.session_id
+            session_id=session_id
         )
         hooks.append(memory_hook)
     
     # Attach workflow tracking hook to specialist agents (not supervisor)
-    # Supervisor tool calls are already visible in the outer stream;
-    # we need this hook to capture inner specialist tool calls.
     if name != "patch-automation-supervisor":
         workflow_hook = WorkflowTrackingHook(
-            session_id=context.session_id,
+            session_id=session_id,
             agent_name=name,
         )
         hooks.append(workflow_hook)

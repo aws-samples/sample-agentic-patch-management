@@ -76,9 +76,13 @@ export function useAgentStream(options: UseAgentStreamOptions = {}) {
       abortRef.current = new AbortController();
 
       try {
+        const apiKey = import.meta.env.VITE_API_KEY;
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (apiKey) headers["X-API-Key"] = apiKey;
+
         const res = await fetch("/api/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({
             message: text,
             session_id: state.sessionId,

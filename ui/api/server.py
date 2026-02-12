@@ -6,22 +6,31 @@ Wraps AgentCore invoke_agent_runtime as HTTP endpoints with SSE streaming.
 import json
 import logging
 import os
+import re
 import time
 import uuid
+from collections import defaultdict
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Auto-source .env from project root (same as deploy.sh / chat.sh)
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+# Auto-source .env — try project root first, then Docker path
+_env_paths = [
+    Path(__file__).parent.parent.parent / ".env",  # dev: project root
+    Path("/app/.env"),                                # docker
+]
+for _p in _env_paths:
+    if _p.exists():
+        load_dotenv(_p)
+        break
 
 import boto3
 import yaml
 from botocore.config import Config as BotoConfig
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,9 +46,52 @@ _cors_origins = os.environ.get(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _cors_origins],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Accept", "X-API-Key"],
 )
+
+
+# ── Request validation ──────────────────────────────────────────────
+
+_SESSION_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=10_000)
+    session_id: str | None = Field(None, max_length=100)
+
+
+# ── Rate limiting (in-memory token bucket) ──────────────────────────
+
+_rate_limits: dict[str, list[float]] = defaultdict(list)
+MAX_REQUESTS_PER_MINUTE = 20
+
+
+def _check_rate_limit(client_ip: str) -> bool:
+    now = time.time()
+    window = [t for t in _rate_limits[client_ip] if now - t < 60]
+    _rate_limits[client_ip] = window
+    if len(window) >= MAX_REQUESTS_PER_MINUTE:
+        return False
+    _rate_limits[client_ip].append(now)
+    return True
+
+
+# ── Auth middleware (opt-in via API_KEY env var) ─────────────────────
+
+API_KEY = os.environ.get("API_KEY")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if request.url.path == "/api/health":
+        return await call_next(request)
+    if not API_KEY:
+        return await call_next(request)
+    provided_key = request.headers.get("X-API-Key")
+    if provided_key != API_KEY:
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+    return await call_next(request)
 
 # Load AgentCore config
 AGENT_DIR = Path(__file__).parent.parent.parent / "agent"
@@ -169,19 +221,27 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
 
 
 @app.post("/api/chat")
-async def chat(request: Request):
+async def chat(req: ChatRequest, request: Request):
     """
     Send a message to the agent and stream the response as SSE.
 
     Body: { "message": "...", "session_id": "..." }
     Returns: text/event-stream with tool_start / text / done events.
     """
-    body = await request.json()
-    message = body.get("message", "").strip()
-    session_id = body.get("session_id") or f"web-{uuid.uuid4().hex}"
+    # Rate limit by client IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        return JSONResponse(status_code=429, content={"error": "Rate limit exceeded. Max 20 requests/minute."})
+
+    message = req.message.strip()
+    session_id = req.session_id or f"web-{uuid.uuid4().hex}"
+
+    # Validate session_id format
+    if req.session_id and not _SESSION_ID_PATTERN.match(req.session_id):
+        return JSONResponse(status_code=422, content={"error": "Invalid session_id format"})
 
     if not message:
-        return {"error": "message is required"}, 400
+        return JSONResponse(status_code=422, content={"error": "message is required"})
 
     logger.info(f"Chat request: session_id={session_id} message={message[:80]}")
     client = _get_client()

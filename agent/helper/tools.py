@@ -5,6 +5,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 import json
 import logging
+import re
 import time
 import os
 from strands import tool
@@ -18,6 +19,29 @@ logger = logging.getLogger(__name__)
 
 # Region from environment variable (default: us-east-1)
 AWS_REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
+
+# Instance ID validation pattern
+INSTANCE_ID_PATTERN = re.compile(r'^i-[0-9a-f]{8,17}$')
+
+
+def _validate_instance_ids(instance_ids: List[str]) -> Optional[dict]:
+    """Returns error dict if any ID is invalid, None if all valid."""
+    if not instance_ids:
+        return {
+            "error": "instance_ids list is empty",
+            "error_code": "InvalidParameter",
+            "category": "ABORT",
+            "retryable": False
+        }
+    for iid in instance_ids:
+        if not INSTANCE_ID_PATTERN.match(iid):
+            return {
+                "error": f"Invalid instance ID: {iid}",
+                "error_code": "InvalidInstanceId",
+                "category": "ABORT",
+                "retryable": False
+            }
+    return None
 
 # AWS client configuration with retry logic and timeouts
 aws_config = Config(
@@ -358,6 +382,11 @@ def execute_patch_operation(
         )
     """
     try:
+        # Validate instance IDs
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
         if execution_mode == "scheduled":
             # Validate maintenance_window_id is provided
             if not maintenance_window_id:
@@ -456,6 +485,12 @@ def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
     """
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Validate instance IDs
+        if instance_ids:
+            validation_error = _validate_instance_ids(instance_ids)
+            if validation_error:
+                return validation_error
         
         # Handle empty instance list
         if not instance_ids:
@@ -587,6 +622,11 @@ def check_instance_health(instance_ids: List[str]) -> dict:
         dict: {'health_results': list, 'summary': dict, 'overall_health': str}
     """
     try:
+        # Validate instance IDs
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
         # Batch: Check SSM connectivity for all instances in single API call
         ssm_info = ssm_client.describe_instance_information(
             Filters=[{'Key': 'InstanceIds', 'Values': instance_ids}]
@@ -657,6 +697,11 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
         dict: {'alarms': list, 'summary': dict, 'overall_status': str}
     """
     try:
+        # Validate instance IDs
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
         # Query all alarms in ALARM state with pagination
         alarms_in_alarm = []
         next_token = None
@@ -761,6 +806,11 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
     try:
         import time
         
+        # Validate instance IDs
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+        
         # Poll command status until complete (max 10 minutes)
         max_attempts = 60  # 10 min with 10s intervals
         attempt = 0
@@ -848,6 +898,11 @@ def rollback_patches(instance_ids: List[str]) -> dict:
         dict: {'command_id': str, 'status': str, 'instance_count': int}
     """
     try:
+        # Validate instance IDs
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
         # Use yum history to rollback the last transaction
         rollback_script = """
 #!/bin/bash

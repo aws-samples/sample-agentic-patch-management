@@ -131,7 +131,7 @@ export class AgentCorePermissionsStack extends cdk.Stack {
           actions: [
             'iam:PassRole'
           ],
-          resources: ['*'],
+          resources: [`arn:aws:iam::${this.account}:role/IntelligentPatchAutomation`],
           conditions: {
             'StringEquals': {
               'iam:PassedToService': 'ssm.amazonaws.com'
@@ -155,8 +155,8 @@ export class AgentCorePermissionsStack extends cdk.Stack {
           ]
         }),
 
-        // Broad Read Permissions for use_aws tool (demo purposes)
-        // Allows querying Lambda, S3, RDS, and other AWS services
+        // Read-only permissions for use_aws tool (demo/workshop only).
+        // REMOVE before production — scope to only the services your agent needs.
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [
@@ -177,8 +177,6 @@ export class AgentCorePermissionsStack extends cdk.Stack {
             'cloudformation:List*',
             'cloudformation:Describe*',
             'cloudformation:Get*',
-            'iam:List*',
-            'iam:Get*',
             'sns:List*',
             'sns:Get*',
             'sqs:List*',

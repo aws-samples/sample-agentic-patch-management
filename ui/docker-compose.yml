@@ -7,13 +7,11 @@ services:
       dockerfile: ui/api/Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - AWS_PROFILE=${AWS_PROFILE:-ri25-demo}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
+    env_file:
+      - ../.env
     volumes:
       - ./api:/app/ui/api
       - ../agent/.bedrock_agentcore.yaml:/app/agent/.bedrock_agentcore.yaml:ro
-      - ~/.aws:/root/.aws:ro
     command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
     working_dir: /app/ui/api
 

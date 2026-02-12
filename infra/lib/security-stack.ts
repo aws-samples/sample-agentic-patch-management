@@ -24,24 +24,17 @@ export class SecurityStack extends cdk.Stack {
       allowAllOutbound: true
     });
 
-    // Allow SSH access from anywhere (demo purposes only)
+    // HTTP/HTTPS restricted to security group (ALB → instance traffic only)
     this.instanceSecurityGroup.addIngressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.tcp(22),
-      'SSH access for demo'
-    );
-
-    // Allow HTTP/HTTPS for web servers
-    this.instanceSecurityGroup.addIngressRule(
-      ec2.Peer.anyIpv4(),
+      this.instanceSecurityGroup,
       ec2.Port.tcp(80),
-      'HTTP access'
+      'HTTP from ALB only'
     );
 
     this.instanceSecurityGroup.addIngressRule(
-      ec2.Peer.anyIpv4(),
+      this.instanceSecurityGroup,
       ec2.Port.tcp(443),
-      'HTTPS access'
+      'HTTPS from ALB only'
     );
 
     // IAM Role for EC2 instances with Systems Manager permissions
@@ -91,94 +84,7 @@ export class SecurityStack extends cdk.Stack {
       instanceProfileName: 'PatchAutomationInstanceProfile'
     });
 
-    // IAM Role for Patch Automation Agents
-    const agentRole = new iam.Role(this, 'AgentRole', {
-      assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
-      description: 'IAM role for Intelligent Patch Automation agents',
-    });
-
-    // Agent permissions for AWS services
-    agentRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        // Inspector permissions
-        'inspector2:ListFindings',
-        'inspector2:GetFindingDetails',
-        'inspector2:BatchGetAccountStatus',
-        
-        // Systems Manager permissions
-        'ssm:DescribeInstanceInformation',
-        'ssm:DescribeInstanceAssociations',
-        'ssm:ListComplianceItems',
-        'ssm:ListComplianceSummary',
-        'ssm:DescribeMaintenanceWindows',
-        'ssm:DescribeMaintenanceWindowTargets',
-        'ssm:CreatePatchBaseline',
-        'ssm:SendCommand',
-        'ssm:GetCommandInvocation',
-        'ssm:ListCommandInvocations',
-        'ssm:CreateMaintenanceWindow',
-        'ssm:RegisterTargetWithMaintenanceWindow',
-        
-        // EC2 permissions
-        'ec2:DescribeInstances',
-        'ec2:DescribeTags',
-        'ec2:DescribeImages',
-        'ec2:DescribeSecurityGroups',
-        'ec2:DescribeSubnets',
-        'ec2:DescribeVpcs'
-      ],
-      resources: ['*']
-    }));
-
-    // IAM Role for AgentCore Execution
-    const agentCoreExecutionRole = new iam.Role(this, 'AgentCoreExecutionRole', {
-      roleName: 'IntelligentPatchAutomation',
-      assumedBy: new iam.CompositePrincipal(
-        new iam.ServicePrincipal('bedrock.amazonaws.com'),
-        new iam.ServicePrincipal('lambda.amazonaws.com'),
-        new iam.ServicePrincipal('ecs-tasks.amazonaws.com')
-      ),
-      description: 'Execution role for AgentCore intelligent patch automation',
-    });
-
-    // AgentCore execution permissions
-    agentCoreExecutionRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        // Inspector permissions
-        'inspector2:ListFindings',
-        'inspector2:GetFindingDetails',
-        'inspector2:BatchGetAccountStatus',
-        
-        // Systems Manager permissions
-        'ssm:DescribeInstanceInformation',
-        'ssm:DescribeInstanceAssociations',
-        'ssm:ListComplianceItems',
-        'ssm:ListComplianceSummary',
-        'ssm:DescribeMaintenanceWindows',
-        'ssm:DescribeMaintenanceWindowTargets',
-        'ssm:CreatePatchBaseline',
-        'ssm:SendCommand',
-        'ssm:GetCommandInvocation',
-        'ssm:ListCommandInvocations',
-        'ssm:CreateMaintenanceWindow',
-        'ssm:RegisterTargetWithMaintenanceWindow',
-        
-        // EC2 permissions
-        'ec2:DescribeInstances',
-        'ec2:DescribeTags',
-        'ec2:DescribeImages',
-        'ec2:DescribeSecurityGroups',
-        'ec2:DescribeSubnets',
-        'ec2:DescribeVpcs',
-        
-        // Bedrock permissions
-        'bedrock:InvokeModel',
-        'bedrock:InvokeModelWithResponseStream'
-      ],
-      resources: ['*']
-    }));
+    // Agent permissions are defined in AgentCorePermissionsStack — no duplicates here.
 
     // Outputs
     new cdk.CfnOutput(this, 'InstanceSecurityGroupId', {
@@ -189,16 +95,6 @@ export class SecurityStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'InstanceRoleArn', {
       value: this.instanceRole.roleArn,
       description: 'IAM Role ARN for instances'
-    });
-
-    new cdk.CfnOutput(this, 'AgentRoleArn', {
-      value: agentRole.roleArn,
-      description: 'IAM Role ARN for patch automation agents'
-    });
-
-    new cdk.CfnOutput(this, 'AgentCoreExecutionRoleArn', {
-      value: agentCoreExecutionRole.roleArn,
-      description: 'IAM Role ARN for AgentCore execution'
     });
 
     // AWS Config for resource dependency tracking
