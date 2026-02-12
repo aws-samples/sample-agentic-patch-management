@@ -36,6 +36,14 @@ const WORKFLOW_EVENT_TYPES = new Set([
   "workflow_env_done",
 ]);
 
+/**
+ * Hook for streaming chat with the patch automation agent via SSE.
+ *
+ * Session ID is generated per page load (not persisted across reloads).
+ * This means conversation history resets on refresh. For production use,
+ * consider persisting sessionId to localStorage if cross-reload continuity
+ * is needed — the backend (AgentCore memory) already supports it.
+ */
 export function useAgentStream(options: UseAgentStreamOptions = {}) {
   const [state, setState] = useState<StreamState>({
     messages: [],

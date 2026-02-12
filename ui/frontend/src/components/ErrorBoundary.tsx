@@ -1,21 +1,15 @@
-import { Component } from "react";
-import type { ReactNode, ErrorInfo } from "react";
-import Box from "@cloudscape-design/components/box";
-import Button from "@cloudscape-design/components/button";
-import Alert from "@cloudscape-design/components/alert";
-
-interface Props {
-  children: ReactNode;
-  fallbackLabel?: string;
-}
+import React from "react";
 
 interface State {
   hasError: boolean;
   error: Error | null;
 }
 
-export default class ErrorBoundary extends Component<Props, State> {
-  constructor(props: Props) {
+export class ErrorBoundary extends React.Component<
+  React.PropsWithChildren,
+  State
+> {
+  constructor(props: React.PropsWithChildren) {
     super(props);
     this.state = { hasError: false, error: null };
   }
@@ -24,26 +18,43 @@ export default class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error(`[ErrorBoundary] ${this.props.fallbackLabel ?? "Component"} crashed:`, error, info.componentStack);
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("ErrorBoundary caught:", error, info.componentStack);
   }
 
   render() {
     if (this.state.hasError) {
       return (
-        <Box padding="l">
-          <Alert
-            type="error"
-            header={`${this.props.fallbackLabel ?? "Component"} encountered an error`}
-            action={
-              <Button onClick={() => this.setState({ hasError: false, error: null })}>
-                Try again
-              </Button>
-            }
-          >
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            height: "100vh",
+            gap: 16,
+            fontFamily: "system-ui, sans-serif",
+            color: "#333",
+          }}
+        >
+          <h2 style={{ margin: 0 }}>Something went wrong</h2>
+          <p style={{ margin: 0, color: "#666" }}>
             {this.state.error?.message ?? "An unexpected error occurred."}
-          </Alert>
-        </Box>
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              padding: "8px 20px",
+              border: "1px solid #ccc",
+              borderRadius: 4,
+              background: "#fff",
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            Reload
+          </button>
+        </div>
       );
     }
     return this.props.children;

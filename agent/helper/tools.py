@@ -3,6 +3,7 @@
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+import functools
 import json
 import logging
 import re
@@ -65,6 +66,13 @@ cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION, config=aw
 # PRIVATE HELPER FUNCTIONS
 # ============================================================================
 
+@functools.lru_cache(maxsize=1)
+def _load_config() -> dict:
+    """Load and cache config.json from disk. Called once per process."""
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'config.json')
+    with open(config_path, 'r') as f:
+        return json.load(f)
+
 def _get_compliance_bucket_name() -> str:
     """Get S3 bucket name for compliance reports."""
     sts_client = boto3.client('sts', region_name=AWS_REGION, config=aws_config)
@@ -91,12 +99,7 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
     """
     try:
         logger.info(f"Calculating SLA for frameworks={frameworks}, severity={severity}")
-        # Config is in parent directory: agent/config/config.json
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'config.json')
-        logger.info(f"Reading config from: {config_path}")
-        
-        with open(config_path, 'r') as f:
-            sla_policy = json.load(f)
+        sla_policy = _load_config()
         
         sla_hours = None
         source_framework = None
@@ -131,10 +134,7 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
 
 def _normalize_environment(user_input: str) -> str:
     """Map user input to canonical environment tag value."""
-    # Config is in parent directory: agent/config/config.json
-    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'config.json')
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+    config = _load_config()
     
     aliases = config.get('environment_aliases', {})
     user_lower = user_input.lower()
