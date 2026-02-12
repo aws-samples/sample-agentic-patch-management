@@ -61,8 +61,8 @@ Decision logic: if the next maintenance window is within the SLA deadline → SC
 
 - Python 3.9+
 - Node.js 18+ (for CDK)
+- Docker (for building the UI container image)
 - AWS CLI v2 configured with a named profile
-- Bedrock AgentCore CLI (`pip install bedrock-agentcore`)
 - AWS account with Bedrock model access enabled (Claude Sonnet)
 
 ---

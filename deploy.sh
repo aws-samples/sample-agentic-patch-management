@@ -60,6 +60,7 @@ show_help() {
 check_prereqs() {
     local need_python=${1:-false}
     local need_node=${2:-false}
+    local need_docker=${3:-false}
 
     if [ "$need_python" = true ] && ! command -v python3 &> /dev/null; then
         print_error "Python 3 required"
@@ -68,6 +69,16 @@ check_prereqs() {
     if [ "$need_node" = true ] && ! command -v node &> /dev/null; then
         print_error "Node.js 18+ required (for CDK)"
         exit 1
+    fi
+    if [ "$need_docker" = true ]; then
+        if ! command -v docker &> /dev/null; then
+            print_error "Docker required (CDK builds the UI container image locally)"
+            exit 1
+        fi
+        if ! docker info &> /dev/null; then
+            print_error "Docker daemon not running. Start Docker Desktop and try again."
+            exit 1
+        fi
     fi
     if ! command -v aws &> /dev/null; then
         print_error "AWS CLI v2 required"
@@ -260,7 +271,7 @@ case "$COMMAND" in
         # Full deploy: env → agent → infra → UI
         [ "$COMMAND" = "--with-demo" ] && INCLUDE_DEMO=true || INCLUDE_DEMO=false
 
-        check_prereqs true true
+        check_prereqs true true true
         echo -e "${BLUE}Intelligent Patch Automation — Full Deploy${NC}"
         echo "=================================================="
 
@@ -283,7 +294,7 @@ case "$COMMAND" in
         ;;
 
     "ui")
-        check_prereqs false true
+        check_prereqs false true true
         echo -e "${BLUE}Intelligent Patch Automation — Redeploy UI${NC}"
         echo "=================================================="
         deploy_ui
