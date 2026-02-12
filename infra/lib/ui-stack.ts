@@ -1,0 +1,162 @@
+import * as cdk from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import { Construct } from 'constructs';
+import * as path from 'path';
+
+export interface UIStackProps extends cdk.StackProps {
+  vpc: ec2.Vpc;
+  agentCoreRoleArn?: string;
+}
+
+export class UIStack extends cdk.Stack {
+  public readonly albDnsName: string;
+
+  constructor(scope: Construct, id: string, props: UIStackProps) {
+    super(scope, id, props);
+
+    // ECS Cluster
+    const cluster = new ecs.Cluster(this, 'UICluster', {
+      vpc: props.vpc,
+      containerInsights: true,
+    });
+
+    // Build Docker image from project root
+    const image = new ecr_assets.DockerImageAsset(this, 'UIImage', {
+      directory: path.join(__dirname, '..', '..'),  // project root
+      file: 'Dockerfile',
+      exclude: ['infra/node_modules', 'infra/cdk.out', 'venv', '.git', 'node_modules'],
+    });
+
+    // Task execution role (ECR pull, CloudWatch logs)
+    const executionRole = new iam.Role(this, 'TaskExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
+      ],
+    });
+
+    // Task role — needs same AWS permissions as the local server.py
+    const taskRole = new iam.Role(this, 'TaskRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+    });
+
+    // The UI backend calls: EC2, SSM, Inspector, S3, STS, AgentCore
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        // EC2 — dashboard environment cards
+        'ec2:DescribeInstances',
+        'ec2:DescribeTags',
+        // SSM — dashboard instance health
+        'ssm:DescribeInstanceInformation',
+        // Inspector — dashboard vulnerability table
+        'inspector2:ListFindings',
+        // S3 — compliance reports
+        's3:GetObject',
+        's3:ListBucket',
+        's3:HeadBucket',
+        // STS — account ID for bucket name resolution
+        'sts:GetCallerIdentity',
+        // AgentCore — chat proxy
+        'bedrock-agentcore:InvokeAgentRuntime',
+      ],
+      resources: ['*'],
+    }));
+
+    // Log group
+    const logGroup = new logs.LogGroup(this, 'UILogGroup', {
+      logGroupName: '/patch-automation/ui',
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Fargate task definition
+    const taskDef = new ecs.FargateTaskDefinition(this, 'UITaskDef', {
+      memoryLimitMiB: 512,
+      cpu: 256,
+      executionRole,
+      taskRole,
+    });
+
+    taskDef.addContainer('ui', {
+      image: ecs.ContainerImage.fromDockerImageAsset(image),
+      portMappings: [{ containerPort: 8000 }],
+      environment: {
+        'STATIC_DIR': '/app/static',
+        'AWS_DEFAULT_REGION': cdk.Stack.of(this).region,
+      },
+      logging: ecs.LogDrivers.awsLogs({
+        logGroup,
+        streamPrefix: 'ui',
+      }),
+      healthCheck: {
+        command: ['CMD-SHELL', 'curl -f http://localhost:8000/api/health || exit 1'],
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        startPeriod: cdk.Duration.seconds(60),
+      },
+    });
+
+    // ALB — internal only (private subnets)
+    const alb = new elbv2.ApplicationLoadBalancer(this, 'UIALB', {
+      vpc: props.vpc,
+      internetFacing: false,
+      loadBalancerName: 'patch-automation-ui',
+    });
+
+    // Fargate service
+    const service = new ecs.FargateService(this, 'UIService', {
+      cluster,
+      taskDefinition: taskDef,
+      desiredCount: 1,
+      assignPublicIp: false,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    // ALB listener + target group
+    const listener = alb.addListener('HTTPListener', {
+      port: 80,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+    });
+
+    listener.addTargets('UITarget', {
+      port: 8000,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targets: [service],
+      healthCheck: {
+        path: '/api/health',
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 3,
+      },
+      // SSE streaming needs long idle timeout
+      deregistrationDelay: cdk.Duration.seconds(30),
+    });
+
+    // Allow ALB to reach Fargate tasks
+    service.connections.allowFrom(alb, ec2.Port.tcp(8000), 'ALB to Fargate');
+
+    // Increase ALB idle timeout for SSE streaming (chat responses can take minutes)
+    alb.setAttribute('idle_timeout.timeout_seconds', '300');
+
+    this.albDnsName = alb.loadBalancerDnsName;
+
+    // Outputs
+    new cdk.CfnOutput(this, 'UIUrl', {
+      value: `http://${alb.loadBalancerDnsName}`,
+      description: 'Patch Automation UI URL (internal ALB)',
+    });
+
+    new cdk.CfnOutput(this, 'UILogGroupName', {
+      value: logGroup.logGroupName,
+      description: 'CloudWatch log group for UI container',
+    });
+  }
+}

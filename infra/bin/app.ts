@@ -5,6 +5,7 @@ import { NetworkingStack } from '../lib/networking-stack';
 import { SecurityStack } from '../lib/security-stack';
 import { VulnerabilityDrivenPatchingStack } from '../lib/vulnerability-driven-patching-stack';
 import { AgentCorePermissionsStack } from '../lib/agentcore-permissions-stack';
+import { UIStack } from '../lib/ui-stack';
 
 const app = new cdk.App();
 
@@ -20,7 +21,7 @@ if (!env.account) {
 }
 
 // ── Solution Infrastructure (required) ─────────────────────────────
-// These 3 stacks are the core solution. Deploy with: ./deploy.sh infra
+// These 4 stacks are the core solution. Deploy with: ./deploy.sh infra
 
 // Core networking infrastructure
 const networkingStack = new NetworkingStack(app, 'PatchAutomationNetworking', {
@@ -42,7 +43,7 @@ if (!agentCoreRoleArn || agentCoreRoleArn === 'placeholder') {
   console.warn('   Pass: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
 }
 
-const agentCorePermissionsStack = new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
+new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
   env,
   agentCoreRoleArn: (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') ? agentCoreRoleArn : undefined,
   description: 'IAM permissions for AgentCore patch automation runtime'
@@ -64,3 +65,15 @@ const vulnerabilityPatchingStack = new VulnerabilityDrivenPatchingStack(app, 'Pa
 // Dependencies
 securityStack.addDependency(networkingStack);
 vulnerabilityPatchingStack.addDependency(securityStack);
+
+// ── Web UI (optional) ──────────────────────────────────────────────
+// Fargate container serving the operations console (React + FastAPI).
+// Deploy with: ./deploy.sh ui
+
+const uiStack = new UIStack(app, 'PatchAutomationUI', {
+  env,
+  vpc: networkingStack.vpc,
+  agentCoreRoleArn: (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') ? agentCoreRoleArn : undefined,
+  description: 'Web UI for Intelligent Patch Automation (Fargate + ALB)',
+});
+uiStack.addDependency(networkingStack);

@@ -663,6 +663,30 @@ _dashboard_cache: dict | None = None
 _dashboard_cache_time: float = 0.0
 
 
+# ── Static file serving (production container) ──────────────────────
+# When STATIC_DIR is set (Docker), serve the built React frontend.
+# In dev mode (no STATIC_DIR), the Vite dev server handles frontend.
+
+_static_dir = os.environ.get("STATIC_DIR")
+if _static_dir and Path(_static_dir).is_dir():
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    _static_path = Path(_static_dir)
+
+    # Catch-all route for SPA — serves index.html for any non-API path
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Try to serve the exact file first (JS, CSS, images, etc.)
+        file_path = _static_path / full_path
+        if full_path and file_path.is_file():
+            return FileResponse(file_path)
+        # Fall back to index.html for SPA routing
+        return FileResponse(_static_path / "index.html")
+
+    logger.info(f"Serving frontend from {_static_dir}")
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

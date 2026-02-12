@@ -32,11 +32,12 @@ if [ -z "$DEPLOY_TARGET" ]; then
     echo "Usage: $0 <target>"
     echo ""
     echo "Solution:"
-    echo "  ${GREEN}all${NC}           Deploy everything (env + infra + sample env + agent)"
-    echo "  ${GREEN}solution${NC}      Deploy solution only (env + core infra + agent, no sample instances)"
+    echo "  ${GREEN}all${NC}           Deploy everything (env + infra + sample env + agent + ui)"
+    echo "  ${GREEN}solution${NC}      Deploy solution only (env + core infra + agent + ui, no sample instances)"
     echo "  ${GREEN}env${NC}           Setup Python virtual environment"
-    echo "  ${GREEN}infra${NC}         Deploy all infrastructure (solution + sample environment)"
+    echo "  ${GREEN}infra${NC}         Deploy all infrastructure (solution + sample environment + ui)"
     echo "  ${GREEN}agent${NC}         Deploy AgentCore agent"
+    echo "  ${GREEN}ui${NC}            Deploy Web UI (Fargate + ALB)"
     echo ""
     echo "Cleanup:"
     echo "  ${RED}destroy-demo${NC}  Destroy sample environment only (keeps solution infra)"
@@ -46,6 +47,7 @@ if [ -z "$DEPLOY_TARGET" ]; then
     echo "  $0 solution       # Deploy for production (no sample instances)"
     echo "  $0 all            # Deploy with sample instances for testing"
     echo "  $0 agent          # Redeploy agent only"
+    echo "  $0 ui             # Deploy Web UI only"
     echo "  $0 destroy-demo   # Remove sample instances (quick cleanup)"
     echo ""
     exit 0
@@ -118,7 +120,7 @@ ensure_cdk_bootstrap() {
 }
 
 deploy_infra_solution() {
-    echo -e "${BLUE}Deploying solution infrastructure (3 stacks)...${NC}"
+    echo -e "${BLUE}Deploying solution infrastructure (4 stacks)...${NC}"
     cd infra
     if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
         npm ci --silent
@@ -134,14 +136,15 @@ deploy_infra_solution() {
         PatchAutomationNetworking \
         PatchAutomationSecurity \
         PatchAutomationAgentCorePermissions \
+        PatchAutomationUI \
         --require-approval never \
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
-    print_status "Solution infrastructure deployed (3 stacks)"
+    print_status "Solution infrastructure deployed (4 stacks)"
     cd ..
 }
 
 deploy_infra_all() {
-    echo -e "${BLUE}Deploying all infrastructure (solution + sample environment)...${NC}"
+    echo -e "${BLUE}Deploying all infrastructure (solution + sample environment, 5 stacks)...${NC}"
     cd infra
     if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
         npm ci --silent
@@ -154,7 +157,7 @@ deploy_infra_all() {
     fi
     ensure_cdk_bootstrap
     npx cdk deploy --all --require-approval never -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
-    print_status "All infrastructure deployed (4 stacks)"
+    print_status "All infrastructure deployed (5 stacks)"
     cd ..
 }
 
@@ -194,6 +197,26 @@ deploy_agent() {
     cd ..
 }
 
+deploy_ui() {
+    echo -e "${BLUE}Deploying Web UI (Fargate + ALB)...${NC}"
+    cd infra
+    if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
+        npm ci --silent
+    fi
+    ensure_cdk_bootstrap
+    npx cdk deploy PatchAutomationUI \
+        --require-approval never \
+        -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
+    print_status "Web UI deployed"
+    echo ""
+    echo -e "${GREEN}UI URL:${NC}"
+    aws cloudformation describe-stacks \
+        --stack-name PatchAutomationUI \
+        --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' \
+        --output text 2>/dev/null || echo "  (check CloudFormation outputs)"
+    cd ..
+}
+
 main() {
     check_prereqs
     case $DEPLOY_TARGET in
@@ -204,6 +227,7 @@ main() {
             setup_environment
             deploy_infra_solution
             deploy_agent
+            deploy_ui
             ;;
         "infra")
             deploy_infra_all
@@ -211,6 +235,9 @@ main() {
         "agent")
             setup_environment
             deploy_agent
+            ;;
+        "ui")
+            deploy_ui
             ;;
         "destroy-demo")
             destroy_demo
@@ -222,10 +249,11 @@ main() {
             setup_environment
             deploy_infra_all
             deploy_agent
+            deploy_ui
             ;;
         *)
             print_error "Invalid target: $DEPLOY_TARGET"
-            echo "Usage: $0 [all|solution|infra|agent|env|destroy-demo|destroy-all]"
+            echo "Usage: $0 [all|solution|infra|agent|ui|env|destroy-demo|destroy-all]"
             exit 1
             ;;
     esac

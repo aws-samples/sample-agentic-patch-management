@@ -11,6 +11,7 @@ AWS CDK stacks for Intelligent Patch Automation.
 | `PatchAutomationNetworking` | VPC (10.0.0.0/16), 3 AZs, public/private/isolated subnets, 2 NAT gateways, VPC flow logs |
 | `PatchAutomationSecurity` | Security groups, instance IAM role + profile, S3 compliance bucket, SQS FIFO queue, AWS Config recorder |
 | `PatchAutomationAgentCorePermissions` | Managed IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3, SQS) |
+| `PatchAutomationUI` | ECS Fargate service (256 CPU/512 MB), internal ALB (300s idle timeout for SSE), CloudWatch log group |
 
 ### Sample Environment (optional)
 
@@ -22,8 +23,9 @@ AWS CDK stacks for Intelligent Patch Automation.
 
 ```bash
 # From project root (recommended)
-./deploy.sh infra         # All 4 stacks
-./deploy.sh solution      # Solution stacks only (3 stacks + agent)
+./deploy.sh infra         # All 5 stacks
+./deploy.sh solution      # Solution stacks only (4 stacks + agent)
+./deploy.sh ui            # UI stack only
 
 # Or directly with CDK
 cd infra
@@ -31,7 +33,7 @@ npm ci
 npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
 
 # Solution stacks only
-npx cdk deploy PatchAutomationNetworking PatchAutomationSecurity PatchAutomationAgentCorePermissions \
+npx cdk deploy PatchAutomationNetworking PatchAutomationSecurity PatchAutomationAgentCorePermissions PatchAutomationUI \
   -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
 
 # Skip Config recorder (if account already has one)

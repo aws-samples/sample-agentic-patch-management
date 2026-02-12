@@ -110,10 +110,11 @@ Both `deploy.sh` and `chat.sh` auto-source `.env` from the project root.
 ### Deploy Targets
 
 ```bash
-./deploy.sh solution      # Solution only: core infra (3 stacks) + agent
-./deploy.sh all           # Everything: core infra + sample environment + agent
+./deploy.sh solution      # Solution only: core infra (4 stacks) + agent
+./deploy.sh all           # Everything: core infra + sample environment + agent + UI
 ./deploy.sh agent         # Redeploy agent only
-./deploy.sh infra         # All 4 CDK stacks (no agent)
+./deploy.sh ui            # Deploy Web UI only (Fargate + ALB)
+./deploy.sh infra         # All 5 CDK stacks (no agent)
 ./deploy.sh env           # Python venv setup only
 ./deploy.sh destroy-demo  # Remove sample environment (keeps solution infra)
 ./deploy.sh destroy-all   # Full cleanup
@@ -126,6 +127,7 @@ Both `deploy.sh` and `chat.sh` auto-source `.env` from the project root.
 | `PatchAutomationNetworking` | Solution | VPC, subnets (public/private/isolated), NAT gateways, flow logs |
 | `PatchAutomationSecurity` | Solution | Security groups, instance IAM role, S3 compliance bucket, SQS workflow queue, AWS Config recorder |
 | `PatchAutomationAgentCorePermissions` | Solution | IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3) |
+| `PatchAutomationUI` | Solution | ECS Fargate service, internal ALB, CloudWatch logs — serves the Web UI |
 | `PatchAutomationVulnerabilityDriven` | Sample Environment | 15 EC2 instances (5 dev/5 staging/5 prod), maintenance windows, ALBs, patch baselines, CloudWatch alarms |
 
 The sample environment stack deploys and destroys independently. Use `./deploy.sh destroy-demo` to remove it while keeping the solution infrastructure intact.
@@ -181,6 +183,22 @@ Browser-based operations console with dashboard and conversational chat.
 Dashboard: KPI bar, environment status cards, vulnerability table, activity feed, compliance summary, decision explainability table.
 
 Chat: Conversational agent with streaming responses, specialist indicators, and approval buttons for phased rollout.
+
+### Deployed (Fargate)
+
+The `PatchAutomationUI` stack deploys the UI as a single Fargate container behind an internal ALB. The container runs a multi-stage Docker build: Node builds the React frontend, Python serves it via FastAPI alongside the API backend.
+
+```bash
+./deploy.sh ui    # Deploy or update the UI stack
+```
+
+The ALB URL is printed after deployment and available in CloudFormation outputs. The ALB is internal (private subnets only) — access it via VPN, bastion host, or modify the stack for internet-facing if needed.
+
+The Docker build requires `agent/.bedrock_agentcore.yaml` to exist (created by `./deploy.sh agent`). Deploy the agent before building the UI container.
+
+SSE streaming is supported with a 300-second ALB idle timeout.
+
+### Local Development
 
 ```bash
 # Backend (port 8000)
