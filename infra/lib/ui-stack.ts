@@ -11,6 +11,7 @@ import * as path from 'path';
 export interface UIStackProps extends cdk.StackProps {
   vpc: ec2.Vpc;
   agentCoreRoleArn?: string;
+  certificateArn?: string;
 }
 
 export class UIStack extends cdk.Stack {
@@ -120,11 +121,10 @@ export class UIStack extends cdk.Stack {
       },
     });
 
-    // ALB — internal only (private subnets)
+    // ALB — internet-facing for operator access
     const alb = new elbv2.ApplicationLoadBalancer(this, 'UIALB', {
       vpc: props.vpc,
-      internetFacing: false,
-      loadBalancerName: 'patch-automation-ui',
+      internetFacing: true,
     });
 
     // Fargate service
@@ -136,26 +136,61 @@ export class UIStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
     });
 
-    // ALB listener + target group
-    const listener = alb.addListener('HTTPListener', {
-      port: 80,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-    });
+    // ALB listeners — HTTPS if certificate provided, HTTP fallback otherwise
+    if (props.certificateArn) {
+      // HTTPS listener (primary)
+      const httpsListener = alb.addListener('HTTPSListener', {
+        port: 443,
+        protocol: elbv2.ApplicationProtocol.HTTPS,
+        certificates: [elbv2.ListenerCertificate.fromArn(props.certificateArn)],
+        sslPolicy: elbv2.SslPolicy.TLS13_RES,
+      });
 
-    listener.addTargets('UITarget', {
-      port: 8000,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      targets: [service],
-      healthCheck: {
-        path: '/api/health',
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(5),
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 3,
-      },
-      // SSE streaming needs long idle timeout
-      deregistrationDelay: cdk.Duration.seconds(30),
-    });
+      httpsListener.addTargets('UITarget', {
+        port: 8000,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        targets: [service],
+        healthCheck: {
+          path: '/api/health',
+          interval: cdk.Duration.seconds(30),
+          timeout: cdk.Duration.seconds(5),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 3,
+        },
+        deregistrationDelay: cdk.Duration.seconds(30),
+      });
+
+      // HTTP → HTTPS redirect
+      alb.addListener('HTTPRedirect', {
+        port: 80,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        defaultAction: elbv2.ListenerAction.redirect({
+          protocol: 'HTTPS',
+          port: '443',
+          permanent: true,
+        }),
+      });
+    } else {
+      // HTTP only (no certificate)
+      const listener = alb.addListener('HTTPListener', {
+        port: 80,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+      });
+
+      listener.addTargets('UITarget', {
+        port: 8000,
+        protocol: elbv2.ApplicationProtocol.HTTP,
+        targets: [service],
+        healthCheck: {
+          path: '/api/health',
+          interval: cdk.Duration.seconds(30),
+          timeout: cdk.Duration.seconds(5),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 3,
+        },
+        deregistrationDelay: cdk.Duration.seconds(30),
+      });
+    }
 
     // Allow ALB to reach Fargate tasks
     service.connections.allowFrom(alb, ec2.Port.tcp(8000), 'ALB to Fargate');
@@ -166,9 +201,10 @@ export class UIStack extends cdk.Stack {
     this.albDnsName = alb.loadBalancerDnsName;
 
     // Outputs
+    const protocol = props.certificateArn ? 'https' : 'http';
     new cdk.CfnOutput(this, 'UIUrl', {
-      value: `http://${alb.loadBalancerDnsName}`,
-      description: 'Patch Automation UI URL (internal ALB)',
+      value: `${protocol}://${alb.loadBalancerDnsName}`,
+      description: 'Patch Automation UI URL',
     });
 
     new cdk.CfnOutput(this, 'UILogGroupName', {

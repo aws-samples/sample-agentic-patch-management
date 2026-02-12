@@ -21,7 +21,7 @@ if (!env.account) {
 }
 
 // ── Solution Infrastructure (required) ─────────────────────────────
-// These 3 stacks are the core solution. Deploy with: ./deploy.sh infra
+// Core stacks deployed by: ./deploy.sh
 
 // Core networking infrastructure
 const networkingStack = new NetworkingStack(app, 'PatchAutomationNetworking', {
@@ -52,7 +52,7 @@ new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
 // ── Sample Environment (optional) ──────────────────────────────────
 // 15 EC2 instances across dev/staging/prod with maintenance windows,
 // ALBs, patch baselines, and CloudWatch alarms.
-// Deploy with: ./deploy.sh all  |  Destroy with: ./deploy.sh destroy-demo
+// Deploy with: ./deploy.sh --with-demo  |  Destroy with: ./deploy.sh destroy --demo-only
 
 const vulnerabilityPatchingStack = new VulnerabilityDrivenPatchingStack(app, 'PatchAutomationVulnerabilityDriven', {
   env,
@@ -75,6 +75,7 @@ const uiStack = new UIStack(app, 'PatchAutomationUI', {
   env,
   vpc: networkingStack.vpc,
   agentCoreRoleArn: (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') ? agentCoreRoleArn : undefined,
+  certificateArn: process.env.ACM_CERTIFICATE_ARN || undefined,
   description: 'Web UI for Intelligent Patch Automation (Fargate + ALB)',
 });
 uiStack.addDependency(networkingStack);

@@ -94,8 +94,10 @@ async def auth_middleware(request: Request, call_next):
         return JSONResponse(status_code=401, content={"error": "Unauthorized"})
     return await call_next(request)
 
-# Load AgentCore config
-AGENT_DIR = Path(__file__).parent.parent.parent / "agent"
+# Load AgentCore config — resolve for both local dev and Docker container
+_local_agent_dir = Path(__file__).parent.parent.parent / "agent"
+_docker_agent_dir = Path("/app/agent")
+AGENT_DIR = _local_agent_dir if _local_agent_dir.exists() else _docker_agent_dir
 CONFIG_PATH = AGENT_DIR / ".bedrock_agentcore.yaml"
 
 _agent_arn = None
@@ -404,10 +406,10 @@ def _fetch_vulnerabilities():
                 findings.append({
                     "cve_id": vuln.get("vulnerabilityId", "N/A"),
                     "severity": sev,
-                    "cvss_score": vuln.get("cvss", [{}])[0].get("baseScore"),
+                    "cvss_score": (vuln.get("cvss") or [{}])[0].get("baseScore") if vuln.get("cvss") else None,
                     "title": f.get("title", ""),
                     "environment": env,
-                    "resource_id": f.get("resources", [{}])[0].get("id", ""),
+                    "resource_id": f.get("resources", [{}])[0].get("id", "") if f.get("resources") else "",
                     "fix_available": f.get("fixAvailable", "UNKNOWN"),
                 })
 
@@ -472,12 +474,12 @@ def _fetch_reports() -> dict:
     try:
         s3.head_bucket(Bucket=bucket)
     except Exception:
-        return {"activities": [], "compliance": None}
+        return {"activities": [], "compliance": None, "report_details": []}
 
     # List all report keys for last 30 days (few API calls via month-prefix)
     objects = _list_report_keys(s3, bucket, days=30)
     if not objects:
-        return {"activities": [], "compliance": None}
+        return {"activities": [], "compliance": None, "report_details": []}
 
     # Read report JSON bodies in parallel (10 threads)
     reports: list[tuple[dict, dict]] = []  # (s3_obj, parsed_json)

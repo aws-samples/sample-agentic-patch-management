@@ -78,14 +78,20 @@ cd intelligent-patch-automation
 cp .env.example .env
 # Edit .env — set AWS_PROFILE and AWS_REGION
 
-# 2. Deploy everything
+# 2. Enable HTTPS (optional, recommended)
+./setup-tls.sh
+# Generates a self-signed cert, imports to ACM, adds ARN to .env.
+# Browser will show a certificate warning — accept it to proceed.
+# For production, use an ACM public cert with your domain instead.
+
+# 3. Deploy everything
 ./deploy.sh
 
 # That's it. The script handles:
 #   - Python venv + dependencies
 #   - AgentCore agent deployment
 #   - Auto-detects the AgentCore IAM role ARN
-#   - CDK bootstrap + infrastructure (3 stacks)
+#   - CDK bootstrap + infrastructure (4 stacks)
 #   - Docker build + Fargate UI deployment
 
 # To include sample EC2 instances for testing:
@@ -106,6 +112,7 @@ Both `deploy.sh` and `chat.sh` auto-source `.env` from the project root.
 | `AWS_REGION` | Yes | Defaults to `us-east-1` |
 | `AGENTCORE_ROLE_ARN` | No | Auto-detected after agent deploy. Set only if you have multiple AgentCore roles. |
 | `API_KEY` | No | Enables API key auth on the web UI |
+| `ACM_CERTIFICATE_ARN` | No | Enables HTTPS on the ALB. Run `./setup-tls.sh` to generate a self-signed cert, or use your own ACM certificate ARN. |
 
 ### Deploy Commands
 
@@ -127,7 +134,7 @@ The default `./deploy.sh` handles the full deployment sequence automatically: Py
 | `PatchAutomationNetworking` | Solution | VPC, subnets (public/private/isolated), NAT gateways, flow logs |
 | `PatchAutomationSecurity` | Solution | Security groups, instance IAM role, S3 compliance bucket, SQS workflow queue, AWS Config recorder |
 | `PatchAutomationAgentCorePermissions` | Solution | IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3) |
-| `PatchAutomationUI` | Solution | ECS Fargate service, internal ALB, CloudWatch logs — serves the Web UI |
+| `PatchAutomationUI` | Solution | ECS Fargate service, ALB (HTTPS when cert provided), CloudWatch logs — serves the Web UI |
 | `PatchAutomationVulnerabilityDriven` | Sample Environment | 15 EC2 instances (5 dev/5 staging/5 prod), maintenance windows, ALBs, patch baselines, CloudWatch alarms |
 
 The sample environment stack deploys and destroys independently. Use `./deploy.sh destroy --demo-only` to remove it while keeping the solution infrastructure intact.
@@ -186,17 +193,27 @@ Chat: Conversational agent with streaming responses, specialist indicators, and 
 
 ### Deployed (Fargate)
 
-The `PatchAutomationUI` stack deploys the UI as a single Fargate container behind an internal ALB. The container runs a multi-stage Docker build: Node builds the React frontend, Python serves it via FastAPI alongside the API backend.
+The `PatchAutomationUI` stack deploys the UI as a single Fargate container behind an ALB. The container runs a multi-stage Docker build: Node builds the React frontend, Python serves it via FastAPI alongside the API backend.
 
 ```bash
 ./deploy.sh ui    # Redeploy after UI code changes
 ```
 
-The ALB URL is printed after deployment and available in CloudFormation outputs. The ALB is internal (private subnets only) — access it via VPN, bastion host, or modify the stack for internet-facing if needed.
+The ALB URL is printed after deployment and available in CloudFormation outputs.
 
 The Docker build requires `agent/.bedrock_agentcore.yaml` to exist (created by `./deploy.sh agent`). Deploy the agent before building the UI container.
 
 SSE streaming is supported with a 300-second ALB idle timeout.
+
+### TLS / HTTPS
+
+The ALB serves HTTPS when `ACM_CERTIFICATE_ARN` is set in `.env`, otherwise HTTP.
+
+| Approach | When to use | Setup |
+|----------|-------------|-------|
+| `./setup-tls.sh` | Quick start, pilot, internal use | One command. Browser shows cert warning (expected for self-signed). |
+| ACM public certificate | Production with custom domain | Request in ACM console with DNS validation. Free, auto-renewing, no browser warnings. Set the ARN in `.env`. |
+| No certificate | Local testing, VPN-only access | Leave `ACM_CERTIFICATE_ARN` unset. ALB serves HTTP on port 80. |
 
 ### Local Development
 
@@ -258,6 +275,7 @@ GenAI observability: `CloudWatch Console → GenAI Observability → AgentCore` 
 
 ## Security
 
+- HTTPS support via ACM certificate (self-signed or CA-issued). Run `./setup-tls.sh` for quick setup, or provide your own `ACM_CERTIFICATE_ARN` in `.env`. For production, use an ACM public certificate with DNS validation (free, auto-renewing) or import your organization's CA-signed certificate.
 - API key authentication (opt-in via `API_KEY` env var)
 - Input validation and rate limiting (20 req/min) on the web UI API
 - Instance ID regex validation on all SSM operations
