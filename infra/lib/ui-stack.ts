@@ -29,6 +29,7 @@ export class UIStack extends cdk.Stack {
     const image = new ecr_assets.DockerImageAsset(this, 'UIImage', {
       directory: path.join(__dirname, '..', '..'),  // project root
       file: 'Dockerfile',
+      platform: ecr_assets.Platform.LINUX_AMD64,  // Fargate runs x86_64
       exclude: ['infra/node_modules', 'infra/cdk.out', 'venv', '.git', 'node_modules'],
     });
 
