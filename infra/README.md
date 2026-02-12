@@ -22,19 +22,16 @@ AWS CDK stacks for Intelligent Patch Automation.
 ## Deploy
 
 ```bash
-# From project root (recommended)
-./deploy.sh infra         # All 5 stacks
-./deploy.sh solution      # Solution stacks only (4 stacks + agent)
-./deploy.sh ui            # UI stack only
+# From project root (recommended — handles ordering automatically)
+./deploy.sh               # Full solution
+./deploy.sh --with-demo   # Full solution + sample environment
+./deploy.sh ui            # UI stack only (after agent is deployed)
 
-# Or directly with CDK
-cd infra
-npm ci
-npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
-
-# Solution stacks only
-npx cdk deploy PatchAutomationNetworking PatchAutomationSecurity PatchAutomationAgentCorePermissions PatchAutomationUI \
+# Or directly with CDK (advanced — you manage ordering)
+cd infra && npm ci
+npx cdk deploy PatchAutomationNetworking PatchAutomationSecurity PatchAutomationAgentCorePermissions \
   -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
+npx cdk deploy PatchAutomationUI -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
 
 # Skip Config recorder (if account already has one)
 npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
@@ -43,16 +40,13 @@ npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigReco
 ## Destroy
 
 ```bash
-# Sample environment only (keeps solution infra)
-./deploy.sh destroy-demo
-
-# Everything
-./deploy.sh destroy-all
+./deploy.sh destroy              # Everything
+./deploy.sh destroy --demo-only  # Sample environment only
 ```
 
 ## Context Parameters
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `agentCoreRoleArn` | Yes | ARN of the AgentCore runtime IAM role |
+| `agentCoreRoleArn` | Yes | ARN of the AgentCore runtime IAM role (auto-detected by deploy.sh) |
 | `skipConfigRecorder` | No | Set to `true` if account already has an AWS Config recorder |

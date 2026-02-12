@@ -76,20 +76,18 @@ cd intelligent-patch-automation
 cp .env.example .env
 # Edit .env — set AWS_PROFILE and AWS_REGION
 
-# 2. Deploy agent first (creates the AgentCore role)
-./deploy.sh agent
+# 2. Deploy everything
+./deploy.sh
 
-# 3. Get your AgentCore role ARN and add it to .env
-aws iam list-roles \
-  --query 'Roles[?starts_with(RoleName,`AmazonBedrockAgentCoreSDKRuntime`)].Arn' \
-  --output text
-# Paste into .env as AGENTCORE_ROLE_ARN=...
+# That's it. The script handles:
+#   - Python venv + dependencies
+#   - AgentCore agent deployment
+#   - Auto-detects the AgentCore IAM role ARN
+#   - CDK bootstrap + infrastructure (3 stacks)
+#   - Docker build + Fargate UI deployment
 
-# 4a. Deploy solution + sample environment (recommended for first-time setup)
-./deploy.sh all
-
-# 4b. OR deploy solution only (if you have your own EC2 instances)
-./deploy.sh solution
+# To include sample EC2 instances for testing:
+./deploy.sh --with-demo
 ```
 
 ---
@@ -104,21 +102,21 @@ Both `deploy.sh` and `chat.sh` auto-source `.env` from the project root.
 |----------|----------|-------------|
 | `AWS_PROFILE` | Yes | AWS CLI named profile |
 | `AWS_REGION` | Yes | Defaults to `us-east-1` |
-| `AGENTCORE_ROLE_ARN` | For infra | AgentCore runtime role ARN (deploy agent first, then list roles) |
+| `AGENTCORE_ROLE_ARN` | No | Auto-detected after agent deploy. Set only if you have multiple AgentCore roles. |
 | `API_KEY` | No | Enables API key auth on the web UI |
 
-### Deploy Targets
+### Deploy Commands
 
 ```bash
-./deploy.sh solution      # Solution only: core infra (4 stacks) + agent
-./deploy.sh all           # Everything: core infra + sample environment + agent + UI
-./deploy.sh agent         # Redeploy agent only
-./deploy.sh ui            # Deploy Web UI only (Fargate + ALB)
-./deploy.sh infra         # All 5 CDK stacks (no agent)
-./deploy.sh env           # Python venv setup only
-./deploy.sh destroy-demo  # Remove sample environment (keeps solution infra)
-./deploy.sh destroy-all   # Full cleanup
+./deploy.sh               # Full solution: infra + agent + UI
+./deploy.sh --with-demo   # Full solution + sample EC2 environment
+./deploy.sh agent         # Redeploy agent only (after code changes)
+./deploy.sh ui            # Redeploy UI only (after code changes)
+./deploy.sh destroy       # Destroy ALL infrastructure
+./deploy.sh destroy --demo-only  # Destroy sample environment only
 ```
+
+The default `./deploy.sh` handles the full deployment sequence automatically: Python venv → agent → role detection → CDK infra → UI. No manual steps between.
 
 ### Infrastructure Stacks
 
@@ -130,7 +128,7 @@ Both `deploy.sh` and `chat.sh` auto-source `.env` from the project root.
 | `PatchAutomationUI` | Solution | ECS Fargate service, internal ALB, CloudWatch logs — serves the Web UI |
 | `PatchAutomationVulnerabilityDriven` | Sample Environment | 15 EC2 instances (5 dev/5 staging/5 prod), maintenance windows, ALBs, patch baselines, CloudWatch alarms |
 
-The sample environment stack deploys and destroys independently. Use `./deploy.sh destroy-demo` to remove it while keeping the solution infrastructure intact.
+The sample environment stack deploys and destroys independently. Use `./deploy.sh destroy --demo-only` to remove it while keeping the solution infrastructure intact.
 
 If your account already has an AWS Config recorder, pass `-c skipConfigRecorder=true` when deploying:
 ```bash
@@ -189,7 +187,7 @@ Chat: Conversational agent with streaming responses, specialist indicators, and 
 The `PatchAutomationUI` stack deploys the UI as a single Fargate container behind an internal ALB. The container runs a multi-stage Docker build: Node builds the React frontend, Python serves it via FastAPI alongside the API backend.
 
 ```bash
-./deploy.sh ui    # Deploy or update the UI stack
+./deploy.sh ui    # Redeploy after UI code changes
 ```
 
 The ALB URL is printed after deployment and available in CloudFormation outputs. The ALB is internal (private subnets only) — access it via VPN, bastion host, or modify the stack for internet-facing if needed.
