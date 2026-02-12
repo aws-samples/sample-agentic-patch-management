@@ -59,11 +59,13 @@ Decision logic: if the next maintenance window is within the SLA deadline → SC
 
 ## Prerequisites
 
-- Python 3.9+
-- Node.js 18+ (for CDK)
+- Python 3.11+
+- Node.js 18+
 - Docker (for building the UI container image)
 - AWS CLI v2 configured with a named profile
 - AWS account with Bedrock model access enabled (Claude Sonnet)
+
+The deploy script validates all prerequisites and versions before starting.
 
 ---
 

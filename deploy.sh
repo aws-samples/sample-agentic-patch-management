@@ -62,14 +62,41 @@ check_prereqs() {
     local need_node=${2:-false}
     local need_docker=${3:-false}
 
-    if [ "$need_python" = true ] && ! command -v python3 &> /dev/null; then
-        print_error "Python 3 required"
+    if ! command -v aws &> /dev/null; then
+        print_error "AWS CLI v2 required. Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
         exit 1
     fi
-    if [ "$need_node" = true ] && ! command -v node &> /dev/null; then
-        print_error "Node.js 18+ required (for CDK)"
-        exit 1
+
+    if [ "$need_python" = true ]; then
+        if ! command -v python3 &> /dev/null; then
+            print_error "Python 3.11+ required"
+            exit 1
+        fi
+        local py_version
+        py_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        if python3 -c "import sys; exit(0 if sys.version_info >= (3,11) else 1)" 2>/dev/null; then
+            print_status "Python $py_version"
+        else
+            print_error "Python 3.11+ required (found $py_version)"
+            exit 1
+        fi
     fi
+
+    if [ "$need_node" = true ]; then
+        if ! command -v node &> /dev/null; then
+            print_error "Node.js 18+ required"
+            exit 1
+        fi
+        local node_major
+        node_major=$(node -e "console.log(process.versions.node.split('.')[0])")
+        if [ "$node_major" -ge 18 ] 2>/dev/null; then
+            print_status "Node.js $(node --version)"
+        else
+            print_error "Node.js 18+ required (found $(node --version))"
+            exit 1
+        fi
+    fi
+
     if [ "$need_docker" = true ]; then
         if ! command -v docker &> /dev/null; then
             print_error "Docker required (CDK builds the UI container image locally)"
@@ -79,10 +106,7 @@ check_prereqs() {
             print_error "Docker daemon not running. Start Docker Desktop and try again."
             exit 1
         fi
-    fi
-    if ! command -v aws &> /dev/null; then
-        print_error "AWS CLI v2 required"
-        exit 1
+        print_status "Docker $(docker --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
     fi
 }
 
