@@ -275,12 +275,24 @@ GenAI observability: `CloudWatch Console → GenAI Observability → AgentCore` 
 
 ## Security
 
-- HTTPS support via ACM certificate (self-signed or CA-issued). Run `./setup-tls.sh` for quick setup, or provide your own `ACM_CERTIFICATE_ARN` in `.env`. For production, use an ACM public certificate with DNS validation (free, auto-renewing) or import your organization's CA-signed certificate.
+- HTTPS via ACM certificate (`./setup-tls.sh` for self-signed, or your own)
 - API key authentication (opt-in via `API_KEY` env var)
-- Input validation and rate limiting (20 req/min) on the web UI API
+- Input validation and rate limiting (20 req/min)
 - Instance ID regex validation on all SSM operations
 - IAM least privilege — write access only for SSM commands and S3 compliance reports
 - Human approval gates between environments during phased rollout
+
+### Production Hardening
+
+The solution ships ready for pilot use. For production, consider these additions:
+
+| Area | Recommendation | How |
+|------|---------------|-----|
+| Authentication | Add user login via corporate IdP | Configure ALB OIDC authentication rule with your IdP (Okta, Azure AD, etc.) — no code changes needed. Or add a Cognito user pool with hosted UI. |
+| TLS | Replace self-signed cert | Use an ACM public certificate with DNS validation (free, auto-renewing) tied to your domain. |
+| Authorization | Role-based access control | Add JWT claims parsing in `server.py` middleware to restrict patch execution to specific roles (e.g., read-only for viewers, write for operators). |
+| Network | Restrict ALB access | Switch ALB to internal + access via VPN, or add WAF rules to restrict by IP/CIDR. |
+| Audit | User action logging | Log authenticated user identity with each agent invocation for compliance audit trails. |
 
 ---
 
@@ -320,17 +332,8 @@ cd infra && npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c sk
 ## Usage Examples
 
 ```bash
-# Via web UI
-cd ui/api && python3 server.py    # Start backend
-cd ui/frontend && npm run dev     # Start frontend
-# Open http://localhost:5173
-
-# Via CLI
-./chat.sh
 ./chat.sh -m "What critical vulnerabilities do we have?"
 ./chat.sh -m "Handle CVE-2025-38527 in dev"
 ./chat.sh -m "Show SLA breaches this week"
-
-# Direct agent invocation
-cd agent && agentcore invoke '{"prompt": "Show dev instances"}'
+./chat.sh -m "Patch all critical CVEs in staging"
 ```
