@@ -1,0 +1,159 @@
+# Response templates for consistent operator-facing output.
+# Each template defines the exact structure an agent must follow.
+# Agents select the template matching their response type.
+#
+# Placeholders use {field} syntax — agents fill from tool data.
+# Tables use exact column headers — never add/remove/rename columns.
+
+# ─── VULNERABILITY AGENT TEMPLATES ───
+
+vuln_scan:
+  description: "Vulnerability scan results (multi-CVE)"
+  agent: vulnerability_analyst
+  structure: |
+    STATUS_LINE: {emoji} {total_findings} vulnerabilities across {instance_count} instances in {environments}
+
+    SEVERITY_SUMMARY (one line):
+    CRITICAL: {n} | HIGH: {n} | MEDIUM: {n} | LOW: {n}
+
+    TABLE (top 10 by CVSS, then alphabetical CVE ID for ties):
+    | CVE ID | CVSS | Severity | Instances | Environment | Exposure |
+
+    Exposure = from get_resource_dependencies impact_level. If not called, omit column.
+    Instances = count, not full IDs. Append instance IDs in parentheses only if ≤3.
+
+    FOOTER: "{unique_cves} unique CVEs across {total_findings} findings. All/N have fixes available."
+
+vuln_detail:
+  description: "Single CVE deep-dive"
+  agent: vulnerability_analyst
+  structure: |
+    STATUS_LINE: {emoji} {cve_id} — {severity} ({cvss}) — {short_description}
+
+    OVERVIEW TABLE (always this exact layout):
+    | Field       | Value              |
+    |-------------|--------------------|
+    | CVE ID      | {cve_id}           |
+    | CVSS        | {score} ({severity})|
+    | Status      | {ACTIVE/RESOLVED}  |
+    | Fix         | {YES/NO}           |
+    | Package     | {package_name}     |
+    | Instances   | {count}            |
+    | Environment | {env_list}         |
+
+    ATTACK VECTOR: 2-3 sentences max. What can an attacker do and how.
+
+    AFFECTED INSTANCES (only if ≤10):
+    - {instance_id} ({environment}, Exposure: {impact_level})
+
+    RISK CONTEXT: 1-2 sentences combining CVSS + exposure + environment to give operator the real-world risk.
+
+vuln_empty:
+  description: "No vulnerabilities found"
+  agent: vulnerability_analyst
+  structure: |
+    STATUS_LINE: ✅ {environment} — no active vulnerabilities detected
+
+    One sentence confirming zero findings across all severity levels.
+    Do NOT speculate about why (no "this indicates..." or "this could mean...").
+
+# ─── PATCH MANAGER TEMPLATES ───
+
+patch_compliance:
+  description: "SSM patch compliance status"
+  agent: patch_manager
+  structure: |
+    STATUS_LINE: {emoji} {environment} — {non_compliant}/{total} instances need patches ({total_missing} missing)
+
+    TABLE:
+    | Instance ID | Missing | Security | Installed | Last Scan |
+
+    Missing = missing_count. Security = security_non_compliant_count. Last Scan = operation_end_time.
+
+    SLA (if severity provided):
+    "SLA: {sla_hours}hr ({framework}) — {hours_remaining}hr remaining"
+
+patch_execution:
+  description: "Patch operation initiated"
+  agent: patch_manager
+  structure: |
+    STATUS_LINE: {emoji} {decision} patching initiated for {environment} — {instance_count} instances
+
+    DECISION BOX:
+    - Mode: {EMERGENCY|SCHEDULED}
+    - SLA: {sla_hours}hr ({framework}) | Window: {hours_until}hr | Decision: {EMERGENCY|SCHEDULED}
+    - Command ID: {command_id} (or Window Task: {task_id})
+    - Instances: {count}
+
+    SCOPE: List instance IDs (if ≤10) or "{count} instances in {environment}".
+
+    WHAT HAPPENS NEXT: 1-2 sentences. "Monitor with command ID above. Say 'check status' when ready."
+
+command_status:
+  description: "SSM command execution status"
+  agent: patch_manager
+  structure: |
+    STATUS_LINE: {emoji} Command {command_id} — {overall_status}
+
+    SUMMARY: ✅ {success} succeeded | ❌ {failed} failed | ⏳ {in_progress} in progress
+
+    TABLE (only if mixed results or failures):
+    | Instance ID | Status | Detail |
+
+    Detail = first 100 chars of output for failed instances. Omit for success.
+
+    IF all success: "All {n} instances patched successfully."
+    IF in progress: "Patching in progress. Check again in 2-3 minutes."
+    IF failures: "Recommend: check failed instance logs or initiate rollback."
+
+compliance_report:
+  description: "Compliance report generated"
+  agent: patch_manager
+  structure: |
+    STATUS_LINE: {emoji} Compliance report generated — {cve_id} in {environment}
+
+    REPORT SUMMARY:
+    | Field        | Value           |
+    |--------------|-----------------|
+    | Report ID    | {report_id}     |
+    | CVE          | {cve_id}        |
+    | Environment  | {environment}   |
+    | Decision     | {EMERGENCY/SCHEDULED} |
+    | SLA          | {sla_hours}hr ({source}) |
+    | Time to Patch| {hours}hr       |
+    | SLA Met      | {YES/NO/N/A}    |
+    | S3 Location  | {s3_uri}        |
+
+# ─── COMPLIANCE ANALYST TEMPLATES ───
+
+compliance_overview:
+  description: "Compliance report query results"
+  agent: compliance_analyst
+  structure: |
+    STATUS_LINE: {emoji} {total_reports} reports in last {days} days — {breach_count} SLA breaches ({breach_rate}%)
+
+    If total_reports = 0: "No compliance reports found for this period. This means no patching activity was recorded — not that compliance is 100%."
+
+    BREAKDOWN TABLE (if reports exist):
+    | Severity | Reports | SLA Met | SLA Breached |
+
+    ENVIRONMENT TABLE (if reports exist):
+    | Environment | Reports | Breach Rate |
+
+    TREND: "{direction_emoji} {metric} vs previous period" or "No baseline for comparison" if first period.
+
+    TOP RECOMMENDATIONS: 2-3 specific, data-driven actions. Reference actual numbers.
+
+# ─── SUPERVISOR TEMPLATES ───
+
+next_steps:
+  description: "Next steps section (appended by supervisor to every response)"
+  agent: supervisor
+  structure: |
+    ## Next Steps
+    Exactly 3 numbered actions. Rules:
+    - Each references specific data from the response (CVE IDs, instance IDs, environments, scores)
+    - ONLY reference environments where data actually exists. If vulns are only in test, do not suggest prod/staging actions unless checking if they're affected.
+    - Use enterprise vocabulary: TRIAGE, PATCH, VERIFY, AUDIT, ROLLBACK, BLAST RADIUS, STAGED ROLLOUT
+    - Under 80 characters each
+    - Never repeat the same action type

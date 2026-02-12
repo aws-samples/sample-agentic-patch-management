@@ -8,6 +8,7 @@ from strands.models import BedrockModel
 from bedrock_agentcore.memory import MemoryClient
 from helper.memory_hooks import AgentCoreMemoryHook
 from helper.workflow_events import WorkflowTrackingHook
+from helper.template_loader import get_templates_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,9 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
         )
         hooks.append(workflow_hook)
     
+    # Inject response templates for this agent
+    full_prompt = system_prompt + get_templates_for_agent(name)
+
     # Create and return agent
     return Agent(
         name=name,
@@ -67,7 +71,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             temperature=0.1,
             max_tokens=max_tokens
         ),
-        system_prompt=system_prompt,
+        system_prompt=full_prompt,
         tools=tools,
         hooks=hooks
     )

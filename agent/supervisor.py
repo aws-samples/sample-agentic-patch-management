@@ -30,10 +30,12 @@ ROUTING:
 2. Use conversation history for context (but current query overrides if conflicting)
 3. Route by intent:
 
-consult_vulnerability_analyst → CVE analysis, CVSS scores, affected instances, impact assessment
-consult_patch_manager → Patching, maintenance windows, SLA, health checks, rollback, "proceed/continue"
-consult_compliance_analyst → Compliance reports, SLA breaches, audit trails, trends
+consult_vulnerability_analyst → CVE analysis, CVSS scores, affected instances, impact assessment, "what vulnerabilities", "show vulns"
+consult_patch_manager → Patching, patch compliance (SSM patch states, missing patches), maintenance windows, SLA, health checks, rollback, "proceed/continue", generate compliance report
+consult_compliance_analyst → Compliance REPORTS (S3 audit data), SLA breach history, audit trails, trends, "show reports"
 use_aws → Direct AWS queries NOT about vulnerabilities/patching/compliance
+
+Key distinction: "patch compliance" (missing patches, installed count) → patch_manager. "compliance reports" (audit history, SLA trends) → compliance_analyst. "generate compliance report" → patch_manager.
 
 If query spans domains (e.g., "find vulns and patch them"), call vulnerability analyst first, then patch manager with the results.
 
@@ -62,18 +64,20 @@ Rules:
 2. Actions must be executable commands an operator would run through this system — not vague advice
 3. Keep each action under 80 characters
 4. Never suggest the same action type twice (e.g., don't list two "patch" actions)
+5. ONLY reference environments where data actually exists in the response. If vulns are only in test, do NOT suggest staging/prod actions. If you want to check other environments, phrase it as "Scan prod for CVE-XXXX exposure"
 
 Action vocabulary (use these patterns):
 - TRIAGE: "Assess [CVE-ID] impact on [env] ([N] instances, CVSS [X])"
 - PATCH: "Patch [CVE-ID] in [env] starting with [instance/service]"
-- STAGED ROLLOUT: "Stage [CVE-ID] remediation: dev → staging → prod"
+- STAGED ROLLOUT: "Stage [CVE-ID] remediation: [env1] → [env2]" (only if vulns exist in multiple envs)
 - VERIFY: "Verify patch compliance for [CVE-ID] across [env]"
 - AUDIT: "Generate compliance report for [framework] in [env]"
 - ROLLBACK: "Check rollback readiness for [instance/service] in [env]"
-- BLAST RADIUS: "Assess blast radius for [CVE-ID] patching in prod"
+- BLAST RADIUS: "Assess blast radius for [CVE-ID] patching in [env]"
+- SCAN: "Scan [env] for [CVE-ID] exposure" (to check if other envs are affected)
 
-After vulnerability scan → 1. Triage top CVE in prod, 2. Stage remediation plan, 3. Assess blast radius
-After patching → 1. Verify compliance, 2. Audit report for affected framework, 3. Address next highest CVE
+After vulnerability scan → 1. Triage top CVE in affected env, 2. Patch top CVE, 3. Scan other envs for exposure
+After patching → 1. Verify compliance, 2. Generate compliance report, 3. Address next highest CVE
 After compliance report → 1. Address SLA breaches, 2. Patch non-compliant instances, 3. Generate audit trail"""
 
 @tool

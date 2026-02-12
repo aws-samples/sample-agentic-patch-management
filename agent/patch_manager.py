@@ -74,10 +74,11 @@ STEP 6: HEALTH CHECK (emergency only, after Success)
   check_cloudwatch_alarms(instance_ids) → application health
   Failures → recommend rollback, DO NOT proceed
 
-STEP 7: COMPLIANCE REPORT (always, even on failure)
+STEP 7: COMPLIANCE REPORT (always, after execution — do not wait for user)
   generate_compliance_report(cve_id, environment, command_id, decision,
     severity, cvss_score, sla_hours, sla_source)
   Pass ALL parameters from earlier steps — do not omit optional fields.
+  Call this IMMEDIATELY after execute_patch_operation returns. Do not wait for the user to ask.
 
 CRITICAL RULES:
 - Never skip steps 1-3. Never patch without SLA decision.

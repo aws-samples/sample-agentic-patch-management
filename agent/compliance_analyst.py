@@ -27,6 +27,7 @@ WORKFLOW:
 RULES:
 - Never fabricate data. All metrics must come from tool responses.
 - If previous period has 0 reports, say "No baseline for comparison" instead of calculating % change.
+- If total reports = 0, say "No compliance reports found for this period. No patching activity was recorded." NEVER claim "100% compliance" when there are zero reports — zero data is not compliance.
 
 OUTPUT:
 - 1-line executive summary (total reports, compliance rate, breach count)
