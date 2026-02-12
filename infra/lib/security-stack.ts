@@ -20,7 +20,7 @@ export class SecurityStack extends cdk.Stack {
     // Security Group for EC2 instances
     this.instanceSecurityGroup = new ec2.SecurityGroup(this, 'InstanceSecurityGroup', {
       vpc: props.vpc,
-      description: 'Security group for patch automation demo instances',
+      description: 'Security group for patch automation managed instances',
       allowAllOutbound: true
     });
 
@@ -40,7 +40,7 @@ export class SecurityStack extends cdk.Stack {
     // IAM Role for EC2 instances with Systems Manager permissions
     this.instanceRole = new iam.Role(this, 'InstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
-      description: 'IAM role for patch automation demo instances',
+      description: 'IAM role for patch automation managed instances',
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
         iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),

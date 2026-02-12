@@ -3,7 +3,7 @@
 ## Pre-Presentation Setup (5 min before)
 
 ```bash
-cd /path/to/reinvent25-cop407-agentic-patch-management
+cd /path/to/intelligent-patch-automation
 
 # Verify deployment
 ./deploy.sh agent
