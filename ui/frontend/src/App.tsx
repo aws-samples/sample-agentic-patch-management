@@ -4,7 +4,7 @@ import Header from "@cloudscape-design/components/header";
 import Button from "@cloudscape-design/components/button";
 import ChatPanel from "./components/ChatPanel";
 import DashboardPanel from "./components/DashboardPanel";
-import ErrorBoundary from "./components/ErrorBoundary";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
 // Workflow tracker disabled — files kept for future use
 // import { useWorkflowState } from "./hooks/useWorkflowState";
@@ -46,7 +46,7 @@ export default function App() {
                 ariaLabel="Collapse dashboard"
               />
             </div>
-            <ErrorBoundary fallbackLabel="Dashboard">
+            <ErrorBoundary>
               <DashboardPanel
                 onChatPrefill={handleChatPrefill}
               />
@@ -87,7 +87,7 @@ export default function App() {
 
           {/* Chat content */}
           <div style={{ flex: 1, overflow: "hidden" }}>
-            <ErrorBoundary fallbackLabel="Chat">
+            <ErrorBoundary>
               <ChatPanel
                 messages={messages}
                 isStreaming={isStreaming}
