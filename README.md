@@ -132,7 +132,7 @@ The default `./deploy.sh` handles the full deployment sequence automatically: Py
 | Stack | Type | What It Creates |
 |-------|------|-----------------|
 | `PatchAutomationNetworking` | Solution | VPC, subnets (public/private/isolated), NAT gateways, flow logs |
-| `PatchAutomationSecurity` | Solution | Security groups, instance IAM role, S3 compliance bucket, SQS workflow queue, AWS Config recorder |
+| `PatchAutomationSecurity` | Solution | Security groups, instance IAM role, S3 compliance bucket, AWS Config recorder |
 | `PatchAutomationAgentCorePermissions` | Solution | IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3) |
 | `PatchAutomationUI` | Solution | ECS Fargate service, ALB (HTTPS when cert provided), CloudWatch logs — serves the Web UI |
 | `PatchAutomationVulnerabilityDriven` | Sample Environment | 15 EC2 instances (5 dev/5 staging/5 prod), maintenance windows, ALBs, patch baselines, CloudWatch alarms |
