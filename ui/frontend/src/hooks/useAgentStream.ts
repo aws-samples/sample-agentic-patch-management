@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef } from "react";
-import type { WorkflowEvent } from "./useWorkflowState";
 
 export interface ChatMessage {
   id: string;
@@ -24,18 +23,6 @@ const TOOL_LABELS: Record<string, string> = {
   use_aws: "⚙️ Consulting AWS Services",
 };
 
-// Task 3.1: Accept optional workflow event callback
-interface UseAgentStreamOptions {
-  onWorkflowEvent?: (event: WorkflowEvent) => void;
-}
-
-const WORKFLOW_EVENT_TYPES = new Set([
-  "workflow_start",
-  "workflow_step",
-  "workflow_data",
-  "workflow_env_done",
-]);
-
 /**
  * Hook for streaming chat with the patch automation agent via SSE.
  *
@@ -44,7 +31,7 @@ const WORKFLOW_EVENT_TYPES = new Set([
  * consider persisting sessionId to localStorage if cross-reload continuity
  * is needed — the backend (AgentCore memory) already supports it.
  */
-export function useAgentStream(options: UseAgentStreamOptions = {}) {
+export function useAgentStream() {
   const [state, setState] = useState<StreamState>({
     messages: [],
     isStreaming: false,
@@ -52,9 +39,6 @@ export function useAgentStream(options: UseAgentStreamOptions = {}) {
   });
 
   const abortRef = useRef<AbortController | null>(null);
-  // Store callback in ref to avoid it being a useCallback dependency
-  const workflowCbRef = useRef(options.onWorkflowEvent);
-  workflowCbRef.current = options.onWorkflowEvent;
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -160,11 +144,6 @@ export function useAgentStream(options: UseAgentStreamOptions = {}) {
                   ),
                 }));
               }
-
-              // Task 3.2 & 3.3: Forward workflow events to callback
-              if (WORKFLOW_EVENT_TYPES.has(event.type)) {
-                workflowCbRef.current?.(event as WorkflowEvent);
-              }
             } catch {
               // skip malformed SSE lines
             }
@@ -197,8 +176,6 @@ export function useAgentStream(options: UseAgentStreamOptions = {}) {
       messages: [],
       sessionId: `web-${crypto.randomUUID().replace(/-/g, "")}`,
     }));
-    // Task 3.4: Fire reset event to workflow callback
-    workflowCbRef.current?.({ type: "reset" });
   }, []);
 
   return {

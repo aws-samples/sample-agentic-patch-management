@@ -81,95 +81,66 @@ After patching → 1. Verify compliance, 2. Generate compliance report, 3. Addre
 After compliance report → 1. Address SLA breaches, 2. Patch non-compliant instances, 3. Generate audit trail"""
 
 
+def _route_to_specialist(specialist_name: str, agent_factory_fn, query: str,
+                         keywords: list[str], memory_id: str | None, session_id: str) -> str:
+    """Shared routing logic for all specialist consultations.
+    
+    Enriches the query with conversation context, creates a stateless specialist
+    agent, invokes it, and returns the response text.
+    """
+    from helper.context_helper import get_relevant_context
+    from helper.decision_logger import get_decision_logger
+    from types import SimpleNamespace
+
+    decision_logger = get_decision_logger("supervisor")
+    decision_logger.log_routing_decision(
+        user_query=query,
+        specialist=specialist_name,
+        keywords_matched=keywords,
+        confidence="high"
+    )
+
+    context_str = get_relevant_context(memory_id, session_id, max_turns=5)
+
+    if context_str:
+        logger.info(f"✓ Passing {len(context_str)} chars of context to {specialist_name}")
+        enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
+    else:
+        logger.info(f"No context available for {specialist_name}")
+        enhanced_query = query
+
+    context = SimpleNamespace(memory_id=None, session_id=session_id)
+    agent = agent_factory_fn(context)
+    result = agent(enhanced_query)
+    return result.message['content'][0]['text']
+
+
 def _make_tools(memory_id: str | None, session_id: str):
     """Create tool functions with captured context (no globals needed)."""
 
     @tool
     def consult_vulnerability_analyst(query: str) -> str:
         """Get vulnerability analysis from security specialist."""
-        from helper.context_helper import get_relevant_context
-        from helper.decision_logger import get_decision_logger
-        from types import SimpleNamespace
-
-        decision_logger = get_decision_logger("supervisor")
-        decision_logger.log_routing_decision(
-            user_query=query,
-            specialist="vulnerability_analyst",
-            keywords_matched=["CVE", "vulnerability", "security"],
-            confidence="high"
+        return _route_to_specialist(
+            "vulnerability_analyst", gather_vulnerabilities, query,
+            ["CVE", "vulnerability", "security"], memory_id, session_id
         )
-
-        context_str = get_relevant_context(memory_id, session_id, max_turns=5)
-
-        if context_str:
-            logger.info(f"✓ Passing {len(context_str)} chars of context to vulnerability analyst")
-            enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
-        else:
-            logger.info("No context available for vulnerability analyst")
-            enhanced_query = query
-
-        context = SimpleNamespace(memory_id=None, session_id=session_id)
-        vuln_agent = gather_vulnerabilities(context)
-        result = vuln_agent(enhanced_query)
-        return result.message['content'][0]['text']
 
     @tool
     def consult_patch_manager(query: str) -> str:
         """Get patch deployment plan from infrastructure specialist."""
-        from helper.context_helper import get_relevant_context
-        from helper.decision_logger import get_decision_logger
-        from types import SimpleNamespace
-
-        decision_logger = get_decision_logger("supervisor")
-        decision_logger.log_routing_decision(
-            user_query=query,
-            specialist="patch_manager",
-            keywords_matched=["patch", "instance", "deploy"],
-            confidence="high"
+        return _route_to_specialist(
+            "patch_manager", patching_operations, query,
+            ["patch", "instance", "deploy"], memory_id, session_id
         )
-
-        context_str = get_relevant_context(memory_id, session_id, max_turns=5)
-
-        if context_str:
-            logger.info(f"✓ Passing {len(context_str)} chars of context to patch manager")
-            enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
-        else:
-            logger.info("No context available for patch manager")
-            enhanced_query = query
-
-        context = SimpleNamespace(memory_id=None, session_id=session_id)
-        patch_agent = patching_operations(context)
-        result = patch_agent(enhanced_query)
-        return result.message['content'][0]['text']
 
     @tool
     def consult_compliance_analyst(query: str) -> str:
         """Get compliance reporting and audit trail analysis."""
-        from helper.context_helper import get_relevant_context
-        from helper.decision_logger import get_decision_logger
-        from types import SimpleNamespace
-
-        decision_logger = get_decision_logger("supervisor")
-        decision_logger.log_routing_decision(
-            user_query=query,
-            specialist="compliance_analyst",
-            keywords_matched=["compliance", "report", "audit"],
-            confidence="high"
+        return _route_to_specialist(
+            "compliance_analyst", analyze_compliance, query,
+            ["compliance", "report", "audit"], memory_id, session_id
         )
-
-        context_str = get_relevant_context(memory_id, session_id, max_turns=5)
-
-        if context_str:
-            logger.info(f"✓ Passing {len(context_str)} chars of context to compliance analyst")
-            enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
-        else:
-            logger.info("No context available for compliance analyst")
-            enhanced_query = query
-
-        context = SimpleNamespace(memory_id=None, session_id=session_id)
-        compliance_agent = analyze_compliance(context)
-        result = compliance_agent(enhanced_query)
-        return result.message['content'][0]['text']
 
     return [consult_vulnerability_analyst, consult_patch_manager, consult_compliance_analyst]
 

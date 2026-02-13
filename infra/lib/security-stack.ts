@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as config from 'aws-cdk-lib/aws-config';
 import { Construct } from 'constructs';
 
@@ -182,33 +181,5 @@ export class SecurityStack extends cdk.Stack {
       description: 'S3 bucket for patch compliance reports'
     });
 
-    // SQS FIFO queue for real-time workflow event transport
-    // Agent (AgentCore container) sends events -> FastAPI SSE endpoint receives them
-    const workflowEventsQueue = new sqs.Queue(this, 'WorkflowEventsQueue', {
-      queueName: 'patch-automation-workflow-events.fifo',
-      fifo: true,
-      contentBasedDeduplication: false,  // We provide explicit dedup IDs
-      retentionPeriod: cdk.Duration.hours(1),  // Events are ephemeral
-      visibilityTimeout: cdk.Duration.seconds(30),
-      receiveMessageWaitTime: cdk.Duration.seconds(1),  // Enable long polling
-    });
-
-    // Grant AgentCore role access to send/receive workflow events
-    if (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') {
-      const agentCoreRole = iam.Role.fromRoleArn(this, 'AgentCoreRoleForSqs', agentCoreRoleArn);
-      workflowEventsQueue.grantSendMessages(agentCoreRole);
-      workflowEventsQueue.grantConsumeMessages(agentCoreRole);
-    }
-
-    new cdk.CfnOutput(this, 'WorkflowEventsQueueUrl', {
-      value: workflowEventsQueue.queueUrl,
-      description: 'SQS FIFO queue URL for workflow event transport',
-      exportName: 'WorkflowEventsQueueUrl',
-    });
-
-    new cdk.CfnOutput(this, 'WorkflowEventsQueueArn', {
-      value: workflowEventsQueue.queueArn,
-      description: 'SQS FIFO queue ARN for workflow event transport',
-    });
   }
 }

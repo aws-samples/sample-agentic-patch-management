@@ -11,8 +11,6 @@ import VulnTable from "./VulnTable";
 import ActivityTable from "./ActivityTable";
 import ComplianceSummary from "./ComplianceSummary";
 import ExplainabilityTable from "./ExplainabilityTable";
-// Workflow tracker disabled — component kept for future use
-// import WorkflowTracker from "./WorkflowTracker";
 import { useDashboard } from "../hooks/useDashboard";
 
 interface Props {

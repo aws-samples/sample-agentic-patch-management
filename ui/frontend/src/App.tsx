@@ -6,11 +6,8 @@ import ChatPanel from "./components/ChatPanel";
 import DashboardPanel from "./components/DashboardPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
-// Workflow tracker disabled — files kept for future use
-// import { useWorkflowState } from "./hooks/useWorkflowState";
 
 export default function App() {
-  // const { state: workflowState, dispatch, estimatedRemainingMs } = useWorkflowState();
   const { messages, isStreaming, sessionId, sendMessage, stopStreaming, clearMessages } =
     useAgentStream();
   const [chatPrefill, setChatPrefill] = useState("");

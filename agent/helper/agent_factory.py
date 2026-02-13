@@ -6,7 +6,6 @@ from strands import Agent
 from strands.models import BedrockModel
 from bedrock_agentcore.memory import MemoryClient
 from helper.memory_hooks import AgentCoreMemoryHook
-from helper.workflow_events import WorkflowTrackingHook
 from helper.template_loader import get_templates_for_agent
 
 logger = logging.getLogger(__name__)
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens: int = 6000) -> Agent:
     """
-    Create agent with AgentCore memory integration and workflow tracking.
+    Create agent with AgentCore memory integration.
     
     Args:
         name: Agent name (e.g., "supervisor", "vulnerability_analyst")
@@ -44,14 +43,6 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             session_id=session_id
         )
         hooks.append(memory_hook)
-    
-    # Attach workflow tracking hook to specialist agents (not supervisor)
-    if name != "patch-automation-supervisor":
-        workflow_hook = WorkflowTrackingHook(
-            session_id=session_id,
-            agent_name=name,
-        )
-        hooks.append(workflow_hook)
     
     # Inject response templates for this agent
     full_prompt = system_prompt + get_templates_for_agent(name)

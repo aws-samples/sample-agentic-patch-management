@@ -139,22 +139,6 @@ export class AgentCorePermissionsStack extends cdk.Stack {
             }
           }
         }),
-        
-        // SQS Permissions for Workflow Event Transport
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'sqs:SendMessage',
-            'sqs:ReceiveMessage',
-            'sqs:DeleteMessage',
-            'sqs:DeleteMessageBatch',
-            'sqs:GetQueueUrl',
-            'sqs:GetQueueAttributes',
-          ],
-          resources: [
-            `arn:aws:sqs:*:${this.account}:patch-automation-workflow-events.fifo`,
-          ]
-        }),
 
         // Read-only permissions for use_aws fallback tool.
         // Scoped to services relevant to patch automation context.
