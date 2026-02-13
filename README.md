@@ -144,8 +144,6 @@ If your account already has an AWS Config recorder, pass `-c skipConfigRecorder=
 cd infra && npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
 ```
 
-S3 compliance buckets use `RETAIN` removal policy — they persist after stack deletion to preserve audit data.
-
 ### Instance Requirements
 
 For the agent to manage your EC2 instances, they need:
@@ -292,7 +290,27 @@ The solution ships ready for pilot use. For production, consider these additions
 | TLS | Replace self-signed cert | Use an ACM public certificate with DNS validation (free, auto-renewing) tied to your domain. |
 | Authorization | Role-based access control | Add JWT claims parsing in `server.py` middleware to restrict patch execution to specific roles (e.g., read-only for viewers, write for operators). |
 | Network | Restrict ALB access | Switch ALB to internal + access via VPN, or add WAF rules to restrict by IP/CIDR. |
+| Data Retention | Preserve compliance reports on teardown | Change S3 `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `security-stack.ts`. Default is `DESTROY` for clean teardown. |
 | Audit | User action logging | Log authenticated user identity with each agent invocation for compliance audit trails. |
+
+---
+
+## Teardown
+
+```bash
+# Destroy sample environment only (keeps solution infrastructure)
+./deploy.sh destroy --demo-only
+
+# Destroy ALL infrastructure (prompts for confirmation)
+./deploy.sh destroy
+```
+
+`destroy` removes all CDK stacks in dependency order. S3 buckets are auto-emptied (including versioned objects) and deleted with the stack — no manual cleanup needed.
+
+The AgentCore agent runtime is managed separately. To fully remove:
+```bash
+agentcore destroy    # Removes the agent container and ECR repository
+```
 
 ---
 

@@ -108,7 +108,8 @@ export class SecurityStack extends cdk.Stack {
         versioned: true,
         encryption: s3.BucketEncryption.S3_MANAGED,
         blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        autoDeleteObjects: true,
         lifecycleRules: [{
           expiration: cdk.Duration.days(90),
           noncurrentVersionExpiration: cdk.Duration.days(30)
@@ -157,12 +158,15 @@ export class SecurityStack extends cdk.Stack {
     }
 
     // S3 bucket for compliance reports
+    // NOTE: removalPolicy is DESTROY for clean teardown. For production,
+    // change to RETAIN and remove autoDeleteObjects to preserve audit data.
     const complianceReportsBucket = new s3.Bucket(this, 'ComplianceReportsBucket', {
       bucketName: `patch-compliance-reports-${cdk.Stack.of(this).account}`,
       versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
       lifecycleRules: [{
         expiration: cdk.Duration.days(365)
       }]
