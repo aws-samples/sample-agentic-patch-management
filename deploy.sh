@@ -49,6 +49,7 @@ show_help() {
     echo "  1. cp .env.example .env"
     echo "  2. Edit .env — set AWS_PROFILE and AWS_REGION"
     echo "  3. ./deploy.sh"
+    echo "  4. ./connect-ui.sh  (opens UI via SSM port forwarding)"
     echo ""
     echo "That's it. The script handles agent deployment, role detection,"
     echo "CDK bootstrap, infrastructure, and UI automatically."
@@ -251,7 +252,10 @@ deploy_ui() {
     print_status "Web UI deployed"
 
     echo ""
-    echo -e "${GREEN}UI URL:${NC}"
+    echo -e "${GREEN}UI is on an internal ALB (not publicly accessible).${NC}"
+    echo -e "Connect via SSM port forwarding: ${BLUE}./connect-ui.sh${NC}"
+    echo ""
+    echo -e "Internal ALB DNS:"
     aws cloudformation describe-stacks \
         --stack-name PatchAutomationUI \
         --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' \

@@ -76,6 +76,6 @@ const uiStack = new UIStack(app, 'PatchAutomationUI', {
   vpc: networkingStack.vpc,
   agentCoreRoleArn: (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') ? agentCoreRoleArn : undefined,
   certificateArn: process.env.ACM_CERTIFICATE_ARN || undefined,
-  description: 'Web UI for Intelligent Patch Automation (Fargate + ALB)',
+  description: 'Web UI for Intelligent Patch Automation (internal ALB + SSM port forwarding)',
 });
 uiStack.addDependency(networkingStack);

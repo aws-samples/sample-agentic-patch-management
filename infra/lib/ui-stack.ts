@@ -30,7 +30,7 @@ export class UIStack extends cdk.Stack {
     const image = new ecr_assets.DockerImageAsset(this, 'UIImage', {
       directory: path.join(__dirname, '..', '..'),  // project root
       file: 'Dockerfile',
-      platform: ecr_assets.Platform.LINUX_AMD64,  // Fargate runs x86_64
+      platform: ecr_assets.Platform.LINUX_AMD64,
       exclude: ['infra/node_modules', 'infra/cdk.out', 'venv', '.git', 'node_modules'],
     });
 
@@ -42,13 +42,12 @@ export class UIStack extends cdk.Stack {
       ],
     });
 
-    // Task role — needs same AWS permissions as the local server.py
+    // Task role - needs same AWS permissions as the local server.py
     const taskRole = new iam.Role(this, 'TaskRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
     });
 
-    // The UI backend calls: EC2, SSM, Inspector, STS, AgentCore
-    // Read-only describe/list actions — resource-level scoping not supported
+    // Read-only describe/list actions - resource-level scoping not supported
     taskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
@@ -61,23 +60,16 @@ export class UIStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // S3 — scoped to compliance reports bucket only
+    // S3 - scoped to compliance reports bucket only
     const accountId = cdk.Stack.of(this).account;
     const complianceBucketArn = `arn:aws:s3:::patch-compliance-reports-${accountId}`;
     taskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: [
-        's3:GetObject',
-        's3:ListBucket',
-        's3:HeadBucket',
-      ],
-      resources: [
-        complianceBucketArn,
-        `${complianceBucketArn}/*`,
-      ],
+      actions: ['s3:GetObject', 's3:ListBucket', 's3:HeadBucket'],
+      resources: [complianceBucketArn, `${complianceBucketArn}/*`],
     }));
 
-    // AgentCore — scoped to specific agent ARN if provided, otherwise wildcard
+    // AgentCore
     taskRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock-agentcore:InvokeAgentRuntime'],
@@ -108,10 +100,7 @@ export class UIStack extends cdk.Stack {
         'STATIC_DIR': '/app/static',
         'AWS_DEFAULT_REGION': cdk.Stack.of(this).region,
       },
-      logging: ecs.LogDrivers.awsLogs({
-        logGroup,
-        streamPrefix: 'ui',
-      }),
+      logging: ecs.LogDrivers.awsLogs({ logGroup, streamPrefix: 'ui' }),
       healthCheck: {
         command: ['CMD-SHELL', 'curl -f http://localhost:8000/api/health || exit 1'],
         interval: cdk.Duration.seconds(30),
@@ -121,10 +110,10 @@ export class UIStack extends cdk.Stack {
       },
     });
 
-    // ALB — internet-facing for operator access
+    // ALB - internal only, accessed via SSM port forwarding
     const alb = new elbv2.ApplicationLoadBalancer(this, 'UIALB', {
       vpc: props.vpc,
-      internetFacing: true,
+      internetFacing: false,
     });
 
     // Fargate service
@@ -136,9 +125,8 @@ export class UIStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
     });
 
-    // ALB listeners — HTTPS if certificate provided, HTTP fallback otherwise
+    // HTTPS if certificate provided, HTTP fallback otherwise
     if (props.certificateArn) {
-      // HTTPS listener (primary)
       const httpsListener = alb.addListener('HTTPSListener', {
         port: 443,
         protocol: elbv2.ApplicationProtocol.HTTPS,
@@ -160,7 +148,7 @@ export class UIStack extends cdk.Stack {
         deregistrationDelay: cdk.Duration.seconds(30),
       });
 
-      // HTTP → HTTPS redirect
+      // HTTP -> HTTPS redirect
       alb.addListener('HTTPRedirect', {
         port: 80,
         protocol: elbv2.ApplicationProtocol.HTTP,
@@ -171,7 +159,6 @@ export class UIStack extends cdk.Stack {
         }),
       });
     } else {
-      // HTTP only (no certificate)
       const listener = alb.addListener('HTTPListener', {
         port: 80,
         protocol: elbv2.ApplicationProtocol.HTTP,
@@ -204,7 +191,7 @@ export class UIStack extends cdk.Stack {
     const protocol = props.certificateArn ? 'https' : 'http';
     new cdk.CfnOutput(this, 'UIUrl', {
       value: `${protocol}://${alb.loadBalancerDnsName}`,
-      description: 'Patch Automation UI URL',
+      description: 'Internal ALB URL (access via SSM port forwarding)',
     });
 
     new cdk.CfnOutput(this, 'UILogGroupName', {

@@ -96,6 +96,10 @@ cp .env.example .env
 
 # To include sample EC2 instances for testing:
 ./deploy.sh --with-demo
+
+# 4. Connect to the UI (internal ALB, accessed via SSM port forwarding)
+./connect-ui.sh
+# Opens https://localhost:8443 in your browser
 ```
 
 ---
@@ -134,7 +138,7 @@ The default `./deploy.sh` handles the full deployment sequence automatically: Py
 | `PatchAutomationNetworking` | Solution | VPC, subnets (public/private/isolated), NAT gateways, flow logs |
 | `PatchAutomationSecurity` | Solution | Security groups, instance IAM role, S3 compliance bucket, AWS Config recorder |
 | `PatchAutomationAgentCorePermissions` | Solution | IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3) |
-| `PatchAutomationUI` | Solution | ECS Fargate service, ALB (HTTPS when cert provided), CloudWatch logs — serves the Web UI |
+| `PatchAutomationUI` | Solution | ECS Fargate service, internal ALB (HTTPS when cert provided), CloudWatch logs — serves the Web UI. Accessed via SSM port forwarding. |
 | `PatchAutomationVulnerabilityDriven` | Sample Environment | 15 EC2 instances (5 dev/5 staging/5 prod), maintenance windows, ALBs, patch baselines, CloudWatch alarms |
 
 The sample environment stack deploys and destroys independently. Use `./deploy.sh destroy --demo-only` to remove it while keeping the solution infrastructure intact.
@@ -191,13 +195,16 @@ Chat: Conversational agent with streaming responses, specialist indicators, and 
 
 ### Deployed (Fargate)
 
-The `PatchAutomationUI` stack deploys the UI as a single Fargate container behind an ALB. The container runs a multi-stage Docker build: Node builds the React frontend, Python serves it via FastAPI alongside the API backend.
+The `PatchAutomationUI` stack deploys the UI as a single Fargate container behind an internal ALB (not publicly accessible). The container runs a multi-stage Docker build: Node builds the React frontend, Python serves it via FastAPI alongside the API backend.
+
+Access the UI via SSM port forwarding — no VPN or bastion host needed:
 
 ```bash
-./deploy.sh ui    # Redeploy after UI code changes
+./deploy.sh ui        # Deploy/redeploy the UI
+./connect-ui.sh       # Start SSM tunnel, then open https://localhost:8443
 ```
 
-The ALB URL is printed after deployment and available in CloudFormation outputs.
+The `connect-ui.sh` script auto-discovers the internal ALB DNS and an SSM-managed instance, then starts the port forward. Requires the AWS CLI Session Manager plugin.
 
 The Docker build requires `agent/.bedrock_agentcore.yaml` to exist (created by `./deploy.sh agent`). Deploy the agent before building the UI container.
 
@@ -289,7 +296,7 @@ The solution ships ready for pilot use. For production, consider these additions
 | Authentication | Add user login via corporate IdP | Configure ALB OIDC authentication rule with your IdP (Okta, Azure AD, etc.) — no code changes needed. Or add a Cognito user pool with hosted UI. |
 | TLS | Replace self-signed cert | Use an ACM public certificate with DNS validation (free, auto-renewing) tied to your domain. |
 | Authorization | Role-based access control | Add JWT claims parsing in `server.py` middleware to restrict patch execution to specific roles (e.g., read-only for viewers, write for operators). |
-| Network | Restrict ALB access | Switch ALB to internal + access via VPN, or add WAF rules to restrict by IP/CIDR. |
+| Network | ALB is internal by default | Already done. Access via `./connect-ui.sh` (SSM port forwarding). For broader team access, add a VPN or Client VPN endpoint to the VPC. |
 | Data Retention | Preserve compliance reports on teardown | Change S3 `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `security-stack.ts`. Default is `DESTROY` for clean teardown. |
 | Audit | User action logging | Log authenticated user identity with each agent invocation for compliance audit trails. |
 
