@@ -3,9 +3,8 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { NetworkingStack } from '../lib/networking-stack';
-import { ComplianceStack } from '../lib/compliance-stack';
-import { SampleEnvironmentStack } from '../lib/sample/vulnerability-driven-patching-stack';
-import { AgentCorePermissionsStack } from '../lib/agentcore-permissions-stack';
+import { CoreStack } from '../lib/core-stack';
+import { SampleEnvironmentStack } from '../lib/sample/sample-environment-stack';
 import { UIStack } from '../lib/ui-stack';
 
 const app = new cdk.App();
@@ -21,67 +20,54 @@ if (!env.account) {
 
 const agentCoreRoleArn = app.node.tryGetContext('agentCoreRoleArn');
 if (!agentCoreRoleArn || agentCoreRoleArn === 'placeholder') {
-  console.warn('⚠️  agentCoreRoleArn not set. AgentCore permissions will deploy but not attach to a role.');
-  console.warn('   Pass: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
+  console.warn('agentCoreRoleArn not set. Patchy-Core will deploy but not attach to a role.');
+  console.warn('  Pass: cdk deploy -c agentCoreRoleArn=arn:aws:iam::<account>:role/<role-name>');
 }
 const resolvedRoleArn = (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder') ? agentCoreRoleArn : undefined;
 
-// ── VPC Resolution ─────────────────────────────────────────────────
-// EXISTING_VPC_ID set → use customer's VPC, skip NetworkingStack
-// Not set            → create a new VPC via NetworkingStack (demo path)
+// ── VPC ────────────────────────────────────────────────────────────
+// EXISTING_VPC_ID → use customer's VPC, skip Patchy-Network
+// Not set         → create a new VPC (demo / standalone mode)
 
 const existingVpcId = process.env.EXISTING_VPC_ID;
 let vpc: ec2.IVpc;
 let networkingStack: NetworkingStack | undefined;
 
 if (existingVpcId) {
-  const lookupStack = new cdk.Stack(app, 'PatchAutomationVpcLookup', {
-    env,
-    description: 'VPC lookup for Intelligent Patch Automation (existing VPC mode)',
-  });
+  const lookupStack = new cdk.Stack(app, 'Patchy-VpcLookup', { env });
   vpc = ec2.Vpc.fromLookup(lookupStack, 'ImportedVPC', { vpcId: existingVpcId });
 } else {
-  networkingStack = new NetworkingStack(app, 'PatchAutomationNetworking', {
+  networkingStack = new NetworkingStack(app, 'Patchy-Network', {
     env,
-    description: 'VPC, subnets, and networking for Intelligent Patch Automation',
+    description: 'Patchy: VPC, subnets, and networking',
   });
   vpc = networkingStack.vpc;
 }
 
-// ── Solution Infrastructure (always deployed) ──────────────────────
-
-// S3 compliance reports bucket + AWS Config recorder
-const complianceStack = new ComplianceStack(app, 'PatchAutomationCompliance', {
+// ── Core (always deployed) ─────────────────────────────────────────
+// S3 compliance bucket, AWS Config recorder, AgentCore IAM policy
+new CoreStack(app, 'Patchy-Core', {
   env,
   agentCoreRoleArn: resolvedRoleArn,
-  description: 'S3 compliance reports and AWS Config for Intelligent Patch Automation',
+  description: 'Patchy: S3 compliance reports, Config recorder, AgentCore IAM policy',
 });
 
-// AgentCore IAM permissions
-new AgentCorePermissionsStack(app, 'PatchAutomationAgentCorePermissions', {
-  env,
-  agentCoreRoleArn: resolvedRoleArn,
-  description: 'IAM permissions for AgentCore patch automation runtime',
-});
-
-// Web UI (Fargate + internal ALB)
-const uiStack = new UIStack(app, 'PatchAutomationUI', {
+// ── UI (deploy separately with ./deploy.sh ui) ────────────────────
+const uiStack = new UIStack(app, 'Patchy-UI', {
   env,
   vpc,
   agentCoreRoleArn: resolvedRoleArn,
   certificateArn: process.env.ACM_CERTIFICATE_ARN || undefined,
-  description: 'Web UI for Intelligent Patch Automation (internal ALB + SSM port forwarding)',
+  description: 'Patchy: Web UI (Fargate + internal ALB)',
 });
 if (networkingStack) uiStack.addDependency(networkingStack);
 
-// ── Sample Environment (optional, --with-demo) ────────────────────
-// Self-contained: creates its own SG, instance role, 15 EC2 instances,
-// maintenance windows, ALBs, patch baselines, and CloudWatch alarms.
-// Deploy: ./deploy.sh --with-demo  |  Destroy: ./deploy.sh destroy --demo-only
-
-const sampleStack = new SampleEnvironmentStack(app, 'PatchAutomationSampleEnv', {
+// ── Sample Environment (optional: --with-demo) ────────────────────
+// Self-contained: SG, instance role, 15 EC2s, maintenance windows,
+// ALBs, patch baselines, CloudWatch alarms.
+const sampleStack = new SampleEnvironmentStack(app, 'Patchy-SampleEnv', {
   env,
   vpc,
-  description: 'Sample environment: 15 EC2 instances for testing patch automation (optional)',
+  description: 'Patchy: Sample environment with 15 EC2 instances (optional)',
 });
 if (networkingStack) sampleStack.addDependency(networkingStack);

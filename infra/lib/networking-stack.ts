@@ -9,7 +9,7 @@ export class NetworkingStack extends cdk.Stack {
     super(scope, id, props);
 
     // Create VPC with proper enterprise setup
-    this.vpc = new ec2.Vpc(this, 'PatchAutomationVPC', {
+    this.vpc = new ec2.Vpc(this, 'VPC', {
       ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
       maxAzs: 3,
       
@@ -47,7 +47,7 @@ export class NetworkingStack extends cdk.Stack {
     });
 
     // Tag all VPC resources
-    cdk.Tags.of(this.vpc).add('Project', 'IntelligentPatchAutomation');
+    cdk.Tags.of(this.vpc).add('Project', 'Patchy');
 
     // Output VPC details
     new cdk.CfnOutput(this, 'VPCId', {

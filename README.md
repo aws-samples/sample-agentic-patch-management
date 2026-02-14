@@ -120,11 +120,10 @@ All scripts auto-source `.env` from the project root.
 
 | Stack | Purpose |
 |-------|---------|
-| `PatchAutomationNetworking` | VPC, subnets, NAT gateways (skipped when `EXISTING_VPC_ID` is set) |
-| `PatchAutomationCompliance` | S3 compliance reports bucket, AWS Config recorder |
-| `PatchAutomationAgentCorePermissions` | IAM policy for AgentCore runtime |
-| `PatchAutomationUI` | ECS Fargate, internal ALB, CloudWatch logs |
-| `PatchAutomationSampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-demo`) |
+| `Patchy-Network` | VPC, subnets, NAT gateways (skipped when `EXISTING_VPC_ID` is set) |
+| `Patchy-Core` | S3 compliance reports bucket, AWS Config recorder, AgentCore IAM policy |
+| `Patchy-UI` | ECS Fargate, internal ALB, CloudWatch logs |
+| `Patchy-SampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-demo`) |
 
 The sample environment is fully self-contained — it creates its own security group, instance role, and instance profile. It deploys and destroys independently: `./deploy.sh destroy --demo-only`.
 
@@ -140,11 +139,11 @@ Requirements for the existing VPC:
 - Private subnets with egress (NAT gateway) for Fargate tasks
 - DNS hostnames and DNS support enabled
 
-When set, the `PatchAutomationNetworking` stack is not created. CDK looks up the VPC at synth time using your AWS credentials.
+When set, the `Patchy-Network` stack is not created. CDK looks up the VPC at synth time using your AWS credentials.
 
 If your account already has an AWS Config recorder:
 ```bash
-cd infra && npx cdk deploy PatchAutomationCompliance -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
+cd infra && npx cdk deploy Patchy-Core -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
 ```
 
 ### Instance Requirements
@@ -274,7 +273,7 @@ The solution ships ready for pilot use. For production workloads, consider the f
 
 ### Data and Compliance
 
-- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `compliance-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean pilot teardown.
+- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `core-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean pilot teardown.
 - **S3 Object Lock**: Enable Object Lock (compliance mode) on the compliance reports bucket to make audit data immutable. Prevents accidental or malicious deletion of compliance evidence.
 - **KMS encryption**: Replace S3-managed encryption with a customer-managed KMS key for compliance reports and Config snapshots. Enables key rotation policies and CloudTrail key usage auditing.
 - **Cross-account backup**: Replicate the compliance reports bucket to a separate audit account using S3 Cross-Region Replication. Ensures reports survive even if the primary account is compromised.
@@ -325,7 +324,7 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 | Problem | Fix |
 |---------|-----|
 | Agent not responding | `agentcore status` then `agentcore launch --auto-update-on-conflict` |
-| Permission errors | Check `PatchAutomationAgentCorePermissions` stack outputs |
+| Permission errors | Check `Patchy-Core` stack outputs |
 | No instances found | Instances need SSM Agent + `Environment` tag. Check: `aws ssm describe-instance-information` |
 | Config recorder conflict | Deploy with `-c skipConfigRecorder=true` |
 | UI container unhealthy | Check logs: `aws logs tail /patch-automation/ui --follow` |

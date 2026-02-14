@@ -209,19 +209,19 @@ deploy_infra() {
     # VPC: use existing or create new
     if [ -n "$EXISTING_VPC_ID" ]; then
         print_status "Using existing VPC: $EXISTING_VPC_ID"
-        stacks="PatchAutomationVpcLookup"
+        stacks="Patchy-VpcLookup"
         stack_count=1
     else
-        stacks="PatchAutomationNetworking"
+        stacks="Patchy-Network"
         stack_count=1
     fi
 
     # Solution stacks (always)
-    stacks="$stacks PatchAutomationCompliance PatchAutomationAgentCorePermissions"
-    stack_count=$((stack_count + 2))
+    stacks="$stacks Patchy-Core"
+    stack_count=$((stack_count + 1))
 
     if [ "$include_demo" = true ]; then
-        stacks="$stacks PatchAutomationSampleEnv"
+        stacks="$stacks Patchy-SampleEnv"
         stack_count=$((stack_count + 1))
         echo -e "${BLUE}Deploying infrastructure ($stack_count stacks, including sample environment)...${NC}"
     else
@@ -260,7 +260,7 @@ deploy_ui() {
         npm ci --silent
     fi
     ensure_cdk_bootstrap
-    npx cdk deploy PatchAutomationUI \
+    npx cdk deploy Patchy-UI \
         --require-approval never \
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
     print_status "Web UI deployed"
@@ -271,7 +271,7 @@ deploy_ui() {
     echo ""
     echo -e "Internal ALB DNS:"
     aws cloudformation describe-stacks \
-        --stack-name PatchAutomationUI \
+        --stack-name Patchy-UI \
         --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' \
         --output text 2>/dev/null || echo "  (check CloudFormation outputs)"
     cd ..
@@ -285,7 +285,7 @@ destroy() {
 
     if [ "$demo_only" = true ]; then
         echo -e "${RED}Destroying sample environment...${NC}"
-        npx cdk destroy PatchAutomationSampleEnv --force \
+        npx cdk destroy Patchy-SampleEnv --force \
             -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
         print_status "Sample environment destroyed (solution infrastructure preserved)"
     else

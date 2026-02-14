@@ -39,7 +39,7 @@ fi
 # Get ALB DNS from CloudFormation
 echo "Looking up internal ALB..."
 ALB_DNS=$(aws cloudformation describe-stacks \
-    --stack-name PatchAutomationUI \
+    --stack-name Patchy-UI \
     --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' \
     --output text 2>/dev/null)
 
@@ -66,8 +66,8 @@ ALB_HOST="${ALB_HOST#http://}"
 # Find an SSM-managed instance to use as the tunnel hop
 echo "Finding SSM-managed instance..."
 INSTANCE_ID=$(aws ssm describe-instance-information \
-    --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId | [0]' \
-    --output text 2>/dev/null)
+    --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' \
+    --output text 2>/dev/null | awk '{print $1}' | head -1)
 
 if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
     echo -e "${RED}No online SSM-managed instances found.${NC}"
