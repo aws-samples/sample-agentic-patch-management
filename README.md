@@ -111,8 +111,6 @@ All scripts auto-source `.env` from the project root.
 | `./deploy.sh agent` | Redeploy agent only |
 | `./deploy.sh ui` | Redeploy UI only |
 | `./connect-ui.sh` | SSM port forward to the internal ALB |
-| `./chat.sh` | CLI chat client (interactive) |
-| `./chat.sh -m "..."` | CLI chat client (single message) |
 | `./setup-tls.sh` | Generate self-signed cert + import to ACM |
 | `./deploy.sh destroy` | Destroy ALL infrastructure |
 | `./deploy.sh destroy --demo-only` | Destroy sample environment only |
@@ -329,9 +327,11 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 
 ## Usage Examples
 
-```bash
-./chat.sh -m "What critical vulnerabilities do we have?"
-./chat.sh -m "Handle CVE-2025-38527 in dev"
-./chat.sh -m "Show SLA breaches this week"
-./chat.sh -m "Patch all critical CVEs in staging"
+Use the chat panel in the Web UI:
+
+```
+What critical vulnerabilities do we have?
+Handle CVE-2025-38527 in dev
+Show SLA breaches this week
+Patch all critical CVEs in staging
 ```

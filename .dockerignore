@@ -40,7 +40,6 @@ doc/
 
 # Conversations and test data
 conversations/
-chatbot-client/
 
 # Docker
 Dockerfile
