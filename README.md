@@ -19,6 +19,8 @@ Agent: Checking maintenance window... Emergency patching required.
 
 Agents make risk-based decisions using maintenance windows and CVSS scores. Application-layer health monitoring via CloudWatch alarms ensures safe patching. Built entirely on AWS native services.
 
+> **Note:** This implementation targets Amazon Linux 2 (yum-based patching, rollback via `yum history undo`). The architecture, agent patterns, multi-agent routing, SLA enforcement, and compliance reporting are OS-agnostic. To support other operating systems (Ubuntu/Debian, Windows, RHEL, SUSE), adapt the patching and rollback commands in `agent/helper/tools.py` to use the appropriate package manager (`apt`, `zypper`, Windows Update API via SSM `AWS-RunPowerShellScript`). SSM Patch Manager and Inspector findings work across all supported OS types without changes.
+
 ---
 
 ## Architecture
@@ -334,7 +336,7 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 
 - Manual approval required between environments in phased rollout
 - CloudWatch alarms must be pre-configured for application-layer health checks
-- Linux-only rollback (yum-based, Amazon Linux/RHEL)
+- Linux-only patching and rollback (Amazon Linux 2 / yum-based). See note at top for adapting to other OS types.
 - Single region deployment
 
 ---
