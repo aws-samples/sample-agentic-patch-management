@@ -99,6 +99,7 @@ All scripts auto-source `.env` from the project root.
 | `AWS_PROFILE` | Yes | AWS CLI named profile |
 | `AWS_REGION` | Yes | Defaults to `us-east-1` |
 | `AGENTCORE_ROLE_ARN` | No | Auto-detected after agent deploy |
+| `EXISTING_VPC_ID` | No | Use an existing VPC instead of creating one. Skips NetworkingStack. |
 | `ACM_CERTIFICATE_ARN` | No | Enables HTTPS. Run `./setup-tls.sh` or use your own ACM cert ARN. |
 | `API_KEY` | No | Enables `X-API-Key` header auth on the web UI |
 
@@ -119,17 +120,31 @@ All scripts auto-source `.env` from the project root.
 
 | Stack | Purpose |
 |-------|---------|
-| `PatchAutomationNetworking` | VPC, public/private subnets, NAT gateways |
-| `PatchAutomationSecurity` | Security groups, instance IAM role, S3 compliance bucket, AWS Config recorder |
+| `PatchAutomationNetworking` | VPC, subnets, NAT gateways (skipped when `EXISTING_VPC_ID` is set) |
+| `PatchAutomationCompliance` | S3 compliance reports bucket, AWS Config recorder |
 | `PatchAutomationAgentCorePermissions` | IAM policy for AgentCore runtime |
 | `PatchAutomationUI` | ECS Fargate, internal ALB, CloudWatch logs |
-| `PatchAutomationVulnerabilityDriven` | Sample environment: 15 EC2 instances (deploy with `--with-demo`) |
+| `PatchAutomationSampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-demo`) |
 
-The sample environment deploys and destroys independently: `./deploy.sh destroy --demo-only`.
+The sample environment is fully self-contained — it creates its own security group, instance role, and instance profile. It deploys and destroys independently: `./deploy.sh destroy --demo-only`.
+
+### Using an Existing VPC
+
+If you already have a VPC with the required subnet types, set `EXISTING_VPC_ID` in `.env`:
+
+```bash
+EXISTING_VPC_ID=vpc-0123456789abcdef0
+```
+
+Requirements for the existing VPC:
+- Private subnets with egress (NAT gateway) for Fargate tasks
+- DNS hostnames and DNS support enabled
+
+When set, the `PatchAutomationNetworking` stack is not created. CDK looks up the VPC at synth time using your AWS credentials.
 
 If your account already has an AWS Config recorder:
 ```bash
-cd infra && npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
+cd infra && npx cdk deploy PatchAutomationCompliance -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
 ```
 
 ### Instance Requirements
@@ -259,7 +274,7 @@ The solution ships ready for pilot use. For production workloads, consider the f
 
 ### Data and Compliance
 
-- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `security-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean pilot teardown.
+- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `compliance-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean pilot teardown.
 - **S3 Object Lock**: Enable Object Lock (compliance mode) on the compliance reports bucket to make audit data immutable. Prevents accidental or malicious deletion of compliance evidence.
 - **KMS encryption**: Replace S3-managed encryption with a customer-managed KMS key for compliance reports and Config snapshots. Enables key rotation policies and CloudTrail key usage auditing.
 - **Cross-account backup**: Replicate the compliance reports bucket to a separate audit account using S3 Cross-Region Replication. Ensures reports survive even if the primary account is compromised.

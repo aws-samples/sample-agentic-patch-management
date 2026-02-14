@@ -9,7 +9,7 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 
 export interface UIStackProps extends cdk.StackProps {
-  vpc: ec2.Vpc;
+  vpc: ec2.IVpc;
   agentCoreRoleArn?: string;
   certificateArn?: string;
 }

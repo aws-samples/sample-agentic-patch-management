@@ -203,12 +203,26 @@ deploy_infra() {
     fi
     ensure_cdk_bootstrap
 
-    local stacks="PatchAutomationNetworking PatchAutomationSecurity PatchAutomationAgentCorePermissions"
-    local stack_count=3
+    local stacks=""
+    local stack_count=0
+
+    # VPC: use existing or create new
+    if [ -n "$EXISTING_VPC_ID" ]; then
+        print_status "Using existing VPC: $EXISTING_VPC_ID"
+        stacks="PatchAutomationVpcLookup"
+        stack_count=1
+    else
+        stacks="PatchAutomationNetworking"
+        stack_count=1
+    fi
+
+    # Solution stacks (always)
+    stacks="$stacks PatchAutomationCompliance PatchAutomationAgentCorePermissions"
+    stack_count=$((stack_count + 2))
 
     if [ "$include_demo" = true ]; then
-        stacks="$stacks PatchAutomationVulnerabilityDriven"
-        stack_count=4
+        stacks="$stacks PatchAutomationSampleEnv"
+        stack_count=$((stack_count + 1))
         echo -e "${BLUE}Deploying infrastructure ($stack_count stacks, including sample environment)...${NC}"
     else
         echo -e "${BLUE}Deploying infrastructure ($stack_count stacks)...${NC}"
@@ -271,7 +285,7 @@ destroy() {
 
     if [ "$demo_only" = true ]; then
         echo -e "${RED}Destroying sample environment...${NC}"
-        npx cdk destroy PatchAutomationVulnerabilityDriven --force \
+        npx cdk destroy PatchAutomationSampleEnv --force \
             -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
         print_status "Sample environment destroyed (solution infrastructure preserved)"
     else
