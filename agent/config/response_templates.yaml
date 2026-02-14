@@ -124,6 +124,53 @@ compliance_report:
     | SLA Met      | {YES/NO/N/A}    |
     | S3 Location  | {s3_uri}        |
 
+    COMPLIANCE DELTA (if pre/post patch states provided):
+    | Instance ID | Before | After | Patches Applied | Compliance |
+    Before/After = missing patch count. Compliance = percentage change.
+    FOOTER: "Overall: {environment} compliance improved from {before}% → {after}%. {total_patches} patches applied."
+
+patch_dry_run:
+  description: "Patch dry-run preview results (RunPatchBaseline Scan)"
+  agent: patch_manager
+  structure: |
+    STATUS_LINE: {emoji} Dry-run complete — {total_missing} missing patches across {total_instances} instances
+
+    TABLE (per instance):
+    | Instance ID | Missing | Installed | Failed | Security NC | Status |
+
+    Missing = missing_count. Installed = installed_count. Security NC = security_non_compliant.
+
+    TOP MISSING PATCHES (if any, first 10 across all instances):
+    | Patch ID | Title | Severity | Classification | CVEs |
+
+    SUMMARY:
+    - Total missing: {total_missing}
+    - Scan command: {scan_command_id}
+    - Instances: {total_instances}
+
+    IF total_missing = 0: "All instances fully patched per SSM patch baseline. Nothing to install."
+    Note: Inspector may still report CVEs for packages where fixes aren't available in current OS repos.
+
+    CONFIRMATION: "Review the changes above. Say 'proceed' to execute patching or 'cancel' to abort."
+
+rollback_verification:
+  description: "Rollback verification results"
+  agent: patch_manager
+  structure: |
+    STATUS_LINE: {emoji} Rollback {VERIFIED/PARTIAL/FAILED} — {instance_count} instances
+
+    TABLE (per instance):
+    | Instance ID | Command | Patch State Reverted | Health |
+
+    Command = Success/Failed. Patch State Reverted = true/false/no_baseline. Health = OK/UNHEALTHY.
+    
+    PATCH STATE DETAIL (if pre_patch_state was provided):
+    | Instance ID | Before Missing | After Missing | Reverted |
+
+    IF VERIFIED: "All instances confirmed rolled back and healthy."
+    IF PARTIAL: "Some instances need manual verification. Check details above."
+    IF FAILED: "Rollback failed. Manual intervention required."
+
 # ─── COMPLIANCE ANALYST TEMPLATES ───
 
 compliance_overview:
@@ -154,6 +201,6 @@ next_steps:
     Exactly 3 numbered actions. Rules:
     - Each references specific data from the response (CVE IDs, instance IDs, environments, scores)
     - ONLY reference environments where data actually exists. If vulns are only in test, do not suggest prod/staging actions unless checking if they're affected.
-    - Use enterprise vocabulary: TRIAGE, PATCH, VERIFY, AUDIT, ROLLBACK, BLAST RADIUS, STAGED ROLLOUT
+    - Use enterprise vocabulary: TRIAGE, DRY RUN, PATCH, VERIFY, AUDIT, ROLLBACK, VERIFY ROLLBACK, STAGED ROLLOUT
     - Under 80 characters each
     - Never repeat the same action type

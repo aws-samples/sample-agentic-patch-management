@@ -2,6 +2,7 @@
 
 from helper.tools import (
     get_patch_compliance,
+    patch_dry_run,
     execute_patch_operation,
     get_command_status,
     get_maintenance_windows,
@@ -10,8 +11,9 @@ from helper.tools import (
     check_cloudwatch_alarms,
     verify_and_proceed,
     rollback_patches,
+    verify_rollback,
+    capture_patch_state,
     generate_compliance_report,
-    get_resource_dependencies
 )
 
 SYSTEM_PROMPT = """You are a patch management coordinator for EC2 infrastructure.
@@ -57,6 +59,30 @@ STEP 3: SLA DECISION (mandatory calculation)
   Never label an environment EMERGENCY while also saying "wait for dev 24hr window" —
   if SLA requires urgency, the entire pipeline must reflect that urgency.
 
+STEP 3.5: DRY RUN + PRE-PATCH SNAPSHOT
+  patch_dry_run(instance_ids) → runs RunPatchBaseline Scan, populates SSM patch data
+  THEN capture_patch_state(instance_ids) → save result as pre_patch_state
+  
+  IMPORTANT: capture_patch_state reads DescribeInstancePatchStates which is only
+  populated AFTER a scan has been run. patch_dry_run runs that scan. So always
+  call patch_dry_run FIRST, then capture_patch_state.
+  
+  Pass the capture_patch_state result directly to generate_compliance_report and
+  verify_rollback later — they handle the format automatically.
+  
+  patch_dry_run returns missing_patches per instance with id, title, severity,
+  classification, state, and cve_ids.
+  
+  If dry-run returns 0 missing patches, explain to the operator that all instances
+  are fully patched per the SSM patch baseline. Note: Inspector may still report CVEs
+  for packages where fixes aren't available in the current OS repos (e.g., kernel 4.14
+  CVEs that require kernel 5.x on Amazon Linux 2).
+  
+  Present dry-run results as a table: Instance | Missing | Severity Breakdown | Top Patches
+  Include totals: "{N} missing patches across {M} instances"
+  
+  Ask operator to confirm before proceeding to EXECUTE.
+
 STEP 4: EXECUTE
   SCHEDULED → execute_patch_operation(instance_ids, "scheduled", environment, window_id)
   EMERGENCY → execute_patch_operation(instance_ids, "immediate", environment)
@@ -74,14 +100,30 @@ STEP 6: HEALTH CHECK (emergency only, after Success)
   check_cloudwatch_alarms(instance_ids) → application health
   Failures → recommend rollback, DO NOT proceed
 
+STEP 6.5: POST-PATCH SNAPSHOT
+  capture_patch_state(instance_ids) → save result as post_patch_state
+
 STEP 7: COMPLIANCE REPORT (always, after execution — do not wait for user)
   generate_compliance_report(cve_id, environment, command_id, decision,
-    severity, cvss_score, sla_hours, sla_source)
+    severity, cvss_score, sla_hours, sla_source,
+    pre_patch_state=pre_patch_state,
+    post_patch_state=post_patch_state)
   Pass ALL parameters from earlier steps — do not omit optional fields.
-  Call this IMMEDIATELY after execute_patch_operation returns. Do not wait for the user to ask.
+  Call this IMMEDIATELY after health checks pass. Do not wait for the user to ask.
+  
+  Present the delta: "Compliance improved from {before}% → {after}%. {N} patches applied."
+
+ROLLBACK WORKFLOW:
+  When rollback is needed:
+  1. rollback_patches(instance_ids) → get command_id
+  2. verify_rollback(command_id, instance_ids, pre_patch_state=pre_patch_state)
+     Pass the capture_patch_state result from step 3.5 directly.
+     verify_rollback checks: command status, re-scans with RunPatchBaseline, compares patch counts, SSM health, CloudWatch alarms.
+  3. Report verification result. If PARTIAL or FAILED → flag for manual intervention.
 
 CRITICAL RULES:
 - Never skip steps 1-3. Never patch without SLA decision.
+- Always run dry-run (step 3.5) before execution. Operator must confirm.
 - Never proceed to next environment if current failed.
 - Never fabricate data — all values must come from tool responses.
 - Missing info (environment, CVE)? Ask the user.
@@ -113,6 +155,7 @@ def patching_operations(context):
         system_prompt=SYSTEM_PROMPT,
         tools=[
             get_patch_compliance,
+            patch_dry_run,
             execute_patch_operation,
             get_command_status,
             get_maintenance_windows,
@@ -121,8 +164,9 @@ def patching_operations(context):
             check_cloudwatch_alarms,
             verify_and_proceed,
             rollback_patches,
+            verify_rollback,
+            capture_patch_state,
             generate_compliance_report,
-            get_resource_dependencies
         ],
         context=context,
         max_tokens=12000

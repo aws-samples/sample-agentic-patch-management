@@ -11,7 +11,7 @@ import time
 import os
 from strands import tool
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from croniter import croniter
 from helper.error_handling import classify_error
 
@@ -144,6 +144,23 @@ def _normalize_environment(user_input: str) -> str:
             return canonical
     
     return user_input
+
+
+def _unwrap_patch_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Unwrap capture_patch_state output if needed.
+    
+    capture_patch_state returns {'snapshot': {iid: {...}}, 'timestamp': ..., ...}.
+    generate_compliance_report and verify_rollback expect {iid: {...}}.
+    
+    The LLM agent may pass either format. This handles both:
+    - If 'snapshot' key exists and its value is a dict → return the snapshot
+    - Otherwise assume it's already the flat {iid: {...}} format → return as-is
+    """
+    if state is None:
+        return None
+    if 'snapshot' in state and isinstance(state['snapshot'], dict):
+        return state['snapshot']
+    return state
 
 
 # ============================================================================
@@ -344,6 +361,172 @@ def get_patch_compliance(environment: str,
 
 
 @tool
+def patch_dry_run(instance_ids: List[str]) -> dict:
+    """Preview what AWS-RunPatchBaseline will install, WITHOUT installing anything.
+    
+    Runs AWS-RunPatchBaseline with Operation=Scan on target instances. This uses
+    the SAME patch baseline and logic as execute_patch_operation, so the preview
+    exactly matches what will be installed.
+    
+    After the scan, reads DescribeInstancePatches to show which patches are
+    missing (will be installed) and which are already installed.
+    
+    Call this BEFORE execute_patch_operation so operators can review changes.
+    
+    Args:
+        instance_ids: List of EC2 instance IDs to preview patches for
+    
+    Returns:
+        dict: {
+            'instances': [{instance_id, missing_patches: [{id, title, severity, state}], 
+                          installed_count, missing_count}],
+            'total_missing': int,
+            'total_instances': int,
+            'scan_command_id': str
+        }
+    """
+    try:
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
+        # Run the SAME document as execute_patch_operation, but with Scan instead of Install
+        response = ssm_client.send_command(
+            DocumentName='AWS-RunPatchBaseline',
+            InstanceIds=instance_ids,
+            Parameters={
+                'Operation': ['Scan']
+            },
+            Comment='Patch dry-run scan (preview only, no changes)'
+        )
+        scan_command_id = response['Command']['CommandId']
+
+        # Wait for scan to complete (max 5 minutes — scans can take a while)
+        for _ in range(30):
+            time.sleep(10)
+            try:
+                cmd_response = ssm_client.list_command_invocations(
+                    CommandId=scan_command_id, Details=False
+                )
+                invocations = cmd_response.get('CommandInvocations', [])
+                if invocations and all(
+                    inv['Status'] in ('Success', 'Failed', 'TimedOut', 'Cancelled')
+                    for inv in invocations
+                ):
+                    break
+            except Exception:
+                continue
+
+        # Now read the patch state that the scan populated
+        results = []
+        total_missing = 0
+
+        for instance_id in instance_ids:
+            try:
+                # Check if scan succeeded for this instance
+                inv_response = ssm_client.get_command_invocation(
+                    CommandId=scan_command_id, InstanceId=instance_id
+                )
+                if inv_response['Status'] != 'Success':
+                    results.append({
+                        'instance_id': instance_id,
+                        'status': inv_response['Status'],
+                        'missing_patches': [],
+                        'installed_count': 0,
+                        'missing_count': 0,
+                        'error': inv_response.get('StandardErrorContent', '')[:500]
+                    })
+                    continue
+
+                # Get detailed patch list — missing patches are what Install would apply
+                missing_patches = []
+                next_token = None
+                while True:
+                    kwargs = {
+                        'InstanceId': instance_id,
+                        'Filters': [
+                            {'Key': 'State', 'Values': ['Missing', 'Failed']}
+                        ],
+                        'MaxResults': 50
+                    }
+                    if next_token:
+                        kwargs['NextToken'] = next_token
+                    
+                    patches_response = ssm_client.describe_instance_patches(**kwargs)
+                    
+                    for patch in patches_response.get('Patches', []):
+                        missing_patches.append({
+                            'id': patch.get('KBId', patch.get('Title', 'unknown')),
+                            'title': patch.get('Title', 'unknown'),
+                            'severity': patch.get('Severity', 'unknown'),
+                            'classification': patch.get('Classification', 'unknown'),
+                            'state': patch.get('State', 'unknown'),
+                            'cve_ids': patch.get('CVEIds', ''),
+                            'installed_time': str(patch.get('InstalledTime', ''))
+                        })
+                    
+                    next_token = patches_response.get('NextToken')
+                    if not next_token:
+                        break
+
+                # Also get the summary counts
+                patch_state = ssm_client.describe_instance_patch_states(
+                    InstanceIds=[instance_id]
+                )
+                state_data = patch_state.get('InstancePatchStates', [{}])[0] if patch_state.get('InstancePatchStates') else {}
+                installed_count = state_data.get('InstalledCount', 0)
+                missing_count = state_data.get('MissingCount', 0)
+                failed_count = state_data.get('FailedCount', 0)
+                security_nc = state_data.get('SecurityNonCompliantCount', 0)
+
+                total_missing += missing_count
+
+                results.append({
+                    'instance_id': instance_id,
+                    'status': 'Success',
+                    'missing_patches': missing_patches[:50],  # Cap at 50 per instance for response size
+                    'missing_patches_truncated': len(missing_patches) > 50,
+                    'installed_count': installed_count,
+                    'missing_count': missing_count,
+                    'failed_count': failed_count,
+                    'security_non_compliant': security_nc
+                })
+
+            except Exception as e:
+                results.append({
+                    'instance_id': instance_id,
+                    'status': 'Error',
+                    'missing_patches': [],
+                    'installed_count': 0,
+                    'missing_count': 0,
+                    'error': str(e)[:200]
+                })
+
+        return {
+            'instances': results,
+            'total_missing': total_missing,
+            'total_instances': len(instance_ids),
+            'scan_command_id': scan_command_id,
+            'message': (
+                f'{total_missing} missing patches across {len(instance_ids)} instances will be installed'
+                if total_missing > 0
+                else f'All {len(instance_ids)} instances are fully patched — nothing to install'
+            )
+        }
+
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error running patch dry-run: {error_info}")
+        error_info["instances"] = []
+        return error_info
+    except Exception as e:
+        logger.error(f"Error running patch dry-run: {e}")
+        result = classify_error(e)
+        result["instances"] = []
+        return result
+
+
+@tool
 def execute_patch_operation(
     instance_ids: List[str],
     execution_mode: str,
@@ -415,7 +598,7 @@ def execute_patch_operation(
                 Priority=1,
                 MaxConcurrency='50%',
                 MaxErrors='10%',
-                Name=f'scheduled-patch-{environment}-{datetime.utcnow().strftime("%Y%m%d%H%M%S")}'
+                Name=f'scheduled-patch-{environment}-{datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")}'
             )
             
             # Get window details
@@ -971,6 +1154,185 @@ fi
 
 
 @tool
+def verify_rollback(command_id: str, instance_ids: List[str],
+                    pre_patch_state: Optional[Dict[str, Any]] = None) -> dict:
+    """Verify that a rollback succeeded by re-scanning and comparing against pre-patch state.
+    
+    Call this after rollback_patches completes. Performs:
+    1. Waits for rollback command to complete
+    2. Re-runs AWS-RunPatchBaseline Scan to get current patch state
+    3. Compares current state against pre_patch_state (from capture_patch_state before patching)
+    4. Runs SSM health + CloudWatch alarm checks
+    
+    This uses the same scan mechanism as patch_dry_run, so the comparison is
+    aligned with how patches were originally assessed and installed.
+    
+    Args:
+        command_id: SSM command ID from rollback_patches
+        instance_ids: List of instance IDs that were rolled back
+        pre_patch_state: Snapshot from capture_patch_state taken BEFORE patching.
+            Format: {"i-xxx": {"missing_count": 12, "installed_count": 45, ...}}
+            If provided, verifies patch counts returned to pre-patch levels.
+    
+    Returns:
+        dict: {
+            'status': 'VERIFIED' | 'PARTIAL' | 'FAILED',
+            'instances': [{instance_id, command_status, patch_state_match, health_ok}],
+            'recommendation': str
+        }
+    """
+    try:
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
+        # Step 1: Wait for rollback command to complete (max 5 min)
+        status_result = None
+        for _ in range(30):
+            time.sleep(10)
+            status_result = get_command_status(command_id, instance_ids)
+            if status_result.get('status') in ('Success', 'Failed'):
+                break
+
+        if not status_result or status_result.get('status') not in ('Success', 'Failed'):
+            return {
+                'status': 'TIMEOUT',
+                'recommendation': 'INVESTIGATE',
+                'reason': 'Rollback command did not complete within 5 minutes',
+                'command_status': status_result
+            }
+
+        # Step 2: Re-scan with RunPatchBaseline to get current state
+        patch_state_comparison = {}
+        pre_patch_state = _unwrap_patch_state(pre_patch_state)
+        if status_result.get('status') == 'Success' and pre_patch_state:
+            try:
+                # Run the same scan as patch_dry_run
+                scan_response = ssm_client.send_command(
+                    DocumentName='AWS-RunPatchBaseline',
+                    InstanceIds=instance_ids,
+                    Parameters={'Operation': ['Scan']},
+                    Comment='Post-rollback verification scan'
+                )
+                scan_cmd_id = scan_response['Command']['CommandId']
+
+                # Wait for scan (max 3 min)
+                for _ in range(18):
+                    time.sleep(10)
+                    try:
+                        cmd_resp = ssm_client.list_command_invocations(
+                            CommandId=scan_cmd_id, Details=False
+                        )
+                        invs = cmd_resp.get('CommandInvocations', [])
+                        if invs and all(i['Status'] in ('Success', 'Failed') for i in invs):
+                            break
+                    except Exception:
+                        continue
+
+                # Compare current patch state against pre-patch snapshot
+                current_state = ssm_client.describe_instance_patch_states(
+                    InstanceIds=instance_ids
+                )
+                current_map = {
+                    s['InstanceId']: s
+                    for s in current_state.get('InstancePatchStates', [])
+                }
+
+                for iid in instance_ids:
+                    before = pre_patch_state.get(iid, {})
+                    after_raw = current_map.get(iid, {})
+                    after = {
+                        'missing_count': after_raw.get('MissingCount', 0),
+                        'installed_count': after_raw.get('InstalledCount', 0),
+                    }
+                    before_missing = before.get('missing_count', 0)
+                    after_missing = after.get('missing_count', 0)
+
+                    # Rollback is verified if missing count returned to pre-patch level
+                    # (or close — exact match may not happen due to new patches released)
+                    reverted = after_missing >= before_missing
+
+                    patch_state_comparison[iid] = {
+                        'before_missing': before_missing,
+                        'after_missing': after_missing,
+                        'reverted': reverted,
+                        'before_installed': before.get('installed_count', 0),
+                        'after_installed': after.get('installed_count', 0)
+                    }
+
+            except Exception as e:
+                logger.warning(f"Post-rollback scan failed: {e}")
+
+        # Step 3: Health checks
+        ssm_health = check_instance_health(instance_ids)
+        alarm_health = check_cloudwatch_alarms(instance_ids)
+
+        # Build per-instance results
+        instance_results = []
+        all_verified = True
+        any_failed = False
+
+        for iid in instance_ids:
+            cmd_status = 'Unknown'
+            for r in status_result.get('results', []):
+                if r.get('instance_id') == iid:
+                    cmd_status = r.get('status', 'Unknown')
+                    break
+
+            state_check = patch_state_comparison.get(iid)
+            state_match = state_check['reverted'] if state_check else None
+
+            health_ok = True
+            for h in ssm_health.get('results', []):
+                if h.get('instance_id') == iid and h.get('health_score', 0) < 100:
+                    health_ok = False
+
+            if cmd_status != 'Success' or state_match is False or not health_ok:
+                all_verified = False
+            if cmd_status == 'Failed':
+                any_failed = True
+
+            instance_results.append({
+                'instance_id': iid,
+                'command_status': cmd_status,
+                'patch_state': state_check if state_check else 'no_baseline',
+                'patch_state_reverted': state_match,
+                'health_ok': health_ok
+            })
+
+        if any_failed:
+            overall_status = 'FAILED'
+            recommendation = 'MANUAL_INTERVENTION'
+        elif all_verified:
+            overall_status = 'VERIFIED'
+            recommendation = 'ROLLBACK_CONFIRMED'
+        else:
+            overall_status = 'PARTIAL'
+            recommendation = 'INVESTIGATE'
+
+        return {
+            'status': overall_status,
+            'instances': instance_results,
+            'command_status': status_result.get('status'),
+            'ssm_health': ssm_health,
+            'alarm_health': alarm_health,
+            'recommendation': recommendation,
+            'message': f'Rollback {overall_status.lower()} on {len(instance_ids)} instances'
+        }
+
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error verifying rollback: {error_info}")
+        error_info["recommendation"] = "INVESTIGATE"
+        return error_info
+    except Exception as e:
+        logger.error(f"Error verifying rollback: {e}")
+        result = classify_error(e)
+        result["recommendation"] = "INVESTIGATE"
+        return result
+
+
+@tool
 def get_resource_dependencies(resource_id: str) -> dict:
     """Analyze instance dependencies and assess patching impact.
     
@@ -1198,7 +1560,7 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
                         if len(parts) == 6:
                             cron_expr = ' '.join(parts[:5])
                         
-                        cron = croniter(cron_expr, datetime.utcnow())
+                        cron = croniter(cron_expr, datetime.now(timezone.utc))
                         next_execution = cron.get_next(datetime).isoformat() + 'Z'
                     except Exception as cron_error:
                         logger.warning(f"Could not parse cron '{schedule}': {cron_error}")
@@ -1305,6 +1667,70 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
 
 
 @tool
+def capture_patch_state(instance_ids: List[str]) -> dict:
+    """Capture current patch compliance state for instances (snapshot).
+    
+    Call this BEFORE patching to capture pre-patch state, and AFTER patching
+    to capture post-patch state. Pass both snapshots to generate_compliance_report
+    for before/after delta in the compliance report.
+    
+    Args:
+        instance_ids: List of EC2 instance IDs to snapshot
+    
+    Returns:
+        dict: {
+            'snapshot': {instance_id: {missing_count, installed_count, security_non_compliant}},
+            'timestamp': str,
+            'total_missing': int
+        }
+    """
+    try:
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
+        response = ssm_client.describe_instance_patch_states(InstanceIds=instance_ids)
+
+        snapshot = {}
+        total_missing = 0
+        for state in response.get('InstancePatchStates', []):
+            iid = state['InstanceId']
+            missing = state.get('MissingCount', 0)
+            total_missing += missing
+            snapshot[iid] = {
+                'missing_count': missing,
+                'installed_count': state.get('InstalledCount', 0),
+                'security_non_compliant': state.get('SecurityNonCompliantCount', 0),
+                'failed_count': state.get('FailedCount', 0)
+            }
+
+        # Include instances with no patch state data
+        for iid in instance_ids:
+            if iid not in snapshot:
+                snapshot[iid] = {
+                    'missing_count': 0,
+                    'installed_count': 0,
+                    'security_non_compliant': 0,
+                    'failed_count': 0
+                }
+
+        return {
+            'snapshot': snapshot,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'total_missing': total_missing,
+            'instance_count': len(instance_ids)
+        }
+
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error capturing patch state: {error_info}")
+        return error_info
+    except Exception as e:
+        logger.error(f"Error capturing patch state: {e}")
+        return classify_error(e)
+
+
+@tool
 def generate_compliance_report(
     cve_id: str,
     environment: str,
@@ -1313,12 +1739,18 @@ def generate_compliance_report(
     severity: Optional[str] = None,
     cvss_score: Optional[float] = None,
     sla_hours: Optional[int] = None,
-    sla_source: Optional[str] = None
+    sla_source: Optional[str] = None,
+    pre_patch_state: Optional[Dict[str, Any]] = None,
+    post_patch_state: Optional[Dict[str, Any]] = None
 ) -> dict:
-    """Generate minimal compliance report after patching.
+    """Generate compliance report after patching, with optional before/after delta.
     
     Call this after patching completes (get_command_status shows Success).
     Pass data from previous tool calls when available to avoid redundant API calls.
+    
+    For compliance delta, pass pre_patch_state (captured before patching) and
+    post_patch_state (captured after patching). Format for each:
+        {"i-xxx": {"missing_count": 12, "installed_count": 45, "security_non_compliant": 3}}
     
     Args:
         cve_id: CVE identifier (e.g., 'CVE-2024-1234')
@@ -1329,9 +1761,11 @@ def generate_compliance_report(
         cvss_score: CVSS score (from get_vulnerability_findings)
         sla_hours: SLA requirement hours (from get_patch_compliance)
         sla_source: SLA source framework (from get_patch_compliance)
+        pre_patch_state: Patch state before execution (from capture_patch_state)
+        post_patch_state: Patch state after execution (from capture_patch_state)
     
     Returns:
-        dict: {'report_id': str, 's3_location': str, 'sla_met': bool}
+        dict: {'report_id': str, 's3_location': str, 'sla_met': bool, 'delta': dict (if states provided)}
     """
     try:
         # First, get instance IDs from the command (paginate to get all)
@@ -1386,20 +1820,25 @@ def generate_compliance_report(
             if ssm_response['CommandInvocations']:
                 invocation = ssm_response['CommandInvocations'][0]
                 discovered_at = invocation['RequestedDateTime']
-                patched_at = invocation.get('ResponseFinishedDateTime', datetime.utcnow())
+                patched_at = invocation.get('ResponseFinishedDateTime', datetime.now(timezone.utc))
+                # Ensure both are timezone-aware for subtraction
+                if discovered_at.tzinfo is None:
+                    discovered_at = discovered_at.replace(tzinfo=timezone.utc)
+                if patched_at.tzinfo is None:
+                    patched_at = patched_at.replace(tzinfo=timezone.utc)
                 time_to_patch_hours = (patched_at - discovered_at).total_seconds() / 3600
             else:
-                discovered_at = datetime.utcnow()
-                patched_at = datetime.utcnow()
+                discovered_at = datetime.now(timezone.utc)
+                patched_at = datetime.now(timezone.utc)
                 time_to_patch_hours = 0
         except Exception as e:
             logger.warning(f"Could not get command timestamps: {e}")
-            discovered_at = datetime.utcnow()
-            patched_at = datetime.utcnow()
+            discovered_at = datetime.now(timezone.utc)
+            patched_at = datetime.now(timezone.utc)
             time_to_patch_hours = 0
         
         # Build minimal report
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
         report_id = f"{cve_id}-{environment}-{timestamp.strftime('%Y%m%d%H%M%S')}"
         
         report = {
@@ -1436,6 +1875,50 @@ def generate_compliance_report(
             }
         }
         
+        # Add compliance delta if pre/post patch states provided
+        pre_patch_state = _unwrap_patch_state(pre_patch_state)
+        post_patch_state = _unwrap_patch_state(post_patch_state)
+        if pre_patch_state and post_patch_state:
+            delta_instances = []
+            total_before_missing = 0
+            total_after_missing = 0
+            for iid in instance_ids:
+                before = pre_patch_state.get(iid, {})
+                after = post_patch_state.get(iid, {})
+                before_missing = before.get('missing_count', 0)
+                after_missing = after.get('missing_count', 0)
+                before_installed = before.get('installed_count', 0)
+                after_installed = after.get('installed_count', 0)
+                total_before_missing += before_missing
+                total_after_missing += after_missing
+                
+                before_total = before_installed + before_missing
+                after_total = after_installed + after_missing
+                before_pct = round((before_installed / before_total * 100) if before_total > 0 else 0, 1)
+                after_pct = round((after_installed / after_total * 100) if after_total > 0 else 0, 1)
+                
+                delta_instances.append({
+                    'instance_id': iid,
+                    'before_missing': before_missing,
+                    'after_missing': after_missing,
+                    'patches_applied': max(0, before_missing - after_missing),
+                    'compliance_before_pct': before_pct,
+                    'compliance_after_pct': after_pct
+                })
+            
+            total_before = sum(d['compliance_before_pct'] for d in delta_instances)
+            total_after = sum(d['compliance_after_pct'] for d in delta_instances)
+            avg_before = round(total_before / len(delta_instances), 1) if delta_instances else 0
+            avg_after = round(total_after / len(delta_instances), 1) if delta_instances else 0
+            
+            report['delta'] = {
+                'instances': delta_instances,
+                'total_patches_applied': total_before_missing - total_after_missing,
+                'avg_compliance_before': avg_before,
+                'avg_compliance_after': avg_after,
+                'compliance_improvement': round(avg_after - avg_before, 1)
+            }
+        
         # Save to S3
         s3_client = boto3.client('s3', region_name=AWS_REGION)
         bucket_name = _get_compliance_bucket_name()
@@ -1460,7 +1943,7 @@ def generate_compliance_report(
             }
         )
         
-        return {
+        result = {
             "report_id": report_id,
             "s3_location": f"s3://{bucket_name}/{object_key}",
             "sla_met": report['compliance']['sla_met'],
@@ -1471,6 +1954,17 @@ def generate_compliance_report(
                 "instances_patched": report['execution']['success_count']
             }
         }
+        
+        # Include delta summary in response if available
+        if 'delta' in report:
+            result['delta'] = {
+                'compliance_before': f"{report['delta']['avg_compliance_before']}%",
+                'compliance_after': f"{report['delta']['avg_compliance_after']}%",
+                'improvement': f"+{report['delta']['compliance_improvement']}%",
+                'total_patches_applied': report['delta']['total_patches_applied']
+            }
+        
+        return result
         
     except ClientError as e:
         error_info = classify_error(e)
@@ -1519,7 +2013,7 @@ def query_compliance_reports(
             }
         
         # Fetch reports
-        end_date = datetime.utcnow()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days_back)
         reports = _fetch_reports_from_s3(s3_client, bucket_name, start_date, end_date, 
                                          severity, environment, sla_breaches_only)
@@ -1582,7 +2076,9 @@ def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime,
             for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
                 for obj in page.get("Contents", []):
                     # Filter by actual date cutoff
-                    obj_date = obj["LastModified"].replace(tzinfo=None)
+                    obj_date = obj["LastModified"]
+                    if obj_date.tzinfo is None:
+                        obj_date = obj_date.replace(tzinfo=timezone.utc)
                     if start_date <= obj_date <= end_date:
                         objects_to_check.append(obj)
         except Exception as e:

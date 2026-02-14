@@ -31,11 +31,11 @@ ROUTING:
 3. Route by intent:
 
 consult_vulnerability_analyst → CVE analysis, CVSS scores, affected instances, impact assessment, "what vulnerabilities", "show vulns"
-consult_patch_manager → Patching, patch compliance (SSM patch states, missing patches), maintenance windows, SLA, health checks, rollback, "proceed/continue", generate compliance report
+consult_patch_manager → Patching, patch compliance (SSM patch states, missing patches), maintenance windows, SLA, health checks, rollback, rollback verification, dry-run, preview patches, "proceed/continue", generate compliance report, capture patch state
 consult_compliance_analyst → Compliance REPORTS (S3 audit data), SLA breach history, audit trails, trends, "show reports"
 use_aws → Direct AWS queries NOT about vulnerabilities/patching/compliance
 
-Key distinction: "patch compliance" (missing patches, installed count) → patch_manager. "compliance reports" (audit history, SLA trends) → compliance_analyst. "generate compliance report" → patch_manager.
+Key distinction: "patch compliance" (missing patches, installed count) → patch_manager. "compliance reports" (audit history, SLA trends) → compliance_analyst. "generate compliance report" → patch_manager. "dry run" / "preview" / "what will change" → patch_manager. "verify rollback" → patch_manager.
 
 If query spans domains (e.g., "find vulns and patch them"), call vulnerability analyst first, then patch manager with the results.
 
@@ -68,16 +68,18 @@ Rules:
 
 Action vocabulary (use these patterns):
 - TRIAGE: "Assess [CVE-ID] impact on [env] ([N] instances, CVSS [X])"
+- DRY RUN: "Preview patch changes for [CVE-ID] in [env] ([N] instances)"
 - PATCH: "Patch [CVE-ID] in [env] starting with [instance/service]"
 - STAGED ROLLOUT: "Stage [CVE-ID] remediation: [env1] → [env2]" (only if vulns exist in multiple envs)
 - VERIFY: "Verify patch compliance for [CVE-ID] across [env]"
 - AUDIT: "Generate compliance report for [framework] in [env]"
 - ROLLBACK: "Check rollback readiness for [instance/service] in [env]"
-- BLAST RADIUS: "Assess blast radius for [CVE-ID] patching in [env]"
+- VERIFY ROLLBACK: "Verify rollback succeeded for [instance/service] in [env]"
 - SCAN: "Scan [env] for [CVE-ID] exposure" (to check if other envs are affected)
 
-After vulnerability scan → 1. Triage top CVE in affected env, 2. Patch top CVE, 3. Scan other envs for exposure
-After patching → 1. Verify compliance, 2. Generate compliance report, 3. Address next highest CVE
+After vulnerability scan → 1. Triage top CVE in affected env, 2. Dry-run patch preview for top CVE, 3. Scan other envs for exposure
+After patching → 1. Verify compliance delta, 2. Generate compliance report, 3. Address next highest CVE
+After rollback → 1. Verify rollback succeeded, 2. Investigate root cause, 3. Re-assess patching approach
 After compliance report → 1. Address SLA breaches, 2. Patch non-compliant instances, 3. Generate audit trail"""
 
 

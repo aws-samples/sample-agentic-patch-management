@@ -33,11 +33,14 @@ Agents make risk-based decisions using maintenance windows and CVSS scores. Appl
 │ Vulnerability│   Patch Manager   │   Compliance Analyst      │
 │ Analyst      │                   │                           │
 │ • CVE        │ • Patch Compliance│ • Report Queries          │
-│   Analysis   │ • Patch Execution │ • SLA Tracking            │
-│ • Threat     │ • Health Checks   │ • Audit Trails            │
-│   Assessment │ • Rollback        │ • Executive Reporting     │
-│ • Impact     │ • Maintenance     │ • Trend Analysis          │
-│   Analysis   │   Windows         │                           │
+│   Analysis   │ • Dry-Run Preview │ • SLA Tracking            │
+│ • Threat     │ • Patch Execution │ • Audit Trails            │
+│   Assessment │ • Health Checks   │ • Executive Reporting     │
+│ • Impact     │ • Rollback +      │ • Trend Analysis          │
+│   Analysis   │   Verification    │                           │
+│              │ • Compliance Delta│                           │
+│              │ • Maintenance     │                           │
+│              │   Windows         │                           │
 └─────────────┴───────────────────┴───────────────────────────┘
 ```
 
@@ -45,15 +48,19 @@ The supervisor routes queries to the right specialist automatically. If a specia
 
 ### Patching Workflow
 
-Every patching operation follows a mandatory 7-step workflow:
+Every patching operation follows a mandatory workflow:
 
-1. Discover affected instances and calculate SLA requirement
-2. Check next maintenance window
-3. Decide: SCHEDULED (wait for window) or EMERGENCY (patch now)
-4. Execute patching via SSM
-5. Verify instance health (SSM connectivity)
-6. Check application health (CloudWatch alarms)
-7. Generate compliance report (saved to S3)
+1. **Discover** affected instances and calculate SLA requirement
+2. **Maintenance window** check — find next available window
+3. **SLA decision**: SCHEDULED (wait for window) or EMERGENCY (patch now)
+4. **Dry-run scan** — runs `AWS-RunPatchBaseline` with `Operation: Scan` (same mechanism as patching uses for Install) to show exactly which patches are missing, their severity, and classification. Operator confirms before proceeding.
+5. **Capture pre-patch state** — snapshot compliance metrics (missing/installed counts) for before/after comparison. Runs after the dry-run scan so data is populated.
+6. **Execute** patching via SSM (`AWS-RunPatchBaseline` with `Operation: Install`)
+7. **Verify** instance health (SSM connectivity) and application health (CloudWatch alarms)
+8. **Capture post-patch state** — snapshot compliance metrics after patching
+9. **Generate compliance report** with before/after delta (saved to S3)
+
+If rollback is needed, the agent runs `yum history undo` and then verifies the rollback succeeded — re-scanning with `RunPatchBaseline` to confirm patch counts returned to pre-patch levels, plus SSM health and CloudWatch alarm checks.
 
 Decision logic: if the next maintenance window is within the SLA deadline → SCHEDULED. If the window would exceed the SLA → EMERGENCY.
 
@@ -348,6 +355,9 @@ Use the chat panel in the Web UI:
 ```
 What critical vulnerabilities do we have?
 Handle CVE-2025-38527 in dev
+Run a dry-run scan on dev to preview missing patches
 Show SLA breaches this week
 Patch all critical CVEs in staging
 ```
+
+The agent will automatically run a dry-run preview before patching, capture before/after compliance snapshots, and include the compliance delta in the report. If rollback is needed, it verifies the rollback succeeded before reporting back.
