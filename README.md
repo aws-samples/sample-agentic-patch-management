@@ -13,7 +13,7 @@ This approach: natural language query → intelligent decision → automated exe
 ```
 You: Handle CVE-2025-38527 in dev environment
 Agent: Checking maintenance window... Emergency patching required.
-       Patching dev → staging → prod with approval gates.
+       Patching dev with approval gates for staging/prod.
        Complete. Compliance report saved to S3.
 ```
 
@@ -59,48 +59,32 @@ Decision logic: if the next maintenance window is within the SLA deadline → SC
 
 ## Prerequisites
 
-- Python 3.11+
-- Node.js 18+
-- Docker (for building the UI container image)
-- AWS CLI v2 configured with a named profile
+- Python 3.11+, Node.js 18+, Docker
+- AWS CLI v2 with a configured named profile
+- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for UI access)
 - AWS account with Bedrock model access enabled (Claude Sonnet)
-
-The deploy script validates all prerequisites and versions before starting.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Clone and configure
-git clone <repository-url>
-cd intelligent-patch-automation
+# 1. Configure
 cp .env.example .env
 # Edit .env — set AWS_PROFILE and AWS_REGION
 
 # 2. Enable HTTPS (optional, recommended)
 ./setup-tls.sh
-# Generates a self-signed cert, imports to ACM, adds ARN to .env.
-# Browser will show a certificate warning — accept it to proceed.
-# For production, use an ACM public cert with your domain instead.
 
-# 3. Deploy everything
-./deploy.sh
-
-# That's it. The script handles:
-#   - Python venv + dependencies
-#   - AgentCore agent deployment
-#   - Auto-detects the AgentCore IAM role ARN
-#   - CDK bootstrap + infrastructure (4 stacks)
-#   - Docker build + Fargate UI deployment
-
-# To include sample EC2 instances for testing:
+# 3. Deploy everything (with sample EC2 instances)
 ./deploy.sh --with-demo
 
-# 4. Connect to the UI (internal ALB, accessed via SSM port forwarding)
+# 4. Connect to the UI
 ./connect-ui.sh
-# Opens https://localhost:8443 in your browser
+# Then open https://localhost:8443 in your browser
 ```
+
+`deploy.sh` handles the full sequence: Python venv → agent → role detection → CDK bootstrap → infrastructure → Docker build → Fargate UI.
 
 ---
 
@@ -108,55 +92,57 @@ cp .env.example .env
 
 ### Environment Variables
 
-Both `deploy.sh` and `chat.sh` auto-source `.env` from the project root.
+All scripts auto-source `.env` from the project root.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AWS_PROFILE` | Yes | AWS CLI named profile |
 | `AWS_REGION` | Yes | Defaults to `us-east-1` |
-| `AGENTCORE_ROLE_ARN` | No | Auto-detected after agent deploy. Set only if you have multiple AgentCore roles. |
-| `API_KEY` | No | Enables API key auth on the web UI |
-| `ACM_CERTIFICATE_ARN` | No | Enables HTTPS on the ALB. Run `./setup-tls.sh` to generate a self-signed cert, or use your own ACM certificate ARN. |
+| `AGENTCORE_ROLE_ARN` | No | Auto-detected after agent deploy |
+| `ACM_CERTIFICATE_ARN` | No | Enables HTTPS. Run `./setup-tls.sh` or use your own ACM cert ARN. |
+| `API_KEY` | No | Enables `X-API-Key` header auth on the web UI |
 
-### Deploy Commands
+### Commands
 
-```bash
-./deploy.sh               # Full solution: infra + agent + UI
-./deploy.sh --with-demo   # Full solution + sample EC2 environment
-./deploy.sh agent         # Redeploy agent only (after code changes)
-./deploy.sh ui            # Redeploy UI only (after code changes)
-./deploy.sh destroy       # Destroy ALL infrastructure
-./deploy.sh destroy --demo-only  # Destroy sample environment only
-```
-
-The default `./deploy.sh` handles the full deployment sequence automatically: Python venv → agent → role detection → CDK infra → UI. No manual steps between.
+| Command | What it does |
+|---------|-------------|
+| `./deploy.sh` | Full deploy: infra + agent + UI |
+| `./deploy.sh --with-demo` | Full deploy + 15 sample EC2 instances |
+| `./deploy.sh agent` | Redeploy agent only |
+| `./deploy.sh ui` | Redeploy UI only |
+| `./connect-ui.sh` | SSM port forward to the internal ALB |
+| `./chat.sh` | CLI chat client (interactive) |
+| `./chat.sh -m "..."` | CLI chat client (single message) |
+| `./setup-tls.sh` | Generate self-signed cert + import to ACM |
+| `./deploy.sh destroy` | Destroy ALL infrastructure |
+| `./deploy.sh destroy --demo-only` | Destroy sample environment only |
 
 ### Infrastructure Stacks
 
-| Stack | Type | What It Creates |
-|-------|------|-----------------|
-| `PatchAutomationNetworking` | Solution | VPC, subnets (public/private/isolated), NAT gateways, flow logs |
-| `PatchAutomationSecurity` | Solution | Security groups, instance IAM role, S3 compliance bucket, AWS Config recorder |
-| `PatchAutomationAgentCorePermissions` | Solution | IAM policy for AgentCore runtime (EC2, SSM, Inspector, Config, CloudWatch, S3) |
-| `PatchAutomationUI` | Solution | ECS Fargate service, internal ALB (HTTPS when cert provided), CloudWatch logs — serves the Web UI. Accessed via SSM port forwarding. |
-| `PatchAutomationVulnerabilityDriven` | Sample Environment | 15 EC2 instances (5 dev/5 staging/5 prod), maintenance windows, ALBs, patch baselines, CloudWatch alarms |
+| Stack | Purpose |
+|-------|---------|
+| `PatchAutomationNetworking` | VPC, public/private subnets, NAT gateways |
+| `PatchAutomationSecurity` | Security groups, instance IAM role, S3 compliance bucket, AWS Config recorder |
+| `PatchAutomationAgentCorePermissions` | IAM policy for AgentCore runtime |
+| `PatchAutomationUI` | ECS Fargate, internal ALB, CloudWatch logs |
+| `PatchAutomationVulnerabilityDriven` | Sample environment: 15 EC2 instances (deploy with `--with-demo`) |
 
-The sample environment stack deploys and destroys independently. Use `./deploy.sh destroy --demo-only` to remove it while keeping the solution infrastructure intact.
+The sample environment deploys and destroys independently: `./deploy.sh destroy --demo-only`.
 
-If your account already has an AWS Config recorder, pass `-c skipConfigRecorder=true` when deploying:
+If your account already has an AWS Config recorder:
 ```bash
 cd infra && npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
 ```
 
 ### Instance Requirements
 
-For the agent to manage your EC2 instances, they need:
+For the agent to manage EC2 instances, they need:
 - SSM Agent installed and running
 - IAM instance profile with `AmazonSSMManagedInstanceCore`
 - Tag: `Environment` (e.g., `dev`, `staging`, `prod`)
-- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) for SLA policy enforcement
+- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) for SLA enforcement
 
-The sample environment stack creates instances with all of these pre-configured.
+The sample environment creates instances with all of these pre-configured.
 
 ---
 
@@ -178,10 +164,10 @@ When multiple frameworks apply to an instance, the strictest SLA wins.
 ### Maintenance Windows
 
 The agent respects SSM maintenance windows:
-- SCHEDULED — next window is within SLA → wait for it
-- EMERGENCY — next window exceeds SLA → patch immediately
+- SCHEDULED: next window is within SLA → wait for it
+- EMERGENCY: next window exceeds SLA → patch immediately
 
-Sample windows (deployed by sample environment stack): dev daily 1AM UTC, staging Tuesday 2AM UTC, prod 1st of month 2AM UTC.
+Sample windows (from `--with-demo`): dev daily 1AM UTC, staging Tuesday 2AM UTC, prod 1st of month 2AM UTC.
 
 ---
 
@@ -189,66 +175,37 @@ Sample windows (deployed by sample environment stack): dev daily 1AM UTC, stagin
 
 Browser-based operations console with dashboard and conversational chat.
 
-Dashboard: KPI bar, environment status cards, vulnerability table, activity feed, compliance summary, decision explainability table.
+- Dashboard: KPI bar, environment status cards, vulnerability table, compliance summary, decision explainability table
+- Chat: streaming responses, specialist indicators, approval buttons for phased rollout
 
-Chat: Conversational agent with streaming responses, specialist indicators, and approval buttons for phased rollout.
+### Accessing the UI
 
-### Deployed (Fargate)
-
-The `PatchAutomationUI` stack deploys the UI as a single Fargate container behind an internal ALB (not publicly accessible). The container runs a multi-stage Docker build: Node builds the React frontend, Python serves it via FastAPI alongside the API backend.
-
-Access the UI via SSM port forwarding — no VPN or bastion host needed:
+The UI runs on an internal ALB (not publicly accessible). Access via SSM port forwarding:
 
 ```bash
-./deploy.sh ui        # Deploy/redeploy the UI
-./connect-ui.sh       # Start SSM tunnel, then open https://localhost:8443
+./connect-ui.sh       # Start tunnel, then open https://localhost:8443
 ```
 
-The `connect-ui.sh` script auto-discovers the internal ALB DNS and an SSM-managed instance, then starts the port forward. Requires the AWS CLI Session Manager plugin.
-
-The Docker build requires `agent/.bedrock_agentcore.yaml` to exist (created by `./deploy.sh agent`). Deploy the agent before building the UI container.
-
-SSE streaming is supported with a 300-second ALB idle timeout.
+Requires the AWS CLI Session Manager plugin and at least one SSM-managed instance in the VPC.
 
 ### TLS / HTTPS
 
-The ALB serves HTTPS when `ACM_CERTIFICATE_ARN` is set in `.env`, otherwise HTTP.
-
-| Approach | When to use | Setup |
-|----------|-------------|-------|
-| `./setup-tls.sh` | Quick start, pilot, internal use | One command. Browser shows cert warning (expected for self-signed). |
-| ACM public certificate | Production with custom domain | Request in ACM console with DNS validation. Free, auto-renewing, no browser warnings. Set the ARN in `.env`. |
-| No certificate | Local testing, VPN-only access | Leave `ACM_CERTIFICATE_ARN` unset. ALB serves HTTP on port 80. |
+| Approach | When to use |
+|----------|-------------|
+| `./setup-tls.sh` | Quick start / pilot. Browser shows cert warning (self-signed). |
+| ACM public certificate | Production. Set ARN in `.env`. Free, auto-renewing, no warnings. |
+| No certificate | Leave `ACM_CERTIFICATE_ARN` unset. ALB serves HTTP on port 80. |
 
 ### Local Development
 
 ```bash
-# Backend (port 8000)
-cd ui/api && python3 server.py
-
-# Frontend (port 5173)
-cd ui/frontend && npm run dev
-```
-
----
-
-## CLI Chat Client
-
-Rich terminal client for testing agent interactions without the web UI.
-
-```bash
-# Interactive mode
-./chat.sh
-
-# Single message
-./chat.sh -m "What critical vulnerabilities do we have?"
+cd ui/api && python3 server.py        # Backend on port 8000
+cd ui/frontend && npm run dev          # Frontend on port 5173
 ```
 
 ---
 
 ## Observability
-
-### CloudWatch Logs
 
 ```bash
 # Real-time agent logs
@@ -257,96 +214,112 @@ aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT --follow
 # Recent errors
 aws logs filter-log-events \
   --log-group-name "/aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT" \
-  --filter-pattern "ERROR" \
-  --start-time $(date -v-1H +%s)000
+  --filter-pattern "ERROR" --start-time $(date -v-1H +%s)000
 
 # Find your runtime name
 agentcore status | grep "Runtime:"
 ```
 
-### Decision Audit
+GenAI observability: `CloudWatch Console → GenAI Observability → AgentCore` for token usage, latency, and X-Ray tracing.
 
-Every agent decision is logged to CloudWatch and S3 compliance reports in structured JSON. CloudWatch Insights query for all decisions:
-
+Every agent decision is logged to CloudWatch and S3 compliance reports. CloudWatch Insights query:
 ```
 fields @timestamp, agent, decision_type, decision, reasoning
 | filter @message like /DECISION:/
 | sort @timestamp desc
 ```
 
-GenAI observability: `CloudWatch Console → GenAI Observability → AgentCore` for token usage, latency, and X-Ray tracing.
-
 ---
 
 ## Security
 
-- HTTPS via ACM certificate (`./setup-tls.sh` for self-signed, or your own)
+- Internal ALB (no public exposure) — accessed via SSM port forwarding
+- HTTPS via ACM certificate
 - API key authentication (opt-in via `API_KEY` env var)
-- Input validation and rate limiting (20 req/min)
+- Rate limiting (20 req/min per client IP)
 - Instance ID regex validation on all SSM operations
-- IAM least privilege — write access only for SSM commands and S3 compliance reports
+- IAM least privilege — write access scoped to SSM commands and S3 compliance bucket
 - Human approval gates between environments during phased rollout
 
-### Production Hardening
+---
 
-The solution ships ready for pilot use. For production, consider these additions:
+## Production Hardening
 
-| Area | Recommendation | How |
-|------|---------------|-----|
-| Authentication | Add user login via corporate IdP | Configure ALB OIDC authentication rule with your IdP (Okta, Azure AD, etc.) — no code changes needed. Or add a Cognito user pool with hosted UI. |
-| TLS | Replace self-signed cert | Use an ACM public certificate with DNS validation (free, auto-renewing) tied to your domain. |
-| Authorization | Role-based access control | Add JWT claims parsing in `server.py` middleware to restrict patch execution to specific roles (e.g., read-only for viewers, write for operators). |
-| Network | ALB is internal by default | Already done. Access via `./connect-ui.sh` (SSM port forwarding). For broader team access, add a VPN or Client VPN endpoint to the VPC. |
-| Data Retention | Preserve compliance reports on teardown | Change S3 `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `security-stack.ts`. Default is `DESTROY` for clean teardown. |
-| Audit | User action logging | Log authenticated user identity with each agent invocation for compliance audit trails. |
+The solution ships ready for pilot use. For production workloads, consider the following:
+
+### Authentication and Authorization
+
+- **Corporate IdP integration**: Add a Cognito user pool with SAML/OIDC federation to your corporate IdP (Okta, Azure AD, Ping). Protect the API with Cognito authorizer tokens. The internal ALB + SSM tunnel means standard OIDC redirect flows won't work directly — use Cognito's hosted UI with token-based auth instead of ALB-native OIDC.
+- **Role-based access control**: Parse JWT claims in `server.py` middleware to enforce roles (e.g., read-only viewers vs. patch operators). Restrict destructive operations (patch execution, rollback) to specific groups.
+- **Per-user audit trail**: Log the authenticated user identity with each agent invocation. Currently the agent logs decisions but not who initiated them.
+
+### Network and Access
+
+- **AWS Client VPN**: For broader team access beyond individual SSM tunnels, deploy a Client VPN endpoint in the VPC. This gives multiple operators simultaneous access to the internal ALB without per-user port forwarding.
+- **VPC endpoints**: Add interface VPC endpoints for SSM, EC2, S3, STS, and Bedrock to eliminate NAT gateway traffic and reduce data transfer costs. Also improves latency for API calls.
+- **WAF**: Even on an internal ALB, AWS WAF can add request filtering, SQL injection protection, and managed rule sets as defense-in-depth.
+
+### Data and Compliance
+
+- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `security-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean pilot teardown.
+- **S3 Object Lock**: Enable Object Lock (compliance mode) on the compliance reports bucket to make audit data immutable. Prevents accidental or malicious deletion of compliance evidence.
+- **KMS encryption**: Replace S3-managed encryption with a customer-managed KMS key for compliance reports and Config snapshots. Enables key rotation policies and CloudTrail key usage auditing.
+- **Cross-account backup**: Replicate the compliance reports bucket to a separate audit account using S3 Cross-Region Replication. Ensures reports survive even if the primary account is compromised.
+
+### Availability and Scaling
+
+- **Multi-AZ Fargate**: Increase `desiredCount` to 2+ in `ui-stack.ts` for high availability. The ALB already spans multiple AZs.
+- **Auto-scaling**: Add ECS Service Auto Scaling based on CPU/memory utilization or request count to handle variable operator load.
+- **Multi-region**: Deploy the infrastructure stack to a secondary region with Route 53 health checks for disaster recovery. The agent is stateless, so failover is straightforward.
+- **ALB health check tuning**: Tighten health check thresholds for faster failover. Consider adding a deeper health check endpoint that validates downstream connectivity (SSM, Bedrock).
+
+### Agent Reliability
+
+- **Guardrails**: Add Bedrock Guardrails to constrain agent responses — prevent the agent from executing actions outside its intended scope (e.g., terminating instances, modifying security groups).
+- **Token budget limits**: Set per-invocation token limits to prevent runaway conversations from consuming excessive Bedrock capacity.
+- **Dead letter queue**: Add an SQS DLQ for failed agent invocations to capture and retry failed patch operations.
+- **Idempotency**: Add idempotency keys to patch operations to prevent duplicate patching if an operator retries a failed request.
+- **Rollback for Debian/Ubuntu**: Current rollback is yum-based (Amazon Linux/RHEL only). Add apt-based rollback for Debian-family instances.
+
+### Operational Excellence
+
+- **CI/CD pipeline**: Add a CodePipeline or GitHub Actions workflow for automated testing and deployment. Run `npx tsc --noEmit` and Python linting on PR, deploy to a staging account on merge, promote to production with manual approval.
+- **Infrastructure testing**: Add CDK snapshot tests and integration tests that deploy to a test account, run agent interactions, and validate outcomes.
+- **CloudWatch dashboards**: Create a pre-built CloudWatch dashboard with key metrics: agent invocation count, latency P50/P99, error rate, patch success rate, SLA compliance percentage.
+- **CloudWatch alarms**: Add alarms for agent error rate spikes, Fargate task unhealthy, ALB 5xx rate, and SLA breach count. Route to SNS → PagerDuty/Slack.
+- **Cost monitoring**: Tag all resources with `Project=patch-automation` and set up AWS Budgets alerts. Bedrock token usage is the primary variable cost — monitor via GenAI Observability.
+
+### TLS
+
+- Replace the self-signed certificate with an ACM public certificate tied to your domain (free, auto-renewing, no browser warnings). If using Client VPN, you can use a private CA certificate instead.
 
 ---
 
 ## Teardown
 
 ```bash
-# Destroy sample environment only (keeps solution infrastructure)
-./deploy.sh destroy --demo-only
-
-# Destroy ALL infrastructure (prompts for confirmation)
-./deploy.sh destroy
+./deploy.sh destroy --demo-only    # Remove sample environment only
+./deploy.sh destroy                # Remove ALL infrastructure (prompts for confirmation)
+agentcore destroy                  # Remove the AgentCore agent runtime separately
 ```
 
-`destroy` removes all CDK stacks in dependency order. S3 buckets are auto-emptied (including versioned objects) and deleted with the stack — no manual cleanup needed.
-
-The AgentCore agent runtime is managed separately. To fully remove:
-```bash
-agentcore destroy    # Removes the agent container and ECR repository
-```
+S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed.
 
 ---
 
 ## Troubleshooting
 
-### Agent Not Responding
-```bash
-agentcore status
-agentcore launch --auto-update-on-conflict    # Redeploy
-```
-
-### Permission Errors
-```bash
-aws cloudformation describe-stacks --stack-name PatchAutomationAgentCorePermissions
-```
-
-### No Instances Found
-Instances must be SSM-managed and tagged with `Environment`:
-```bash
-aws ssm describe-instance-information --query 'InstanceInformationList[].InstanceId'
-```
-
-### Config Recorder Conflict
-If your account already has an AWS Config recorder, deploy with:
-```bash
-cd infra && npx cdk deploy --all -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
-```
+| Problem | Fix |
+|---------|-----|
+| Agent not responding | `agentcore status` then `agentcore launch --auto-update-on-conflict` |
+| Permission errors | Check `PatchAutomationAgentCorePermissions` stack outputs |
+| No instances found | Instances need SSM Agent + `Environment` tag. Check: `aws ssm describe-instance-information` |
+| Config recorder conflict | Deploy with `-c skipConfigRecorder=true` |
+| UI container unhealthy | Check logs: `aws logs tail /patch-automation/ui --follow` |
+| SSM tunnel fails | Ensure Session Manager plugin is installed and at least one instance is online |
 
 ### Known Limitations
+
 - Manual approval required between environments in phased rollout
 - CloudWatch alarms must be pre-configured for application-layer health checks
 - Linux-only rollback (yum-based, Amazon Linux/RHEL)

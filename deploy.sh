@@ -222,7 +222,7 @@ deploy_infra() {
 }
 
 deploy_ui() {
-    echo -e "${BLUE}Deploying Web UI (Fargate + ALB)...${NC}"
+    echo -e "${BLUE}Deploying Web UI (Fargate + internal ALB)...${NC}"
 
     # Pre-flight: agent config must exist (Docker build bakes it into the image)
     if [ ! -f "agent/.bedrock_agentcore.yaml" ]; then
