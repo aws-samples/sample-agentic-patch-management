@@ -17,12 +17,39 @@ vuln_scan:
     CRITICAL: {n} | HIGH: {n} | MEDIUM: {n} | LOW: {n}
 
     TABLE (top 10 by CVSS, then alphabetical CVE ID for ties):
-    | CVE ID | CVSS | Severity | Instances | Environment | Exposure |
+    | CVE ID | CVSS | Severity | Instances | Environments |
 
-    Exposure = from get_resource_dependencies impact_level. If not called, omit column.
-    Instances = count, not full IDs. Append instance IDs in parentheses only if ≤3.
+    Instances = total affected count. Environments = comma-separated list.
+
+    FLEET IMPACT (for top 1-3 CVEs where assess_fleet_impact was called):
+    | Environment | Instances | SLA Deadline | Next Window | Hours Until |
+    Recommended rollout: {env1} → {env2} → {env3}
 
     FOOTER: "{unique_cves} unique CVEs across {total_findings} findings. All/N have fixes available."
+
+fleet_impact:
+  description: "Fleet-wide CVE impact assessment"
+  agent: vulnerability_analyst
+  structure: |
+    STATUS_LINE: {emoji} {cve_id} affects {total_affected} instances across {env_count} environments
+
+    CVE SUMMARY:
+    | Field       | Value              |
+    |-------------|--------------------|
+    | CVE ID      | {cve_id}           |
+    | Severity    | {severity}         |
+    | CVSS        | {cvss_score}       |
+    | Fix Available | {fix_available}  |
+    | Total Affected | {total_affected}|
+
+    ENVIRONMENT BREAKDOWN:
+    | Environment | Instances | SLA ({source}) | Next Window | Hours Until |
+
+    SLA = sla_hours from config. Next Window = maintenance window name. Hours Until = hours until next window.
+
+    ROLLOUT RECOMMENDATION:
+    "Recommended: {env1} → {env2} → {env3}"
+    One sentence explaining the order (lowest risk first, validate before promoting).
 
 vuln_detail:
   description: "Single CVE deep-dive"

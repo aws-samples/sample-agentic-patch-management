@@ -36,8 +36,8 @@ Agents make risk-based decisions using maintenance windows and CVSS scores. Appl
 │   Analysis   │ • Dry-Run Preview │ • SLA Tracking            │
 │ • Threat     │ • Patch Execution │ • Audit Trails            │
 │   Assessment │ • Health Checks   │ • Executive Reporting     │
-│ • Impact     │ • Rollback +      │ • Trend Analysis          │
-│   Analysis   │   Verification    │                           │
+│ • Fleet-Wide │ • Rollback +      │ • Trend Analysis          │
+│   Impact     │   Verification    │                           │
 │              │ • Compliance Delta│                           │
 │              │ • Maintenance     │                           │
 │              │   Windows         │                           │
@@ -354,10 +354,11 @@ Use the chat panel in the Web UI:
 
 ```
 What critical vulnerabilities do we have?
+How widespread is CVE-2025-38527 across our fleet?
 Handle CVE-2025-38527 in dev
 Run a dry-run scan on dev to preview missing patches
 Show SLA breaches this week
 Patch all critical CVEs in staging
 ```
 
-The agent will automatically run a dry-run preview before patching, capture before/after compliance snapshots, and include the compliance delta in the report. If rollback is needed, it verifies the rollback succeeded before reporting back.
+The agent will automatically assess fleet-wide impact when scanning vulnerabilities, run a dry-run preview before patching, capture before/after compliance snapshots, and include the compliance delta in the report. If rollback is needed, it verifies the rollback succeeded before reporting back.

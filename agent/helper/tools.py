@@ -58,7 +58,6 @@ aws_config = Config(
 inspector_client = boto3.client('inspector2', region_name=AWS_REGION, config=aws_config)
 ssm_client = boto3.client('ssm', region_name=AWS_REGION, config=aws_config)
 ec2_client = boto3.client('ec2', region_name=AWS_REGION, config=aws_config)
-config_client = boto3.client('config', region_name=AWS_REGION, config=aws_config)
 cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION, config=aws_config)
 
 
@@ -198,7 +197,7 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
         }
         if cve_id:
-            filters['cveId'] = [{'comparison': 'EQUALS', 'value': cve_id}]
+            filters['vulnerabilityId'] = [{'comparison': 'EQUALS', 'value': cve_id}]
         if severity:
             filters['severity'] = [{'comparison': 'EQUALS', 'value': severity}]
         if environment:
@@ -1332,173 +1331,177 @@ def verify_rollback(command_id: str, instance_ids: List[str],
         return result
 
 
+# --- Fleet Impact Assessment ---
+
 @tool
-def get_resource_dependencies(resource_id: str) -> dict:
-    """Analyze instance dependencies and assess patching impact.
-    
-    Queries AWS Config for infrastructure relationships (VPC, subnets, security groups,
-    load balancers) and instance tags (criticality, team, compliance frameworks).
-    Checks target group health to determine if the instance can be safely patched
-    without service disruption.
-    
+def assess_fleet_impact(cve_id: str) -> dict:
+    """Assess fleet-wide impact of a CVE across all environments.
+
+    Queries Inspector for the CVE across all environments in one call, groups
+    affected instances by environment, cross-references maintenance windows and
+    SLA policy, and generates a phased rollout recommendation.
+
+    Use this instead of per-instance dependency checks — it gives operators the
+    full picture in a single call.
+
     Args:
-        resource_id: EC2 instance ID to analyze dependencies for
-    
+        cve_id: CVE identifier (e.g., 'CVE-2024-1234')
+
     Returns:
         dict: {
-            'resource_id': str,
-            'impact_level': 'HIGH' | 'MEDIUM' | 'LOW',
-            'impact_reason': str,
-            'safe_to_patch': bool (true if other healthy targets exist in target group),
-            'business_context': { criticality, team, product, compliance_frameworks },
-            'dependencies': { load_balancers, target_group_health, infrastructure }
+            'cve_id': str,
+            'total_affected': int,
+            'environments': [{name, instance_count, instance_ids, sla_deadline_hours,
+                              next_window, hours_until_window}],
+            'rollout_order': [env_names],
+            'severity': str,
+            'cvss_score': float,
+            'fix_available': str
         }
     """
     try:
-        # Query AWS Config for instance configuration
-        config_response = config_client.get_resource_config_history(
-            resourceId=resource_id,
-            resourceType='AWS::EC2::Instance',
-            limit=1
-        )
-        
-        if not config_response.get('configurationItems'):
-            return {"error": f"Instance {resource_id} not found in AWS Config"}
-        
-        config_item = config_response['configurationItems'][0]
-        configuration = json.loads(config_item['configuration'])
-        relationships = config_item.get('relationships', [])
-        
-        # Extract tags from Config
-        tags = {tag['key']: tag['value'] for tag in configuration.get('tags', [])}
-        environment = tags.get('Environment', 'unknown')
-        criticality = tags.get('Criticality', 'Unknown')
-        team = tags.get('Team', 'unknown')
-        product = tags.get('Product', 'unknown')
-        compliance = tags.get('ComplianceFrameworks', '')
-        
-        # Find load balancer relationships from Config
-        load_balancers = []
-        target_group_relationships = [r for r in relationships 
-                                     if r['resourceType'] == 'AWS::ElasticLoadBalancingV2::TargetGroup']
-        
-        if target_group_relationships:
-            elbv2_client = boto3.client('elbv2', region_name=AWS_REGION, config=aws_config)
-            
-            # Batch: Get all target group ARNs at once
-            tg_arns = [r['resourceId'] for r in target_group_relationships]
-            
+        # 1. Query Inspector for this CVE across ALL environments
+        findings_result = get_vulnerability_findings(cve_id=cve_id, limit=200)
+        if findings_result.get('error'):
+            return findings_result
+
+        findings = findings_result.get('findings', [])
+        total_count = findings_result.get('total_count', 0)
+
+        if total_count == 0:
+            return {
+                'cve_id': cve_id,
+                'total_affected': 0,
+                'environments': [],
+                'rollout_order': [],
+                'message': f'No active findings for {cve_id}'
+            }
+
+        # Extract severity/CVSS from first finding
+        severity = findings[0].get('severity', 'UNKNOWN') if findings else 'UNKNOWN'
+        cvss_score = findings[0].get('cvss_score') if findings else None
+        fix_available = findings[0].get('fix_available', 'UNKNOWN') if findings else 'UNKNOWN'
+
+        # 2. Collect all unique affected instance IDs
+        all_instance_ids = set()
+        for f in findings:
+            for rid in f.get('affected_resources', []):
+                if rid.startswith('i-'):
+                    all_instance_ids.add(rid)
+
+        if not all_instance_ids:
+            return {
+                'cve_id': cve_id,
+                'total_affected': total_count,
+                'environments': [],
+                'rollout_order': [],
+                'severity': severity,
+                'cvss_score': cvss_score,
+                'message': f'{total_count} findings but no EC2 instance IDs in results'
+            }
+
+        # 3. Get environment tags for all instances (single API call with pagination)
+        instance_env_map = {}  # instance_id -> environment
+        instance_frameworks = {}  # instance_id -> [frameworks]
+        paginator = ec2_client.get_paginator('describe_instances')
+        for page in paginator.paginate(InstanceIds=list(all_instance_ids)):
+            for reservation in page['Reservations']:
+                for inst in reservation['Instances']:
+                    iid = inst['InstanceId']
+                    tags = {t['Key']: t['Value'] for t in inst.get('Tags', [])}
+                    instance_env_map[iid] = tags.get('Environment', 'unknown')
+                    fw_str = tags.get('ComplianceFrameworks', '')
+                    instance_frameworks[iid] = [f.strip() for f in fw_str.split(',') if f.strip()]
+
+        # 4. Group by environment
+        env_groups = {}  # env_name -> [instance_ids]
+        for iid, env in instance_env_map.items():
+            env_groups.setdefault(env, []).append(iid)
+
+        # 5. For each environment: get SLA + maintenance window
+        env_details = []
+        for env_name, env_instance_ids in sorted(env_groups.items()):
+            # SLA: use strictest framework across all instances in this env
+            all_fw = set()
+            for iid in env_instance_ids:
+                all_fw.update(instance_frameworks.get(iid, []))
+
+            sla = _calculate_sla_requirement(list(all_fw) if all_fw else [], severity)
+            sla_hours = sla['sla_hours'] if sla else None
+            sla_source = sla['source'] if sla else 'default'
+
+            # Maintenance window
             try:
-                # Single API call for all target groups
-                tg_response = elbv2_client.describe_target_groups(TargetGroupArns=tg_arns)
-                tg_map = {tg['TargetGroupArn']: tg for tg in tg_response['TargetGroups']}
-                
-                # Collect all ALB ARNs
-                alb_arns = []
-                for tg in tg_response['TargetGroups']:
-                    alb_arns.extend(tg.get('LoadBalancerArns', []))
-                
-                # Single API call for all ALBs
-                alb_map = {}
-                if alb_arns:
-                    albs_response = elbv2_client.describe_load_balancers(LoadBalancerArns=list(set(alb_arns)))
-                    alb_map = {alb['LoadBalancerArn']: alb['LoadBalancerName'] for alb in albs_response['LoadBalancers']}
-                
-                # Build load balancer list (no health checks - done separately after patching)
-                for tg_arn in tg_arns:
-                    tg = tg_map.get(tg_arn)
-                    if not tg:
-                        continue
-                    
-                    # Get ALB name from map
-                    alb_name = 'unknown'
-                    if tg.get('LoadBalancerArns'):
-                        alb_arn = tg['LoadBalancerArns'][0]
-                        alb_name = alb_map.get(alb_arn, 'unknown')
-                    
-                    load_balancers.append({
-                        'name': alb_name,
-                        'target_group': tg['TargetGroupName']
-                    })
-                        
+                mw_result = get_maintenance_windows(env_name)
+                windows = mw_result.get('windows', [])
+                if windows:
+                    # Pick the next enabled window
+                    next_win = None
+                    for w in windows:
+                        if w.get('enabled', True) and w.get('next_execution'):
+                            next_win = w
+                            break
+                    if next_win:
+                        next_window_name = next_win.get('name', 'unknown')
+                        next_execution = next_win.get('next_execution', 'unknown')
+                        # Calculate hours until window
+                        try:
+                            win_dt = datetime.fromisoformat(next_execution.replace('Z', '+00:00'))
+                            hours_until = max(0, (win_dt - datetime.now(timezone.utc)).total_seconds() / 3600)
+                            hours_until = round(hours_until, 1)
+                        except Exception:
+                            hours_until = None
+                    else:
+                        next_window_name = 'none'
+                        next_execution = None
+                        hours_until = None
+                else:
+                    next_window_name = 'none'
+                    next_execution = None
+                    hours_until = None
             except Exception as e:
-                logger.warning(f"Could not query target groups: {e}")
-        
-        # Assess impact level based on exposure and criticality
-        impact_level = 'LOW'
-        impact_reason = 'No external exposure detected'
-        
-        if load_balancers:
-            # Count how many targets share the same target groups
-            # (determines if patching this instance risks service availability)
-            target_count_info = []
-            if target_group_relationships:
-                try:
-                    for tg_arn in tg_arns:
-                        tg = tg_map.get(tg_arn)
-                        if not tg:
-                            continue
-                        health_resp = elbv2_client.describe_target_health(TargetGroupArn=tg_arn)
-                        healthy = sum(1 for t in health_resp.get('TargetHealthDescriptions', [])
-                                      if t.get('TargetHealth', {}).get('State') == 'healthy')
-                        total = len(health_resp.get('TargetHealthDescriptions', []))
-                        target_count_info.append({
-                            'target_group': tg['TargetGroupName'],
-                            'healthy_targets': healthy,
-                            'total_targets': total,
-                            'safe_to_patch': healthy > 1,  # At least 1 other healthy target
-                        })
-                except Exception as e:
-                    logger.warning(f"Could not check target health: {e}")
-            
-            if criticality == 'High' or environment == 'prod':
-                impact_level = 'HIGH'
-                impact_reason = f'Production instance behind {len(load_balancers)} load balancer(s)'
-            elif criticality == 'Medium' or environment == 'staging':
-                impact_level = 'MEDIUM'
-                impact_reason = f'Staging instance behind {len(load_balancers)} load balancer(s)'
-            else:
-                impact_level = 'MEDIUM'
-                impact_reason = f'Behind {len(load_balancers)} load balancer(s)'
-        else:
-            target_count_info = []
-        
-        # Extract infrastructure relationships
-        infrastructure = {
-            'vpc': next((r['resourceId'] for r in relationships if r['resourceType'] == 'AWS::EC2::VPC'), None),
-            'subnet': next((r['resourceId'] for r in relationships if r['resourceType'] == 'AWS::EC2::Subnet'), None),
-            'security_groups': [r['resourceId'] for r in relationships if r['resourceType'] == 'AWS::EC2::SecurityGroup']
-        }
-        
+                logger.warning(f"Could not get maintenance windows for {env_name}: {e}")
+                next_window_name = 'error'
+                next_execution = None
+                hours_until = None
+
+            env_details.append({
+                'environment': env_name,
+                'instance_count': len(env_instance_ids),
+                'instance_ids': env_instance_ids,
+                'sla_hours': sla_hours,
+                'sla_source': sla_source,
+                'next_window': next_window_name,
+                'next_execution': next_execution,
+                'hours_until_window': hours_until,
+            })
+
+        # 6. Generate rollout order: dev → staging → prod (standard safe order)
+        env_priority = {'dev': 0, 'test': 1, 'staging': 2, 'prod': 3}
+        env_details.sort(key=lambda e: env_priority.get(e['environment'], 99))
+        rollout_order = [e['environment'] for e in env_details]
+
         return {
-            'resource_id': resource_id,
-            'environment': environment,
-            'impact_level': impact_level,
-            'impact_reason': impact_reason,
-            'business_context': {
-                'criticality': criticality,
-                'team': team,
-                'product': product,
-                'compliance_frameworks': compliance.split(',') if compliance else []
-            },
-            'dependencies': {
-                'load_balancers': load_balancers,
-                'target_group_health': target_count_info,
-                'infrastructure': infrastructure
-            },
-            'safe_to_patch': all(t.get('safe_to_patch', True) for t in target_count_info) if target_count_info else True,
-            'summary': f"{impact_level} impact — {impact_reason}"
+            'cve_id': cve_id,
+            'severity': severity,
+            'cvss_score': cvss_score,
+            'fix_available': fix_available,
+            'total_affected': len(all_instance_ids),
+            'total_findings': total_count,
+            'environments': env_details,
+            'rollout_order': rollout_order,
+            'message': f'{len(all_instance_ids)} instances affected across {len(env_details)} environments'
         }
-        
+
     except ClientError as e:
         error_info = classify_error(e)
-        logger.error(f"Error analyzing dependencies for {resource_id}: {error_info}")
-        error_info["resource_id"] = resource_id
+        logger.error(f"Error assessing fleet impact for {cve_id}: {error_info}")
+        error_info['cve_id'] = cve_id
         return error_info
     except Exception as e:
-        logger.error(f"Error analyzing dependencies for {resource_id}: {e}")
+        logger.error(f"Error assessing fleet impact for {cve_id}: {e}")
         result = classify_error(e)
-        result["resource_id"] = resource_id
+        result['cve_id'] = cve_id
         return result
 
 
