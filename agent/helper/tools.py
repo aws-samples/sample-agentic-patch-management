@@ -569,6 +569,57 @@ def execute_patch_operation(
         if validation_error:
             return validation_error
 
+        # ── Dry-run gate: refuse to patch unless a recent Scan was run ──
+        # patch_dry_run runs AWS-RunPatchBaseline with Operation=Scan, which
+        # sets Operation='Scan' and OperationEndTime in DescribeInstancePatchStates.
+        # We check that every target instance has a Scan within the last 2 hours.
+        try:
+            scan_check = ssm_client.describe_instance_patch_states(InstanceIds=instance_ids)
+            for state in scan_check.get('InstancePatchStates', []):
+                iid = state['InstanceId']
+                last_op = state.get('Operation', '')
+                op_end = state.get('OperationEndTime')
+
+                if last_op != 'Scan' or not op_end:
+                    return {
+                        "error": f"No recent dry-run scan found for {iid}. "
+                                 "Run patch_dry_run first so operators can review changes before patching.",
+                        "error_code": "DryRunRequired",
+                        "category": "ABORT",
+                        "suggestion": "Call patch_dry_run(instance_ids) before execute_patch_operation.",
+                        "retryable": False
+                    }
+
+                if op_end.tzinfo is None:
+                    op_end = op_end.replace(tzinfo=timezone.utc)
+                hours_since_scan = (datetime.now(timezone.utc) - op_end).total_seconds() / 3600
+                if hours_since_scan > 2:
+                    return {
+                        "error": f"Dry-run scan for {iid} is {hours_since_scan:.1f}hr old. "
+                                 "Run a fresh patch_dry_run so the preview reflects current state.",
+                        "error_code": "DryRunStale",
+                        "category": "ABORT",
+                        "suggestion": "Call patch_dry_run(instance_ids) to refresh the scan.",
+                        "retryable": False
+                    }
+
+            # Also catch instances with no patch state at all (never scanned)
+            scanned_ids = {s['InstanceId'] for s in scan_check.get('InstancePatchStates', [])}
+            unscanned = [iid for iid in instance_ids if iid not in scanned_ids]
+            if unscanned:
+                return {
+                    "error": f"No patch state data for {', '.join(unscanned[:5])}. "
+                             "Run patch_dry_run first to populate patch baseline data.",
+                    "error_code": "DryRunRequired",
+                    "category": "ABORT",
+                    "suggestion": "Call patch_dry_run(instance_ids) before execute_patch_operation.",
+                    "retryable": False
+                }
+        except ClientError as scan_err:
+            # If we can't verify the dry-run, log but don't block — the scan check
+            # is a safety net, not a hard dependency on a separate service.
+            logger.warning(f"Could not verify dry-run scan state: {scan_err}")
+
         if execution_mode == "scheduled":
             # Validate maintenance_window_id is provided
             if not maintenance_window_id:
