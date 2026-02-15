@@ -11,7 +11,7 @@ Traditional patching: 15 browser tabs, 3 CLI tools, 45 minutes of manual work pe
 This approach: natural language query → intelligent decision → automated execution.
 
 ```
-You: Handle CVE-2025-38527 in dev environment
+You: Handle CVE-2025-38477 in dev environment
 Agent: Checking maintenance window... Emergency patching required.
        Patching dev with approval gates for staging/prod.
        Complete. Compliance report saved to S3.
@@ -34,10 +34,10 @@ Agents make risk-based decisions using maintenance windows and CVSS scores. Appl
 │ Analyst      │                   │                           │
 │ • CVE        │ • Patch Compliance│ • Report Queries          │
 │   Analysis   │ • Dry-Run Preview │ • SLA Tracking            │
-│ • Threat     │ • Patch Execution │ • Audit Trails            │
-│   Assessment │ • Health Checks   │ • Executive Reporting     │
-│ • Fleet-Wide │ • Rollback +      │ • Trend Analysis          │
-│   Impact     │   Verification    │                           │
+│ • Fleet-Wide │ • Patch Execution │ • Audit Trails            │
+│   Impact     │ • Health Checks   │ • Executive Reporting     │
+│ • Rollout    │ • Rollback +      │ • Trend Analysis          │
+│   Planning   │   Verification    │                           │
 │              │ • Compliance Delta│                           │
 │              │ • Maintenance     │                           │
 │              │   Windows         │                           │
@@ -354,8 +354,8 @@ Use the chat panel in the Web UI:
 
 ```
 What critical vulnerabilities do we have?
-How widespread is CVE-2025-38527 across our fleet?
-Handle CVE-2025-38527 in dev
+How widespread is CVE-2025-38477 across our fleet?
+Handle CVE-2025-38477 in dev
 Run a dry-run scan on dev to preview missing patches
 Show SLA breaches this week
 Patch all critical CVEs in staging
