@@ -47,7 +47,7 @@ export default function App() {
           borderRight: dashboardOpen ? "1px solid #e9ebed" : "none",
           transition: "width 0.3s ease, min-width 0.3s ease",
         }}>
-          <div style={{ padding: "16px 20px", minWidth: 500 }}>
+          <div style={{ padding: "16px 20px", minWidth: 500, height: "100%", overflowY: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <Header variant="h2">Dashboard</Header>
               <Button
