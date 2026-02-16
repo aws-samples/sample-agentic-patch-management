@@ -654,6 +654,11 @@ def execute_patch_operation(
             # Get window details
             window_details = ssm_client.get_maintenance_window(WindowId=maintenance_window_id)
             
+            operator = os.environ.get("PATCH_OPERATOR", "unknown")
+            logger.info(f"PATCH_SCHEDULED: operator={operator} environment={environment} "
+                        f"mode=scheduled window={window_details.get('Name')} "
+                        f"instances={len(instance_ids)}")
+            
             return {
                 'execution_mode': 'scheduled',
                 'status': 'SCHEDULED',
@@ -662,11 +667,13 @@ def execute_patch_operation(
                 'window_name': window_details.get('Name'),
                 'next_execution': window_details.get('NextExecutionTime', 'See maintenance window schedule'),
                 'instance_count': len(instance_ids),
+                'operator': operator,
                 'message': f'Patching scheduled in maintenance window: {window_details.get("Name")}'
             }
         
         elif execution_mode == "immediate":
             # Execute immediately (EMERGENCY)
+            operator = os.environ.get("PATCH_OPERATOR", "unknown")
             response = ssm_client.send_command(
                 DocumentName='AWS-RunPatchBaseline',
                 InstanceIds=instance_ids,
@@ -674,14 +681,19 @@ def execute_patch_operation(
                     'Operation': ['Install'],
                     'RebootOption': ['NoReboot']
                 },
-                Comment=f'EMERGENCY patching for {environment} environment'
+                Comment=f'EMERGENCY patching for {environment} by {operator}'
             )
+            
+            logger.info(f"PATCH_EXECUTED: operator={operator} environment={environment} "
+                        f"mode=immediate instances={len(instance_ids)} "
+                        f"command_id={response['Command']['CommandId']}")
             
             return {
                 'execution_mode': 'immediate',
                 'status': 'EXECUTING',
                 'command_id': response['Command']['CommandId'],
                 'instance_count': len(instance_ids),
+                'operator': operator,
                 'message': f'Emergency patching initiated for {len(instance_ids)} instances'
             }
         
@@ -1898,6 +1910,7 @@ def generate_compliance_report(
         report = {
             "report_id": report_id,
             "timestamp": timestamp.isoformat() + 'Z',
+            "operator": os.environ.get("PATCH_OPERATOR", "unknown"),
             
             "vulnerability": {
                 "cve_id": cve_id,
@@ -1993,7 +2006,8 @@ def generate_compliance_report(
                 'decision-type': decision,
                 'sla-met': str(report['compliance']['sla_met']) if report['compliance']['sla_met'] is not None else 'UNKNOWN',
                 'team': team,
-                'product': product
+                'product': product,
+                'operator': os.environ.get("PATCH_OPERATOR", "unknown")
             }
         )
         

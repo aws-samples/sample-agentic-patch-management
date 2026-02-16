@@ -70,6 +70,13 @@ export default function ExplainabilityTable({ items, loading, onCveClick }: Prop
             cell: (item) => item.team,
           },
           {
+            id: "operator",
+            header: "Operator",
+            cell: (item) => (
+              <Box variant="small">{item.operator || "—"}</Box>
+            ),
+          },
+          {
             id: "decision",
             header: "Decision",
             cell: (item) => (
@@ -201,6 +208,10 @@ function DecisionDetail({ item }: { item: ReportDetail | null }) {
               </StatusIndicator>
               {" "}— {item.success_count} succeeded, {item.failure_count} failed
             </Box>
+          </div>
+          <div>
+            <Box variant="awsui-key-label">Initiated By</Box>
+            <Box>{item.operator || "unknown"}</Box>
           </div>
           <div>
             <Box variant="awsui-key-label">Report ID</Box>

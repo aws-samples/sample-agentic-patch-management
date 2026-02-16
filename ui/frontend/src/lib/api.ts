@@ -44,6 +44,7 @@ export interface ComplianceSummary {
 export interface ReportDetail {
   report_id: string;
   timestamp: string;
+  operator: string;
   cve_id: string;
   severity: string;
   cvss_score: number | null;

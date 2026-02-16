@@ -23,6 +23,86 @@ Agents make risk-based decisions using maintenance windows and CVSS scores. Appl
 
 ---
 
+## What the Solution Does
+
+### Vulnerability Discovery and Fleet-Wide Impact Assessment
+
+The agent queries Amazon Inspector for active vulnerability findings across your fleet. When a CVE is identified, it doesn't just report it — it assesses fleet-wide impact by scanning all environments (dev, test, staging, prod) to determine how many instances are affected, which teams own them, and what compliance frameworks govern their SLA.
+
+- Query by CVE ID, severity, or environment
+- CVSS score correlation with Inspector findings
+- Instance-level affected resource mapping
+- Cross-environment exposure analysis ("CVE-2025-38477 affects 4 instances in dev, 3 in staging, 0 in prod")
+
+### Intelligent Patch Execution
+
+Every patching operation follows a mandatory safety workflow — the agent enforces this sequence and will not skip steps:
+
+1. **Discover** affected instances and calculate SLA requirement based on compliance frameworks (PCI-DSS, SOC2, HIPAA) and vulnerability severity
+2. **Maintenance window check** — find the next available SSM maintenance window for the target environment
+3. **SLA decision**: if the next window is within the SLA deadline → SCHEDULED (register with window). If the window would exceed the SLA → EMERGENCY (patch immediately)
+4. **Dry-run scan** — runs `AWS-RunPatchBaseline` with `Operation: Scan` (the same mechanism patching uses for Install) to show exactly which patches are missing, their severity, and classification. The operator reviews before proceeding. This is programmatically enforced — the agent cannot execute a patch Install without a recent Scan (within 2 hours) on every target instance
+5. **Capture pre-patch state** — snapshot compliance metrics (missing/installed counts per instance) for before/after comparison
+6. **Execute** patching via SSM (`AWS-RunPatchBaseline` with `Operation: Install`)
+7. **Verify** instance health (SSM connectivity) and application health (CloudWatch alarms)
+8. **Capture post-patch state** — snapshot compliance metrics after patching
+9. **Generate compliance report** with before/after delta, SLA assessment, and operator identity (saved to S3)
+
+### Rollback and Verification
+
+If a patch causes issues, the agent runs `yum history undo` to reverse the last transaction, then verifies the rollback succeeded by:
+- Re-scanning with `AWS-RunPatchBaseline` to confirm patch counts returned to pre-patch levels
+- Checking SSM agent connectivity on all target instances
+- Validating CloudWatch alarms returned to OK state
+
+The agent won't report a rollback as successful until all three checks pass.
+
+### Compliance Reporting and SLA Enforcement
+
+Every patch operation produces a structured JSON compliance report stored in S3 with date-partitioned keys (`YYYY/MM/DD/report-id.json`). Reports include:
+
+- Vulnerability details (CVE ID, severity, CVSS score)
+- Scope (environment, team, product, instance count)
+- SLA assessment (framework, required hours, actual time-to-patch, met/breached)
+- Execution details (decision type, command ID, success/failure counts)
+- Before/after compliance delta (missing patches reduced from X to Y, compliance improved from N% to M%)
+- Operator identity (who initiated the patch operation)
+
+The compliance analyst agent can query these reports for trend analysis, SLA breach history, and executive summaries broken down by severity, environment, or team.
+
+### Per-User Audit Trail
+
+Every patch operation records who initiated it:
+
+- **Pilot mode**: The frontend role switcher identity (`operator@session-id`) is injected into the agent payload and recorded in compliance reports, SSM command Comments, S3 object metadata, and CloudWatch logs
+- **Production mode**: Swap for Cognito JWT claims — the `email` or `sub` from the authenticated user replaces the session-based identity. See [Production Hardening → Authentication](#authentication-and-authorization)
+
+The audit trail is queryable from multiple surfaces:
+- S3 compliance reports (JSON `operator` field + S3 object metadata)
+- SSM command history (`Comment` field includes operator identity)
+- CloudWatch Logs (`PATCH_SCHEDULED:` / `PATCH_EXECUTED:` log entries include operator)
+- Web UI Decision Audit Trail table (Operator column)
+
+### Role-Based Access Control
+
+Two roles control what operators can do:
+
+| Role | Dashboard | Chat | Patch Execution | Reports |
+|------|-----------|------|-----------------|---------|
+| **Operator** | ✅ | ✅ | ✅ | ✅ |
+| **Viewer** | ✅ | ❌ | ❌ | ✅ |
+
+In pilot mode, a dropdown in the top navigation switches roles (stored in localStorage, sent via `X-Role` header). In production mode, Cognito groups determine the role and the dropdown is replaced by the authenticated user identity.
+
+### Web UI and Operations Console
+
+Browser-based console with two panels:
+
+- **Dashboard**: KPI bar (total instances, vulnerabilities, SLA compliance rate), environment status cards, vulnerability table with pagination, compliance summary by severity/environment/team, decision explainability table with operator attribution
+- **Chat**: Streaming agent responses with specialist routing indicators, approval buttons for phased rollout between environments, session persistence via localStorage
+
+---
+
 ## Architecture
 
 ```
@@ -45,24 +125,6 @@ Agents make risk-based decisions using maintenance windows and CVSS scores. Appl
 ```
 
 The supervisor routes queries to the right specialist automatically. If a specialist can't handle a query, the supervisor re-routes or falls back to direct AWS API access via `use_aws`.
-
-### Patching Workflow
-
-Every patching operation follows a mandatory workflow:
-
-1. **Discover** affected instances and calculate SLA requirement
-2. **Maintenance window** check — find next available window
-3. **SLA decision**: SCHEDULED (wait for window) or EMERGENCY (patch now)
-4. **Dry-run scan** — runs `AWS-RunPatchBaseline` with `Operation: Scan` (same mechanism as patching uses for Install) to show exactly which patches are missing, their severity, and classification. Operator confirms before proceeding.
-5. **Capture pre-patch state** — snapshot compliance metrics (missing/installed counts) for before/after comparison. Runs after the dry-run scan so data is populated.
-6. **Execute** patching via SSM (`AWS-RunPatchBaseline` with `Operation: Install`)
-7. **Verify** instance health (SSM connectivity) and application health (CloudWatch alarms)
-8. **Capture post-patch state** — snapshot compliance metrics after patching
-9. **Generate compliance report** with before/after delta (saved to S3)
-
-If rollback is needed, the agent runs `yum history undo` and then verifies the rollback succeeded — re-scanning with `RunPatchBaseline` to confirm patch counts returned to pre-patch levels, plus SSM health and CloudWatch alarm checks.
-
-Decision logic: if the next maintenance window is within the SLA deadline → SCHEDULED. If the window would exceed the SLA → EMERGENCY.
 
 ---
 
@@ -254,6 +316,34 @@ fields @timestamp, agent, decision_type, decision, reasoning
 | sort @timestamp desc
 ```
 
+### Audit Trail Queries
+
+The per-user audit trail is queryable from multiple surfaces:
+
+**SSM Command History** — find all patches initiated by a specific operator:
+```bash
+aws ssm list-commands \
+  --filters "Key=Comment,Values=operator@" \
+  --query "Commands[].{Id:CommandId,Comment:Comment,Status:Status,Requested:RequestedDateTime}" \
+  --output table
+```
+
+**S3 Compliance Reports** — query with Athena for fleet-wide audit:
+```sql
+SELECT report_id, timestamp, operator, cve_id, environment, decision, sla_met
+FROM patch_compliance_reports
+WHERE operator LIKE '%jane.doe%'
+ORDER BY timestamp DESC
+```
+
+**CloudWatch Logs Insights** — real-time operator activity:
+```
+fields @timestamp, @message
+| filter @message like /PATCH_EXECUTED:/ or @message like /PATCH_SCHEDULED:/
+| parse @message "operator=* " as operator
+| sort @timestamp desc
+```
+
 ---
 
 ## Security
@@ -261,12 +351,13 @@ fields @timestamp, agent, decision_type, decision, reasoning
 - Internal ALB (no public exposure) — accessed via SSM port forwarding
 - HTTPS via ACM certificate
 - API key authentication (opt-in via `API_KEY` env var)
-- Role-based access control: `operator` (full access) and `viewer` (dashboard read-only, no chat/patching). Configure via `API_KEY_OPERATOR` and `API_KEY_VIEWER` env vars. Frontend auto-detects role and disables chat input for viewers.
+- Role-based access control: `operator` (full access) and `viewer` (dashboard read-only, no chat/patching). Configure via `API_KEY_OPERATOR` and `API_KEY_VIEWER` env vars, or use the frontend role switcher in pilot mode
 - Rate limiting (20 req/min per client IP)
 - Instance ID regex validation on all SSM operations
 - IAM least privilege — write access scoped to SSM commands and S3 compliance bucket
 - Human approval gates between environments during phased rollout
 - Dry-run gate — programmatic enforcement requires a recent Scan before any Install operation
+- Per-user audit trail — operator identity recorded in S3 reports, SSM comments, and CloudWatch logs
 
 ---
 
@@ -276,9 +367,35 @@ The solution ships ready for pilot use. For production workloads, consider the f
 
 ### Authentication and Authorization
 
-- **Corporate IdP integration**: Add a Cognito user pool with SAML/OIDC federation to your corporate IdP (Okta, Azure AD, Ping). Protect the API with Cognito authorizer tokens. The internal ALB + SSM tunnel means standard OIDC redirect flows won't work directly — use Cognito's hosted UI with token-based auth instead of ALB-native OIDC.
-- **Role-based access control**: Parse JWT claims in `server.py` middleware to enforce roles (e.g., read-only viewers vs. patch operators). Restrict destructive operations (patch execution, rollback) to specific groups.
-- **Per-user audit trail**: Log the authenticated user identity with each agent invocation. Currently the agent logs decisions but not who initiated them.
+The pilot uses a frontend role switcher with session-based identity. For production, replace with Cognito + ALB native authentication:
+
+1. **Cognito User Pool**: Create a user pool with two groups (`operators`, `viewers`). Federate with your corporate IdP (Okta, Azure AD, Ping) via SAML or OIDC.
+2. **ALB Authentication Action**: Configure the ALB listener to authenticate via Cognito before forwarding to Fargate. ALB handles the entire OAuth2 flow — login redirect, token validation, session cookies. No application code changes needed for the auth flow itself.
+3. **Backend role resolution**: ALB injects `x-amzn-oidc-data` (JWT) and `x-amzn-oidc-identity` headers. Update `_resolve_role()` in `server.py` to decode the JWT payload (ALB already validated the signature) and extract `cognito:groups` for role and `email` for operator identity. Delete the API key and X-Role header logic.
+4. **IAM session tags for CloudTrail attribution**: When invoking the agent, assume the execution role with `sts:AssumeRole` and pass `--tags operator={email}`. CloudTrail then records the human identity on every downstream API call (SSM SendCommand, S3 PutObject) — giving you tamper-proof, native audit attribution without any custom logging code.
+
+This is approximately 2-3 hours of work. The ALB-Cognito integration is the key shortcut — the frontend never handles passwords or tokens.
+
+### Native AWS Audit Capabilities
+
+Before building custom audit infrastructure, consider what AWS already provides:
+
+- **CloudTrail**: Every SSM `SendCommand`, S3 `PutObject`, and EC2 API call is already logged with the IAM principal, source IP, timestamp, and full request parameters. With session tags (see above), CloudTrail attributes actions to the human operator, not just the service role.
+- **SSM Command History**: `ssm:ListCommands` and `ssm:ListCommandInvocations` return the full execution history including the `Comment` field (which this solution populates with operator identity), status, timing, and target instances.
+- **S3 Object Metadata**: Compliance reports are stored with S3 object metadata (`operator`, `cve-id`, `environment`, `severity`, `decision-type`, `sla-met`, `team`, `product`). Queryable via S3 Inventory + Athena without reading the JSON body.
+- **AWS Config**: Tracks configuration changes over time. If enabled, you get a timeline of patch compliance state changes per instance.
+- **CloudWatch Logs Insights**: Agent logs include structured `PATCH_SCHEDULED:` and `PATCH_EXECUTED:` entries with operator identity, environment, mode, and instance count — queryable in real time.
+
+For production, the recommended approach is: Cognito for authentication → IAM session tags for attribution → CloudTrail as the single source of truth for audit. The custom S3 compliance reports complement this with business-level context (SLA assessment, compliance delta) that CloudTrail doesn't capture.
+
+### Integration Patterns
+
+The solution exposes an HTTP API with SSE streaming, making it embeddable in existing tools:
+
+- **Slack / Microsoft Teams**: POST to `/api/chat` with the message body, consume the SSE stream, and render agent responses in a channel. A lightweight Lambda or Fargate sidecar can bridge the Slack Events API to the patch automation API. The agent's structured next-steps output maps naturally to Slack interactive buttons.
+- **ServiceNow / Jira**: Trigger patch operations from incident tickets. On ticket creation with a CVE tag, call the API to assess impact. On approval, call the API to execute. Write the compliance report URL back to the ticket.
+- **SNS Notifications**: After long-running patch operations, publish a completion event to SNS. Subscribe Slack webhooks, email, or PagerDuty for operator notification without polling the chat.
+- **Custom dashboards**: The `/api/dashboard` endpoint returns all fleet status, vulnerability, and compliance data as JSON — embeddable in Grafana, Datadog, or internal portals.
 
 ### Network and Access
 
@@ -365,6 +482,8 @@ Handle CVE-2025-38477 in dev
 Run a dry-run scan on dev to preview missing patches
 Show SLA breaches this week
 Patch all critical CVEs in staging
+Who patched prod last week?
+Generate a compliance report for PCI-DSS in staging
 ```
 
 The agent will automatically assess fleet-wide impact when scanning vulnerabilities, run a dry-run preview before patching, capture before/after compliance snapshots, and include the compliance delta in the report. If rollback is needed, it verifies the rollback succeeded before reporting back.

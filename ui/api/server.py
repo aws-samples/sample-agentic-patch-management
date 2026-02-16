@@ -306,9 +306,10 @@ async def chat(req: ChatRequest, request: Request):
     if not message:
         return JSONResponse(status_code=422, content={"error": "message is required"})
 
-    logger.info(f"Chat request: session_id={session_id} message={message[:80]}")
+    logger.info(f"Chat request: session_id={session_id} role={getattr(request.state, 'role', 'unknown')} message={message[:80]}")
     client = _get_client()
-    payload = json.dumps({"prompt": message}).encode()
+    role = getattr(request.state, "role", "operator")
+    payload = json.dumps({"prompt": message, "operator": f"{role}@{session_id[:12]}"}).encode()
 
     try:
         response = client.invoke_agent_runtime(
@@ -637,6 +638,7 @@ def _fetch_reports() -> dict:
         report_details.append({
             "report_id": report.get("report_id", ""),
             "timestamp": report.get("timestamp", ""),
+            "operator": report.get("operator", "unknown"),
             "cve_id": vuln.get("cve_id", "N/A"),
             "severity": severity,
             "cvss_score": vuln.get("cvss_score"),

@@ -156,7 +156,9 @@ async def agent_invocation(payload, context):
     request_start = time.time()
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
-    logger.info(f"New request: {user_message[:100]}")
+    operator_identity = payload.get("operator", "unknown")
+    os.environ["PATCH_OPERATOR"] = operator_identity
+    logger.info(f"New request: operator={operator_identity} message={user_message[:100]}")
     
     # Load memory_id from AgentCore config (set during agentcore launch)
     memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
