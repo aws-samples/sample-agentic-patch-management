@@ -7,11 +7,12 @@ import DashboardPanel from "./components/DashboardPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
 import { useRole } from "./hooks/useRole";
+import type { Role } from "./hooks/useRole";
 
 export default function App() {
+  const { role, setRole } = useRole();
   const { messages, isStreaming, sessionId, sendMessage, stopStreaming, clearMessages } =
-    useAgentStream();
-  const { role } = useRole();
+    useAgentStream(role);
   const [chatPrefill, setChatPrefill] = useState("");
   const [dashboardOpen, setDashboardOpen] = useState(true);
 
@@ -23,7 +24,18 @@ export default function App() {
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
       <TopNavigation
         identity={{ href: "/", title: "🛡️ Patchy — Intelligent Patch Automation" }}
-        utilities={[]}
+        utilities={[
+          {
+            type: "menu-dropdown",
+            text: role === "operator" ? "👤 Operator" : "👁️ Viewer",
+            title: "Switch role",
+            items: [
+              { id: "operator", text: "👤 Operator — full access" },
+              { id: "viewer", text: "👁️ Viewer — read-only" },
+            ],
+            onItemClick: ({ detail }) => setRole(detail.id as Role),
+          },
+        ]}
       />
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
@@ -46,9 +58,7 @@ export default function App() {
               />
             </div>
             <ErrorBoundary>
-              <DashboardPanel
-                onChatPrefill={handleChatPrefill}
-              />
+              <DashboardPanel onChatPrefill={handleChatPrefill} />
             </ErrorBoundary>
           </div>
         </div>

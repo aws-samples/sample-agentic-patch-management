@@ -1,30 +1,35 @@
-import { useState, useEffect } from "react";
+import { useState, useCallback } from "react";
 
 export type Role = "operator" | "viewer";
 
+const ROLE_STORAGE_KEY = "patchy-role";
+
+function getStoredRole(): Role {
+  try {
+    const stored = localStorage.getItem(ROLE_STORAGE_KEY);
+    if (stored === "viewer") return "viewer";
+  } catch {
+    // localStorage unavailable
+  }
+  return "operator";
+}
+
 /**
- * Fetch the authenticated user's role from the API.
- * Returns "operator" by default (auth disabled or fetch failure).
+ * Local role state with localStorage persistence.
+ * The selected role is sent as X-Role header on every API request —
+ * the backend enforces it server-side.
  */
 export function useRole() {
-  const [role, setRole] = useState<Role>("operator");
-  const [loading, setLoading] = useState(true);
+  const [role, setRoleState] = useState<Role>(getStoredRole);
 
-  useEffect(() => {
-    const headers: Record<string, string> = {};
-    const apiKey = import.meta.env.VITE_API_KEY;
-    if (apiKey) headers["X-API-Key"] = apiKey;
-
-    fetch("/api/role", { headers })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.role === "viewer") setRole("viewer");
-      })
-      .catch(() => {
-        // Default to operator on failure (backward compatible)
-      })
-      .finally(() => setLoading(false));
+  const setRole = useCallback((newRole: Role) => {
+    setRoleState(newRole);
+    try {
+      localStorage.setItem(ROLE_STORAGE_KEY, newRole);
+    } catch {
+      // best-effort
+    }
   }, []);
 
-  return { role, roleLoading: loading };
+  return { role, setRole };
 }

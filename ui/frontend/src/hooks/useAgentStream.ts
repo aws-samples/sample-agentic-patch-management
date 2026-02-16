@@ -64,7 +64,7 @@ function resetSessionId(): string {
  * server-side — the sessionId is the key that reconnects to it.
  * Clicking "New conversation" generates a fresh session.
  */
-export function useAgentStream() {
+export function useAgentStream(role: string = "operator") {
   const [state, setState] = useState<StreamState>({
     messages: [],
     isStreaming: false,
@@ -102,7 +102,7 @@ export function useAgentStream() {
 
       try {
         const apiKey = import.meta.env.VITE_API_KEY;
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const headers: Record<string, string> = { "Content-Type": "application/json", "X-Role": role };
         if (apiKey) headers["X-API-Key"] = apiKey;
 
         const res = await fetch("/api/chat", {
@@ -196,7 +196,7 @@ export function useAgentStream() {
         abortRef.current = null;
       }
     },
-    [state.sessionId]
+    [state.sessionId, role]
   );
 
   const stopStreaming = useCallback(() => {
