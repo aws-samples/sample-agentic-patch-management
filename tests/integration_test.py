@@ -24,7 +24,7 @@ Usage:
 
 Prerequisites:
     - .env configured with AWS_PROFILE and AWS_REGION
-    - Sample environment deployed (./deploy.sh --with-demo)
+    - Sample environment deployed (./deploy.sh --with-sample-env)
     - venv activated with agent dependencies installed
 """
 

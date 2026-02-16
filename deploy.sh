@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Intelligent Patch Automation — Deployment Script
-# Usage: ./deploy.sh [--with-demo] [agent|ui|destroy|destroy --demo-only]
+# Usage: ./deploy.sh [--with-sample-env] [agent|ui|destroy|destroy --sample-only]
 
 set -e
 
@@ -37,13 +37,13 @@ show_help() {
     echo ""
     echo "Deploy:"
     echo "  ${GREEN}(no args)${NC}         Deploy full solution (infra + agent + UI)"
-    echo "  ${GREEN}--with-demo${NC}       Deploy full solution + sample EC2 environment"
+    echo "  ${GREEN}--with-sample-env${NC}  Deploy full solution + sample EC2 environment"
     echo "  ${GREEN}agent${NC}             Redeploy agent only (after code changes)"
     echo "  ${GREEN}ui${NC}               Redeploy UI only (after code changes)"
     echo ""
     echo "Cleanup:"
     echo "  ${RED}destroy${NC}           Destroy ALL infrastructure"
-    echo "  ${RED}destroy --demo-only${NC}  Destroy sample environment only"
+    echo "  ${RED}destroy --sample-only${NC}  Destroy sample environment only"
     echo ""
     echo "First-time setup:"
     echo "  1. cp .env.example .env"
@@ -309,9 +309,9 @@ COMMAND=${1:-}
 FLAG=${2:-}
 
 case "$COMMAND" in
-    ""|"--with-demo")
+    ""|"--with-sample-env")
         # Full deploy: env → agent → infra → UI
-        [ "$COMMAND" = "--with-demo" ] && INCLUDE_DEMO=true || INCLUDE_DEMO=false
+        [ "$COMMAND" = "--with-sample-env" ] && INCLUDE_DEMO=true || INCLUDE_DEMO=false
 
         check_prereqs true true true
         echo -e "${BLUE}Intelligent Patch Automation — Full Deploy${NC}"
@@ -344,7 +344,7 @@ case "$COMMAND" in
 
     "destroy")
         check_prereqs false true
-        if [ "$FLAG" = "--demo-only" ]; then
+        if [ "$FLAG" = "--sample-only" ]; then
             destroy true
         else
             destroy false

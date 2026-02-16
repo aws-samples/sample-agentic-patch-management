@@ -105,13 +105,13 @@ def _resolve_role(request: Request) -> str | None:
     
     Returns: "operator", "viewer", or None (unauthorized).
 
-    Demo mode (no API keys configured): respects X-Role header from the
+    Pilot mode (no API keys configured): respects X-Role header from the
     frontend role switcher. Defaults to "operator" if header is absent.
 
     Production mode (API keys configured): ignores X-Role header and
     resolves role from the API key only.
     """
-    # No auth configured → demo mode, use X-Role header
+    # No auth configured → pilot mode, use X-Role header
     if not any([API_KEY, API_KEY_OPERATOR, API_KEY_VIEWER]):
         role_header = request.headers.get("X-Role", "operator")
         return "viewer" if role_header == "viewer" else "operator"

@@ -86,7 +86,7 @@ cp .env.example .env
 ./setup-tls.sh
 
 # 3. Deploy everything (with sample EC2 instances)
-./deploy.sh --with-demo
+./deploy.sh --with-sample-env
 
 # 4. Connect to the UI
 ./connect-ui.sh
@@ -119,13 +119,13 @@ All scripts auto-source `.env` from the project root.
 | Command | What it does |
 |---------|-------------|
 | `./deploy.sh` | Full deploy: infra + agent + UI |
-| `./deploy.sh --with-demo` | Full deploy + 15 sample EC2 instances |
+| `./deploy.sh --with-sample-env` | Full deploy + 15 sample EC2 instances |
 | `./deploy.sh agent` | Redeploy agent only |
 | `./deploy.sh ui` | Redeploy UI only |
 | `./connect-ui.sh` | SSM port forward to the internal ALB |
 | `./setup-tls.sh` | Generate self-signed cert + import to ACM |
 | `./deploy.sh destroy` | Destroy ALL infrastructure |
-| `./deploy.sh destroy --demo-only` | Destroy sample environment only |
+| `./deploy.sh destroy --sample-only` | Destroy sample environment only |
 
 ### Infrastructure Stacks
 
@@ -134,11 +134,11 @@ All scripts auto-source `.env` from the project root.
 | `Patchy-Network` | VPC, subnets, NAT gateways (skipped when `EXISTING_VPC_ID` is set) |
 | `Patchy-Core` | S3 compliance reports bucket, AWS Config recorder, AgentCore IAM policy |
 | `Patchy-UI` | ECS Fargate, internal ALB, CloudWatch logs |
-| `Patchy-SampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-demo`) |
+| `Patchy-SampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-sample-env`) |
 
-The sample environment is fully self-contained — it creates its own security group, instance role, and instance profile. It deploys and destroys independently: `./deploy.sh destroy --demo-only`.
+The sample environment is fully self-contained — it creates its own security group, instance role, and instance profile. It deploys and destroys independently: `./deploy.sh destroy --sample-only`.
 
-> ⚠️ **Production Warning — S3 Bucket Retention**: The compliance reports S3 bucket defaults to `DESTROY` with `autoDeleteObjects` for clean pilot teardown. For production, change `removalPolicy` to `RETAIN` in `infra/lib/core-stack.ts` to preserve compliance reports if the stack is deleted. See [Production Hardening → Data and Compliance](#data-and-compliance) for details.
+> ⚠️ **Production Warning — S3 Bucket Retention**: The compliance reports S3 bucket defaults to `DESTROY` with `autoDeleteObjects` for clean teardown. For production, change `removalPolicy` to `RETAIN` in `infra/lib/core-stack.ts` to preserve compliance reports if the stack is deleted. See [Production Hardening → Data and Compliance](#data-and-compliance) for details.
 
 ### Using an Existing VPC
 
@@ -192,7 +192,7 @@ The agent respects SSM maintenance windows:
 - SCHEDULED: next window is within SLA → wait for it
 - EMERGENCY: next window exceeds SLA → patch immediately
 
-Sample windows (from `--with-demo`): dev daily 1AM UTC, staging Tuesday 2AM UTC, prod 1st of month 2AM UTC.
+Sample windows (from `--with-sample-env`): dev daily 1AM UTC, staging Tuesday 2AM UTC, prod 1st of month 2AM UTC.
 
 ---
 
@@ -288,7 +288,7 @@ The solution ships ready for pilot use. For production workloads, consider the f
 
 ### Data and Compliance
 
-- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `core-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean pilot teardown.
+- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `core-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean teardown.
 - **S3 Object Lock**: Enable Object Lock (compliance mode) on the compliance reports bucket to make audit data immutable. Prevents accidental or malicious deletion of compliance evidence.
 - **KMS encryption**: Replace S3-managed encryption with a customer-managed KMS key for compliance reports and Config snapshots. Enables key rotation policies and CloudTrail key usage auditing.
 - **Cross-account backup**: Replicate the compliance reports bucket to a separate audit account using S3 Cross-Region Replication. Ensures reports survive even if the primary account is compromised.
@@ -325,7 +325,7 @@ The solution ships ready for pilot use. For production workloads, consider the f
 ## Teardown
 
 ```bash
-./deploy.sh destroy --demo-only    # Remove sample environment only
+./deploy.sh destroy --sample-only    # Remove sample environment only
 ./deploy.sh destroy                # Remove ALL infrastructure (prompts for confirmation)
 agentcore destroy                  # Remove the AgentCore agent runtime separately
 ```

@@ -1,13 +1,13 @@
 // ── Sample Environment ──────────────────────────────────────────────
-// Self-contained demo stack: VPC, security group, instance role, 15 EC2
+// Self-contained sample stack: VPC, security group, instance role, 15 EC2
 // instances across dev/staging/prod, maintenance windows, ALBs, patch
 // baselines, and CloudWatch alarms.
 //
 // NOT required for the solution — most customers point the agent at
 // their own existing fleet.
 //
-// Deploy:  ./deploy.sh --with-demo
-// Destroy: ./deploy.sh destroy --demo-only
+// Deploy:  ./deploy.sh --with-sample-env
+// Destroy: ./deploy.sh destroy --sample-only
 
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -28,7 +28,7 @@ export class SampleEnvironmentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SampleEnvironmentStackProps) {
     super(scope, id, props);
 
-    // ── Instance Security Group (demo only) ────────────────────────
+    // ── Instance Security Group (sample environment) ─────────────────
     const instanceSG = new ec2.SecurityGroup(this, 'SampleInstanceSG', {
       vpc: props.vpc,
       description: 'Security group for sample patch automation instances',
@@ -37,7 +37,7 @@ export class SampleEnvironmentStack extends cdk.Stack {
     instanceSG.addIngressRule(instanceSG, ec2.Port.tcp(80), 'HTTP from ALB');
     instanceSG.addIngressRule(instanceSG, ec2.Port.tcp(443), 'HTTPS from ALB');
 
-    // ── Instance IAM Role (demo only) ──────────────────────────────
+    // ── Instance IAM Role (sample environment) ───────────────────────
     const instanceRole = new iam.Role(this, 'SampleInstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       description: 'IAM role for sample patch automation instances',

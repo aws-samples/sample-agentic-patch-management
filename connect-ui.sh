@@ -71,7 +71,7 @@ INSTANCE_ID=$(aws ssm describe-instance-information \
 
 if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
     echo -e "${RED}No online SSM-managed instances found.${NC}"
-    echo "Deploy the sample environment: ./deploy.sh --with-demo"
+    echo "Deploy the sample environment: ./deploy.sh --with-sample-env"
     exit 1
 fi
 

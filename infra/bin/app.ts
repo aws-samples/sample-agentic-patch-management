@@ -27,7 +27,7 @@ const resolvedRoleArn = (agentCoreRoleArn && agentCoreRoleArn !== 'placeholder')
 
 // ── VPC ────────────────────────────────────────────────────────────
 // EXISTING_VPC_ID → use customer's VPC, skip Patchy-Network
-// Not set         → create a new VPC (demo / standalone mode)
+// Not set         → create a new VPC (standalone mode)
 
 const existingVpcId = process.env.EXISTING_VPC_ID;
 let vpc: ec2.IVpc;
@@ -62,7 +62,7 @@ const uiStack = new UIStack(app, 'Patchy-UI', {
 });
 if (networkingStack) uiStack.addDependency(networkingStack);
 
-// ── Sample Environment (optional: --with-demo) ────────────────────
+// ── Sample Environment (optional: --with-sample-env) ───────────────
 // Self-contained: SG, instance role, 15 EC2s, maintenance windows,
 // ALBs, patch baselines, CloudWatch alarms.
 const sampleStack = new SampleEnvironmentStack(app, 'Patchy-SampleEnv', {

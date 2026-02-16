@@ -23,7 +23,7 @@ AWS CDK stacks for Patchy — Intelligent Patch Automation.
 ```bash
 # From project root (recommended)
 ./deploy.sh               # Full solution
-./deploy.sh --with-demo   # Full solution + sample environment
+./deploy.sh --with-sample-env   # Full solution + sample environment
 ./deploy.sh ui            # UI stack only (after agent is deployed)
 
 # Or directly with CDK
@@ -39,7 +39,7 @@ npx cdk deploy Patchy-Core -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConf
 
 ```bash
 ./deploy.sh destroy              # Everything
-./deploy.sh destroy --demo-only  # Sample environment only
+./deploy.sh destroy --sample-only  # Sample environment only
 ```
 
 ## Context Parameters
