@@ -5,6 +5,7 @@ import SpaceBetween from "@cloudscape-design/components/space-between";
 import Box from "@cloudscape-design/components/box";
 import MessageBubble from "./MessageBubble";
 import type { ChatMessage } from "../hooks/useAgentStream";
+import type { Role } from "../hooks/useRole";
 
 interface Props {
   messages: ChatMessage[];
@@ -15,6 +16,7 @@ interface Props {
   sessionId: string;
   prefillText?: string;
   onPrefillConsumed?: () => void;
+  role?: Role;
 }
 
 const EXAMPLE_PROMPTS = [
@@ -32,9 +34,11 @@ export default function ChatPanel({
   onClear,
   prefillText,
   onPrefillConsumed,
+  role = "operator",
 }: Props) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const isViewer = role === "viewer";
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -75,27 +79,35 @@ export default function ChatPanel({
 
       {/* Input bar — pinned to bottom */}
       <div style={{ flexShrink: 0, padding: "4px 8px", borderTop: "1px solid #e9ebed", background: "#fff" }}>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <div style={{ flex: 1 }}>
-            <Input
-              value={input}
-              onChange={({ detail }) => setInput(detail.value)}
-              onKeyDown={({ detail }) => { if (detail.key === "Enter") handleSend(); }}
-              placeholder="Ask about vulnerabilities, patching, compliance..."
-              disabled={isStreaming}
-              autoFocus
-            />
-          </div>
-          {isStreaming ? (
-            <Button onClick={onStop} variant="normal">Stop</Button>
-          ) : (
-            <Button onClick={handleSend} variant="primary" disabled={!input.trim()}>Send</Button>
-          )}
-        </div>
-        {messages.length > 0 && (
-          <Box float="right" margin={{ top: "xxs" }}>
-            <Button variant="link" onClick={onClear} disabled={isStreaming}>New conversation</Button>
+        {isViewer ? (
+          <Box textAlign="center" padding={{ vertical: "xs" }} color="text-body-secondary">
+            🔒 Read-only mode — viewer role cannot send messages. Contact your admin for operator access.
           </Box>
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <div style={{ flex: 1 }}>
+                <Input
+                  value={input}
+                  onChange={({ detail }) => setInput(detail.value)}
+                  onKeyDown={({ detail }) => { if (detail.key === "Enter") handleSend(); }}
+                  placeholder="Ask about vulnerabilities, patching, compliance..."
+                  disabled={isStreaming}
+                  autoFocus
+                />
+              </div>
+              {isStreaming ? (
+                <Button onClick={onStop} variant="normal">Stop</Button>
+              ) : (
+                <Button onClick={handleSend} variant="primary" disabled={!input.trim()}>Send</Button>
+              )}
+            </div>
+            {messages.length > 0 && (
+              <Box float="right" margin={{ top: "xxs" }}>
+                <Button variant="link" onClick={onClear} disabled={isStreaming}>New conversation</Button>
+              </Box>
+            )}
+          </>
         )}
       </div>
     </div>

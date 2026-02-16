@@ -78,20 +78,74 @@ def _check_rate_limit(client_ip: str) -> bool:
     return True
 
 
-# ── Auth middleware (opt-in via API_KEY env var) ─────────────────────
+# ── Auth + RBAC middleware ────────────────────────────────────────────
+# Roles: "operator" (full access) and "viewer" (read-only: dashboard + health).
+#
+# Configure via environment variables:
+#   API_KEY=my-secret-key                     → single key, operator role (backward compatible)
+#   API_KEY_OPERATOR=operator-secret-key      → explicit operator key
+#   API_KEY_VIEWER=viewer-secret-key          → explicit viewer key
+#
+# When no API_KEY* vars are set, auth is disabled (open access, operator role).
+# For production, use Cognito + JWT instead — see Production Hardening in README.
 
 API_KEY = os.environ.get("API_KEY")
+API_KEY_OPERATOR = os.environ.get("API_KEY_OPERATOR")
+API_KEY_VIEWER = os.environ.get("API_KEY_VIEWER")
+
+# Paths that viewers can access (GET only)
+_VIEWER_ALLOWED = {"/api/health", "/api/dashboard"}
+
+# Paths that require operator role (POST to chat = patch operations)
+_OPERATOR_PATHS = {"/api/chat"}
+
+
+def _resolve_role(request: Request) -> str | None:
+    """Resolve the user's role from the API key header.
+    
+    Returns: "operator", "viewer", or None (unauthorized).
+    If no API keys are configured, returns "operator" (auth disabled).
+    """
+    # No auth configured → open access as operator
+    if not any([API_KEY, API_KEY_OPERATOR, API_KEY_VIEWER]):
+        return "operator"
+
+    provided_key = request.headers.get("X-API-Key")
+    if not provided_key:
+        return None
+
+    # Check explicit role keys first
+    if API_KEY_OPERATOR and provided_key == API_KEY_OPERATOR:
+        return "operator"
+    if API_KEY_VIEWER and provided_key == API_KEY_VIEWER:
+        return "viewer"
+    # Backward compatible: single API_KEY = operator
+    if API_KEY and provided_key == API_KEY:
+        return "operator"
+
+    return None
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
+    # Health check is always open
     if request.url.path == "/api/health":
         return await call_next(request)
-    if not API_KEY:
-        return await call_next(request)
-    provided_key = request.headers.get("X-API-Key")
-    if provided_key != API_KEY:
+
+    role = _resolve_role(request)
+
+    if role is None:
         return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    # Viewer role: block write operations
+    if role == "viewer" and request.url.path in _OPERATOR_PATHS:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Forbidden: viewer role cannot perform patch operations. Contact your admin for operator access."}
+        )
+
+    # Attach role to request state for downstream use
+    request.state.role = role
     return await call_next(request)
 
 # Load AgentCore config — resolve for both local dev and Docker container
@@ -281,6 +335,13 @@ async def health():
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+
+@app.get("/api/role")
+async def get_role(request: Request):
+    """Return the authenticated user's role. Used by frontend to toggle UI."""
+    role = getattr(request.state, "role", "operator")
+    return {"role": role}
 
 
 # ── Dashboard ────────────────────────────────────────────────────────

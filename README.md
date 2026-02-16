@@ -110,7 +110,9 @@ All scripts auto-source `.env` from the project root.
 | `AGENTCORE_ROLE_ARN` | No | Auto-detected after agent deploy |
 | `EXISTING_VPC_ID` | No | Use an existing VPC instead of creating one. Skips NetworkingStack. |
 | `ACM_CERTIFICATE_ARN` | No | Enables HTTPS. Run `./setup-tls.sh` or use your own ACM cert ARN. |
-| `API_KEY` | No | Enables `X-API-Key` header auth on the web UI |
+| `API_KEY` | No | Enables `X-API-Key` header auth on the web UI (operator role) |
+| `API_KEY_OPERATOR` | No | Explicit operator key — full access (dashboard + chat + patching) |
+| `API_KEY_VIEWER` | No | Viewer key — read-only access (dashboard + health only, no chat) |
 
 ### Commands
 
@@ -135,6 +137,8 @@ All scripts auto-source `.env` from the project root.
 | `Patchy-SampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-demo`) |
 
 The sample environment is fully self-contained — it creates its own security group, instance role, and instance profile. It deploys and destroys independently: `./deploy.sh destroy --demo-only`.
+
+> ⚠️ **Production Warning — S3 Bucket Retention**: The compliance reports S3 bucket defaults to `DESTROY` with `autoDeleteObjects` for clean pilot teardown. For production, change `removalPolicy` to `RETAIN` in `infra/lib/core-stack.ts` to preserve compliance reports if the stack is deleted. See [Production Hardening → Data and Compliance](#data-and-compliance) for details.
 
 ### Using an Existing VPC
 
@@ -257,10 +261,12 @@ fields @timestamp, agent, decision_type, decision, reasoning
 - Internal ALB (no public exposure) — accessed via SSM port forwarding
 - HTTPS via ACM certificate
 - API key authentication (opt-in via `API_KEY` env var)
+- Role-based access control: `operator` (full access) and `viewer` (dashboard read-only, no chat/patching). Configure via `API_KEY_OPERATOR` and `API_KEY_VIEWER` env vars. Frontend auto-detects role and disables chat input for viewers.
 - Rate limiting (20 req/min per client IP)
 - Instance ID regex validation on all SSM operations
 - IAM least privilege — write access scoped to SSM commands and S3 compliance bucket
 - Human approval gates between environments during phased rollout
+- Dry-run gate — programmatic enforcement requires a recent Scan before any Install operation
 
 ---
 

@@ -23,19 +23,52 @@ const TOOL_LABELS: Record<string, string> = {
   use_aws: "⚙️ Consulting AWS Services",
 };
 
+// ── Session persistence ────────────────────────────────────────────
+// Persist sessionId to localStorage so conversation history survives
+// page refreshes. AgentCore memory already stores the conversation
+// server-side — this just ensures the same session_id is sent.
+
+const SESSION_STORAGE_KEY = "patchy-session-id";
+
+function getOrCreateSessionId(): string {
+  try {
+    const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (stored) return stored;
+  } catch {
+    // localStorage unavailable (private browsing, etc.)
+  }
+  const id = `web-${crypto.randomUUID().replace(/-/g, "")}`;
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, id);
+  } catch {
+    // best-effort
+  }
+  return id;
+}
+
+function resetSessionId(): string {
+  const id = `web-${crypto.randomUUID().replace(/-/g, "")}`;
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, id);
+  } catch {
+    // best-effort
+  }
+  return id;
+}
+
 /**
  * Hook for streaming chat with the patch automation agent via SSE.
  *
- * Session ID is generated per page load (not persisted across reloads).
- * This means conversation history resets on refresh. For production use,
- * consider persisting sessionId to localStorage if cross-reload continuity
- * is needed — the backend (AgentCore memory) already supports it.
+ * Session ID is persisted to localStorage so conversation context
+ * survives page refreshes. AgentCore memory stores the full conversation
+ * server-side — the sessionId is the key that reconnects to it.
+ * Clicking "New conversation" generates a fresh session.
  */
 export function useAgentStream() {
   const [state, setState] = useState<StreamState>({
     messages: [],
     isStreaming: false,
-    sessionId: `web-${crypto.randomUUID().replace(/-/g, "")}`,
+    sessionId: getOrCreateSessionId(),
   });
 
   const abortRef = useRef<AbortController | null>(null);
@@ -174,7 +207,7 @@ export function useAgentStream() {
     setState((prev) => ({
       ...prev,
       messages: [],
-      sessionId: `web-${crypto.randomUUID().replace(/-/g, "")}`,
+      sessionId: resetSessionId(),
     }));
   }, []);
 

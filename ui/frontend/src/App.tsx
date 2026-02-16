@@ -6,10 +6,12 @@ import ChatPanel from "./components/ChatPanel";
 import DashboardPanel from "./components/DashboardPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
+import { useRole } from "./hooks/useRole";
 
 export default function App() {
   const { messages, isStreaming, sessionId, sendMessage, stopStreaming, clearMessages } =
     useAgentStream();
+  const { role } = useRole();
   const [chatPrefill, setChatPrefill] = useState("");
   const [dashboardOpen, setDashboardOpen] = useState(true);
 
@@ -94,6 +96,7 @@ export default function App() {
                 sessionId={sessionId}
                 prefillText={chatPrefill}
                 onPrefillConsumed={() => setChatPrefill("")}
+                role={role}
               />
             </ErrorBoundary>
           </div>
