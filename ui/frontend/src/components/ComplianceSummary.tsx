@@ -1,14 +1,7 @@
 import { useMemo, useState } from "react";
-import Container from "@cloudscape-design/components/container";
-import Header from "@cloudscape-design/components/header";
-import SpaceBetween from "@cloudscape-design/components/space-between";
-import Table from "@cloudscape-design/components/table";
-import Select from "@cloudscape-design/components/select";
-import Button from "@cloudscape-design/components/button";
-import StatusIndicator from "@cloudscape-design/components/status-indicator";
-import Box from "@cloudscape-design/components/box";
-import ProgressBar from "@cloudscape-design/components/progress-bar";
-import Pagination from "@cloudscape-design/components/pagination";
+import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
+import { Badge, sevVariant, decisionVariant, SlaBadge } from "./ui/Badge";
+import { Card, CardContent } from "./ui/Card";
 import type { ComplianceSummary as ComplianceData, ReportDetail } from "../lib/api";
 
 interface Props {
@@ -25,12 +18,10 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
   const [envFilter, setEnvFilter] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Unique filter options
   const teams = useMemo(() => [...new Set(reports.map((r) => r.team))].sort(), [reports]);
   const severities = useMemo(() => [...new Set(reports.map((r) => r.severity))].sort(), [reports]);
   const environments = useMemo(() => [...new Set(reports.map((r) => r.environment))].sort(), [reports]);
 
-  // Filtered reports
   const filtered = useMemo(() => {
     let result = reports;
     if (teamFilter) result = result.filter((r) => r.team === teamFilter);
@@ -39,146 +30,133 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
     return result;
   }, [reports, teamFilter, sevFilter, envFilter]);
 
-  // Filtered stats
   const filteredMet = filtered.filter((r) => r.sla_met === true).length;
   const filteredBreached = filtered.filter((r) => r.sla_met === false).length;
   const filteredRate = filtered.length > 0 ? Math.round((filteredMet / filtered.length) * 100 * 10) / 10 : 0;
-
   const paged = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
 
   if (loading) return null;
   if (!data || !data.total_reports) {
     return (
-      <Container header={<Header variant="h2">Compliance</Header>}>
-        <Box textAlign="center" color="text-body-secondary" padding="l">
-          No compliance data yet. Run a patching workflow to generate reports.
-        </Box>
-      </Container>
+      <Card>
+        <CardContent className="p-6">
+          <div className="text-center py-6">
+            <div className="text-3xl mb-2">📊</div>
+            <p className="text-sm font-medium text-gray-700">No compliance data yet</p>
+            <p className="text-xs text-gray-500 mt-1">Run a patching workflow to generate compliance reports</p>
+          </div>
+        </CardContent>
+      </Card>
     );
   }
 
-  return (
-    <SpaceBetween size="l">
-      {/* Overall SLA bar */}
-      <Container header={<Header variant="h2">SLA Compliance — Last 30 Days</Header>}>
-        <ProgressBar
-          value={data.sla_rate_percent}
-          status={data.sla_rate_percent >= 95 ? "success" : data.sla_rate_percent >= 80 ? "in-progress" : "error"}
-          description={`${data.sla_met} met / ${data.sla_breached} breached out of ${data.total_reports} total reports`}
-          label="SLA Compliance Rate"
-          resultText={`${data.sla_rate_percent}%`}
-        />
-      </Container>
+  const barColor = data.sla_rate_percent >= 95 ? "bg-emerald-500" : data.sla_rate_percent >= 80 ? "bg-amber-500" : "bg-red-500";
 
-      {/* Filterable reports table */}
-      <Table
-        header={
-          <Header
-            variant="h2"
-            counter={`(${filtered.length}${filtered.length !== reports.length ? ` of ${reports.length}` : ""})`}
-            description={filtered.length !== reports.length ? `Filtered: ${filteredRate}% SLA rate — ${filteredMet} met, ${filteredBreached} breached` : undefined}
-          >
-            Compliance Reports
-          </Header>
-        }
-        filter={
-          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
-            <div style={{ minWidth: "150px" }}>
-              <Select
-                selectedOption={teamFilter ? { value: teamFilter, label: teamFilter } : null}
-                onChange={({ detail }) => { setTeamFilter(detail.selectedOption?.value === "__all__" ? null : detail.selectedOption?.value ?? null); setCurrentPage(1); }}
-                options={[{ value: "__all__", label: "All teams" }, ...teams.map((t) => ({ value: t, label: t }))]}
-                placeholder="All teams"
-                selectedAriaLabel="Selected"
-              />
-            </div>
-            <div style={{ minWidth: "150px" }}>
-              <Select
-                selectedOption={sevFilter ? { value: sevFilter, label: sevFilter } : null}
-                onChange={({ detail }) => { setSevFilter(detail.selectedOption?.value === "__all__" ? null : detail.selectedOption?.value ?? null); setCurrentPage(1); }}
-                options={[{ value: "__all__", label: "All severities" }, ...severities.map((s) => ({ value: s, label: s }))]}
-                placeholder="All severities"
-                selectedAriaLabel="Selected"
-              />
-            </div>
-            <div style={{ minWidth: "150px" }}>
-              <Select
-                selectedOption={envFilter ? { value: envFilter, label: envFilter } : null}
-                onChange={({ detail }) => { setEnvFilter(detail.selectedOption?.value === "__all__" ? null : detail.selectedOption?.value ?? null); setCurrentPage(1); }}
-                options={[{ value: "__all__", label: "All environments" }, ...environments.map((e) => ({ value: e, label: e }))]}
-                placeholder="All environments"
-                selectedAriaLabel="Selected"
-              />
-            </div>
-            {(teamFilter || sevFilter || envFilter) && (
-              <Button variant="link" onClick={() => { setTeamFilter(null); setSevFilter(null); setEnvFilter(null); setCurrentPage(1); }}>
-                Clear filters
-              </Button>
-            )}
+  return (
+    <div className="space-y-4">
+      {/* SLA progress bar */}
+      <Card>
+        <CardContent className="p-4">
+          <h3 className="text-base font-semibold text-gray-900 mb-1">SLA Compliance — Last 30 Days</h3>
+          <p className="text-xs text-gray-500 mb-3">{data.sla_met} met / {data.sla_breached} breached out of {data.total_reports} total reports</p>
+        <div className="w-full bg-gray-200 rounded-full h-3">
+          <div className={`h-3 rounded-full transition-all ${barColor}`} style={{ width: `${data.sla_rate_percent}%` }} />
+        </div>
+          <div className="text-right text-sm font-semibold mt-1">{data.sla_rate_percent}%</div>
+        </CardContent>
+      </Card>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <FilterSelect label="All teams" value={teamFilter} options={teams} onChange={(v) => { setTeamFilter(v); setCurrentPage(1); }} />
+        <FilterSelect label="All severities" value={sevFilter} options={severities} onChange={(v) => { setSevFilter(v); setCurrentPage(1); }} />
+        <FilterSelect label="All environments" value={envFilter} options={environments} onChange={(v) => { setEnvFilter(v); setCurrentPage(1); }} />
+        {(teamFilter || sevFilter || envFilter) && (
+          <button onClick={() => { setTeamFilter(null); setSevFilter(null); setEnvFilter(null); setCurrentPage(1); }} className="text-xs text-blue-600 hover:text-blue-800 transition">
+            Clear filters
+          </button>
+        )}
+        {filtered.length !== reports.length && (
+          <span className="text-xs text-gray-500 ml-auto">
+            {filtered.length} of {reports.length} · {filteredRate}% SLA · {filteredMet} met, {filteredBreached} breached
+          </span>
+        )}
+      </div>
+
+      {/* Reports table */}
+      <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50/80 border-b border-gray-200">
+              {["When", "CVE", "Env", "Team", "Severity", "Decision", "Framework", "Patch Time", "SLA", "Result"].map((h) => (
+                <th key={h} className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {paged.map((item) => (
+              <tr key={item.report_id} className="hover:bg-blue-50/30 transition-colors">
+                <td className="py-2.5 px-3 text-xs text-gray-500">{new Date(item.timestamp).toLocaleString()}</td>
+                <td className="py-2.5 px-3 text-blue-600 font-medium">{item.cve_id}</td>
+                <td className="py-2.5 px-3 text-gray-700">{item.environment}</td>
+                <td className="py-2.5 px-3 text-gray-700">{item.team}</td>
+                <td className="py-2.5 px-3">
+                  <Badge variant={sevVariant(item.severity)}>{item.severity}</Badge>
+                </td>
+                <td className="py-2.5 px-3">
+                  <Badge variant={decisionVariant(item.decision)}>{item.decision}</Badge>
+                </td>
+                <td className="py-2.5 px-3 text-gray-700 text-xs">{item.sla_source}</td>
+                <td className="py-2.5 px-3 text-gray-700">{item.time_to_patch_hours != null ? `${item.time_to_patch_hours}h` : "—"}</td>
+                <td className="py-2.5 px-3">
+                  <SlaBadge met={item.sla_met} />
+                </td>
+                <td className="py-2.5 px-3">
+                  <Badge variant={item.status === "Success" ? "success" : "destructive"}>
+                    {item.success_count}/{item.instance_count}
+                  </Badge>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {filtered.length === 0 && (
+          <div className="text-center text-gray-500 py-6 text-sm">No reports match filters</div>
+        )}
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">Page {currentPage} of {totalPages}</span>
+          <div className="flex gap-1">
+            <PagBtn onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}><ChevronLeftIcon className="w-4 h-4" /></PagBtn>
+            <PagBtn onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}><ChevronRightIcon className="w-4 h-4" /></PagBtn>
           </div>
-        }
-        columnDefinitions={[
-          {
-            id: "timestamp",
-            header: "When",
-            cell: (item) => new Date(item.timestamp).toLocaleString(),
-            width: 170,
-          },
-          { id: "cve", header: "CVE", cell: (item) => item.cve_id },
-          { id: "env", header: "Env", cell: (item) => item.environment },
-          { id: "team", header: "Team", cell: (item) => item.team },
-          { id: "severity", header: "Severity", cell: (item) => item.severity },
-          {
-            id: "decision",
-            header: "Decision",
-            cell: (item) => (
-              <StatusIndicator type={item.decision === "EMERGENCY" ? "warning" : "info"}>
-                {item.decision}
-              </StatusIndicator>
-            ),
-          },
-          {
-            id: "sla_source",
-            header: "Framework",
-            cell: (item) => item.sla_source,
-          },
-          {
-            id: "time",
-            header: "Patch Time",
-            cell: (item) => item.time_to_patch_hours != null ? `${item.time_to_patch_hours}h` : "—",
-          },
-          {
-            id: "sla",
-            header: "SLA",
-            cell: (item) => (
-              <StatusIndicator type={item.sla_met === true ? "success" : item.sla_met === false ? "error" : "pending"}>
-                {item.sla_met === true ? "Met" : item.sla_met === false ? "Breached" : "—"}
-              </StatusIndicator>
-            ),
-          },
-          {
-            id: "result",
-            header: "Result",
-            cell: (item) => (
-              <StatusIndicator type={item.status === "Success" ? "success" : "error"}>
-                {item.success_count}/{item.instance_count}
-              </StatusIndicator>
-            ),
-          },
-        ]}
-        items={paged}
-        variant="container"
-        pagination={
-          filtered.length > PAGE_SIZE ? (
-            <Pagination
-              currentPageIndex={currentPage}
-              pagesCount={Math.ceil(filtered.length / PAGE_SIZE)}
-              onChange={({ detail }) => setCurrentPage(detail.currentPageIndex)}
-            />
-          ) : undefined
-        }
-        empty={<Box textAlign="center" color="text-body-secondary">No reports match filters</Box>}
-      />
-    </SpaceBetween>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PagBtn({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled} className="p-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition text-gray-600">
+      {children}
+    </button>
+  );
+}
+
+function FilterSelect({ label, value, options, onChange }: { label: string; value: string | null; options: string[]; onChange: (v: string | null) => void }) {
+  return (
+    <select
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value || null)}
+      className="text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm hover:border-gray-300 transition min-w-[140px]"
+    >
+      <option value="">{label}</option>
+      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
   );
 }

@@ -1,133 +1,143 @@
 import { useState } from "react";
-import SpaceBetween from "@cloudscape-design/components/space-between";
-import Tabs from "@cloudscape-design/components/tabs";
-import Flashbar from "@cloudscape-design/components/flashbar";
-import Box from "@cloudscape-design/components/box";
-import Button from "@cloudscape-design/components/button";
-import Spinner from "@cloudscape-design/components/spinner";
+import { ArrowPathIcon, ExclamationCircleIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import KpiBar from "./KpiBar";
 import EnvironmentCards from "./EnvironmentCards";
 import VulnTable from "./VulnTable";
 import ActivityTable from "./ActivityTable";
 import ComplianceSummary from "./ComplianceSummary";
 import ExplainabilityTable from "./ExplainabilityTable";
+import { KpiSkeleton, CardsSkeleton } from "./ui/Skeleton";
 import { useDashboard } from "../hooks/useDashboard";
 
 interface Props {
   onChatPrefill?: (text: string) => void;
 }
 
+const TABS = [
+  { id: "overview", label: "Environments" },
+  { id: "vulnerabilities", label: "Vulnerabilities" },
+  { id: "activity", label: "Activity" },
+  { id: "compliance", label: "Compliance" },
+  { id: "explainability", label: "Decisions" },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
+
 export default function DashboardPanel({ onChatPrefill }: Props) {
   const { data, loading, lastRefreshed, refresh } = useDashboard();
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [dismissedErrors, setDismissedErrors] = useState<Set<number>>(new Set());
 
   if (loading && !data) {
     return (
-      <Box textAlign="center" padding="xxl">
-        <Spinner size="large" />
-        <Box variant="p" margin={{ top: "s" }}>Loading dashboard...</Box>
-      </Box>
+      <div className="space-y-4 pt-1">
+        <KpiSkeleton />
+        <CardsSkeleton count={4} />
+      </div>
     );
   }
 
   if (!data) return null;
 
-  return (
-    <SpaceBetween size="l">
-      {/* Error flashbar */}
-      {data.errors.length > 0 && (
-        <Flashbar
-          items={data.errors.map((err, i) => ({
-            type: "error" as const,
-            content: err,
-            id: `err-${i}`,
-            dismissible: true,
-          }))}
-        />
-      )}
+  const vulnCount = Object.values(data.severityCounts).reduce((s, n) => s + n, 0);
 
-      {/* KPI bar — always visible above tabs */}
+  return (
+    <div className="space-y-4">
+      {/* Error alerts */}
+      {data.errors.filter((_, i) => !dismissedErrors.has(i)).map((err, i) => (
+        <div key={i} className="flex items-start gap-2.5 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800 animate-fade-in">
+          <ExclamationCircleIcon className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <span className="flex-1 leading-relaxed">{err}</span>
+          <button onClick={() => setDismissedErrors((s) => new Set(s).add(i))} className="p-0.5 rounded-md text-red-400 hover:text-red-600 hover:bg-red-100 transition">
+            <XMarkIcon className="w-4 h-4" />
+          </button>
+        </div>
+      ))}
+
+      {/* KPI bar */}
       <KpiBar data={data} />
 
-      {/* Tabbed content with refresh controls */}
-      <div style={{ position: "relative" }}>
-        <div style={{ position: "absolute", right: 0, top: "4px", display: "flex", alignItems: "center", gap: "6px", zIndex: 1 }}>
-          {lastRefreshed && (
-            <Box variant="small" color="text-body-secondary">
-              {lastRefreshed.toLocaleTimeString()}
-            </Box>
-          )}
-          <Button iconName="refresh" variant="icon" onClick={() => refresh(true)} loading={loading} ariaLabel="Refresh" />
+      {/* Tabs + refresh */}
+      <div className="flex items-center justify-between border-b border-gray-200">
+        <div className="flex gap-0 -mb-px">
+          {TABS.map((tab) => {
+            const isActive = activeTab === tab.id;
+            let count: number | null = null;
+            if (tab.id === "vulnerabilities") count = vulnCount;
+            if (tab.id === "activity") count = data.activities.length;
+            if (tab.id === "explainability") count = data.reportDetails.length;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition whitespace-nowrap flex items-center gap-1.5 ${
+                  isActive
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+                }`}
+              >
+                {tab.label}
+                {count != null && count > 0 && (
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full min-w-[20px] text-center ${
+                    isActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                  }`}>
+                    {count > 999 ? `${(count / 1000).toFixed(1)}k` : count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
-        <Tabs
-        activeTabId={activeTab}
-        onChange={({ detail }) => setActiveTab(detail.activeTabId)}
-        tabs={[
-          {
-            id: "overview",
-            label: "Environments",
-            content: (
-              <Box padding={{ top: "s" }}>
-                <EnvironmentCards
-                  items={data.environments}
-                  loading={loading}
-                  onEnvClick={(env) => onChatPrefill?.(`Show instances in ${env} environment`)}
-                />
-              </Box>
-            ),
-          },
-          {
-            id: "vulnerabilities",
-            label: `Vulnerabilities (${Object.values(data.severityCounts).reduce((s, n) => s + n, 0)})`,
-            content: (
-              <Box padding={{ top: "s" }}>
-                <VulnTable
-                  items={data.findings}
-                  severityCounts={data.severityCounts}
-                  loading={loading}
-                  onCveClick={(cve, env) => onChatPrefill?.(`Handle ${cve} in ${env} environment`)}
-                />
-              </Box>
-            ),
-          },
-          {
-            id: "activity",
-            label: `Activity (${data.activities.length})`,
-            content: (
-              <Box padding={{ top: "s" }}>
-                <ActivityTable
-                  items={data.activities}
-                  loading={loading}
-                  onRowClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
-                />
-              </Box>
-            ),
-          },
-          {
-            id: "compliance",
-            label: "Compliance",
-            content: (
-              <Box padding={{ top: "s" }}>
-                <ComplianceSummary data={data.compliance} reports={data.reportDetails} loading={loading} />
-              </Box>
-            ),
-          },
-          {
-            id: "explainability",
-            label: `Decisions (${data.reportDetails.length})`,
-            content: (
-              <Box padding={{ top: "s" }}>
-                <ExplainabilityTable
-                  items={data.reportDetails}
-                  loading={loading}
-                  onCveClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
-                />
-              </Box>
-            ),
-          },
-        ]}
-      />
+        <div className="flex items-center gap-2 pb-1">
+          {lastRefreshed && (
+            <span className="text-xs text-gray-400">{lastRefreshed.toLocaleTimeString()}</span>
+          )}
+          <button
+            onClick={() => refresh(true)}
+            disabled={loading}
+            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition disabled:opacity-40"
+            aria-label="Refresh"
+          >
+            <ArrowPathIcon className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
-    </SpaceBetween>
+
+      {/* Tab content */}
+      <div className="pt-1">
+        {activeTab === "overview" && (
+          <EnvironmentCards
+            items={data.environments}
+            loading={loading}
+            onEnvClick={(env) => onChatPrefill?.(`Show instances in ${env} environment`)}
+          />
+        )}
+        {activeTab === "vulnerabilities" && (
+          <VulnTable
+            items={data.findings}
+            severityCounts={data.severityCounts}
+            loading={loading}
+            onCveClick={(cve, env) => onChatPrefill?.(`Handle ${cve} in ${env} environment`)}
+          />
+        )}
+        {activeTab === "activity" && (
+          <ActivityTable
+            items={data.activities}
+            loading={loading}
+            onRowClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
+          />
+        )}
+        {activeTab === "compliance" && (
+          <ComplianceSummary data={data.compliance} reports={data.reportDetails} loading={loading} />
+        )}
+        {activeTab === "explainability" && (
+          <ExplainabilityTable
+            items={data.reportDetails}
+            loading={loading}
+            onCveClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
+          />
+        )}
+      </div>
+    </div>
   );
 }

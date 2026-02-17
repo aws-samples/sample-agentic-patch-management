@@ -1,13 +1,16 @@
 import { useState, useCallback } from "react";
-import TopNavigation from "@cloudscape-design/components/top-navigation";
-import Header from "@cloudscape-design/components/header";
-import Button from "@cloudscape-design/components/button";
+import {
+  ShieldCheckIcon,
+  ChevronDoubleLeftIcon,
+  ChevronDoubleRightIcon,
+  ArrowTopRightOnSquareIcon,
+} from "@heroicons/react/24/outline";
+import { Menu, MenuButton, MenuItem, MenuItems } from "@headlessui/react";
 import ChatPanel from "./components/ChatPanel";
 import DashboardPanel from "./components/DashboardPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
 import { useRole } from "./hooks/useRole";
-import type { Role } from "./hooks/useRole";
 
 export default function App() {
   const { role, setRole } = useRole();
@@ -19,102 +22,96 @@ export default function App() {
 
   const handleChatPrefill = useCallback((text: string) => {
     setChatPrefill(text);
-    // Brief highlight pulse on chat header to draw attention
     setChatHighlight(true);
     setTimeout(() => setChatHighlight(false), 1200);
   }, []);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
-      <TopNavigation
-        identity={{ href: "/", title: "🛡️ Patchy — Intelligent Patch Automation" }}
-        utilities={[
-          {
-            type: "button",
-            text: `Session: ${sessionId.slice(0, 12)}…`,
-            iconName: "user-profile",
-            disableUtilityCollapse: true,
-          },
-          {
-            type: "menu-dropdown",
-            text: role === "operator" ? "👤 Operator" : "👁️ Viewer",
-            title: "Switch role",
-            items: [
-              { id: "operator", text: "👤 Operator — full access" },
-              { id: "viewer", text: "👁️ Viewer — read-only" },
-            ],
-            onItemClick: ({ detail }) => setRole(detail.id as Role),
-          },
-          {
-            type: "button",
-            iconName: "status-info",
-            text: "Help",
-            href: "https://github.com/aws-samples",
-            external: true,
-            externalIconAriaLabel: "Opens in new tab",
-          },
-        ]}
-      />
+    <div className="flex flex-col h-screen overflow-hidden bg-white font-sans">
+      {/* Top Navigation */}
+      <header className="flex items-center justify-between px-4 h-12 bg-gray-900 text-white shrink-0">
+        <a href="/" className="flex items-center gap-2 text-white no-underline">
+          <ShieldCheckIcon className="w-5 h-5 text-blue-400" />
+          <span className="font-semibold text-sm">Patchy — Intelligent Patch Automation</span>
+        </a>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400 hidden sm:inline">
+            Session: {sessionId.slice(0, 12)}…
+          </span>
 
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Dashboard panel — collapsible with transition */}
-        <div style={{
-          width: dashboardOpen ? "72%" : "0%",
-          minWidth: dashboardOpen ? 500 : 0,
-          overflow: "hidden",
-          borderRight: dashboardOpen ? "1px solid #e9ebed" : "none",
-          transition: "width 0.3s ease, min-width 0.3s ease",
-        }}>
-          <div style={{ padding: "16px 20px", minWidth: 500, height: "100%", overflowY: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <Header variant="h2">Dashboard</Header>
-              <Button
-                iconName="angle-left-double"
-                variant="icon"
-                onClick={() => setDashboardOpen(false)}
-                ariaLabel="Collapse dashboard"
-              />
-            </div>
-            <ErrorBoundary>
-              <DashboardPanel onChatPrefill={handleChatPrefill} />
-            </ErrorBoundary>
-          </div>
+          {/* Role switcher */}
+          <Menu as="div" className="relative">
+            <MenuButton className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-gray-800 hover:bg-gray-700 transition text-gray-200 cursor-pointer border-0">
+              {role === "operator" ? "👤 Operator" : "👁️ Viewer"}
+              <svg className="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </MenuButton>
+            <MenuItems className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg ring-1 ring-black/5 py-1 z-50">
+              <MenuItem>
+                <button onClick={() => setRole("operator")} className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${role === "operator" ? "text-blue-600 font-medium" : "text-gray-700"}`}>
+                  👤 Operator — full access
+                </button>
+              </MenuItem>
+              <MenuItem>
+                <button onClick={() => setRole("viewer")} className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${role === "viewer" ? "text-blue-600 font-medium" : "text-gray-700"}`}>
+                  👁️ Viewer — read-only
+                </button>
+              </MenuItem>
+            </MenuItems>
+          </Menu>
+
+          <a
+            href="https://github.com/aws-samples"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-gray-400 hover:text-white transition"
+            aria-label="Help (opens in new tab)"
+          >
+            <ArrowTopRightOnSquareIcon className="w-4 h-4" />
+          </a>
         </div>
+      </header>
 
-        {/* Chat panel — always visible, expands when dashboard collapsed */}
-        <div style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          minWidth: 0,
-          background: "#fafafa",
-          transition: "flex 0.3s ease",
-        }}>
+      {/* Main content area */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Dashboard panel — collapsible */}
+        {dashboardOpen && (
+          <div className="w-[72%] min-w-[500px] border-r border-gray-200 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-5 pt-4 pb-2 shrink-0 bg-white">
+              <h2 className="text-lg font-semibold text-gray-900">Dashboard</h2>
+              <button
+                onClick={() => setDashboardOpen(false)}
+                className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition"
+                aria-label="Collapse dashboard"
+              >
+                <ChevronDoubleLeftIcon className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 pb-4 bg-gray-50/60 custom-scrollbar">
+              <ErrorBoundary>
+                <DashboardPanel onChatPrefill={handleChatPrefill} />
+              </ErrorBoundary>
+            </div>
+          </div>
+        )}
+
+        {/* Chat panel — always visible */}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-gray-50/50">
           {/* Chat header */}
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 16px",
-            borderBottom: "1px solid #e9ebed",
-            background: chatHighlight ? "#e6f2ff" : "#fff",
-            flexShrink: 0,
-            transition: "background 0.3s ease",
-          }}>
+          <div className={`flex items-center gap-2 px-4 py-2 border-b border-gray-200 bg-white shrink-0 ${chatHighlight ? "chat-highlight" : ""}`}>
             {!dashboardOpen && (
-              <Button
-                iconName="angle-right-double"
-                variant="icon"
+              <button
                 onClick={() => setDashboardOpen(true)}
-                ariaLabel="Show dashboard"
-              />
+                className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition"
+                aria-label="Show dashboard"
+              >
+                <ChevronDoubleRightIcon className="w-4 h-4" />
+              </button>
             )}
-            <span style={{ fontWeight: 700, fontSize: 16 }}>🤖 Patchy</span>
+            <span className="font-bold text-base">🤖 Patchy</span>
           </div>
 
           {/* Chat content */}
-          <div style={{ flex: 1, overflow: "hidden" }}>
+          <div className="flex-1 overflow-hidden">
             <ErrorBoundary>
               <ChatPanel
                 messages={messages}

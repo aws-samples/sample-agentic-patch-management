@@ -1,8 +1,6 @@
-import { useState, useRef, useEffect } from "react";
-import Button from "@cloudscape-design/components/button";
-import Input from "@cloudscape-design/components/input";
-import SpaceBetween from "@cloudscape-design/components/space-between";
-import Box from "@cloudscape-design/components/box";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { PaperAirplaneIcon, StopIcon } from "@heroicons/react/24/solid";
+import { LockClosedIcon } from "@heroicons/react/24/outline";
 import MessageBubble from "./MessageBubble";
 import type { ChatMessage } from "../hooks/useAgentStream";
 import type { Role } from "../hooks/useRole";
@@ -27,18 +25,20 @@ const EXAMPLE_PROMPTS = [
 ];
 
 export default function ChatPanel({
-  messages,
-  isStreaming,
-  onSend,
-  onStop,
-  onClear,
-  prefillText,
-  onPrefillConsumed,
-  role = "operator",
+  messages, isStreaming, onSend, onStop, onClear,
+  prefillText, onPrefillConsumed, role = "operator",
 }: Props) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isViewer = role === "viewer";
+
+  const autoResize = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 96) + "px"; // max ~3 lines
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -48,20 +48,25 @@ export default function ChatPanel({
     if (prefillText) {
       setInput(prefillText);
       onPrefillConsumed?.();
+      textareaRef.current?.focus();
+      // Trigger resize after state update
+      setTimeout(autoResize, 0);
     }
-  }, [prefillText, onPrefillConsumed]);
+  }, [prefillText, onPrefillConsumed, autoResize]);
 
   const handleSend = () => {
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput("");
+    // Reset textarea height
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
     onSend(text);
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Scrollable messages area — fills available space */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px 8px", minHeight: 0 }}>
+    <div className="flex flex-col h-full">
+      {/* Scrollable messages */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 min-h-0 custom-scrollbar">
         {messages.length === 0 ? (
           <EmptyState onSelect={(text) => setInput(text)} />
         ) : (
@@ -77,35 +82,56 @@ export default function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* Input bar — pinned to bottom */}
-      <div style={{ flexShrink: 0, padding: "4px 8px", borderTop: "1px solid #e9ebed", background: "#fff" }}>
+      {/* Input bar */}
+      <div className="shrink-0 px-3 py-2 border-t border-gray-200 bg-white">
         {isViewer ? (
-          <Box textAlign="center" padding={{ vertical: "xs" }} color="text-body-secondary">
-            🔒 Read-only mode — viewer role cannot send messages. Contact your admin for operator access.
-          </Box>
+          <div className="flex items-center justify-center gap-2 py-2 text-sm text-gray-500">
+            <LockClosedIcon className="w-4 h-4" />
+            Read-only mode — viewer role cannot send messages.
+          </div>
         ) : (
           <>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              <div style={{ flex: 1 }}>
-                <Input
+            <div className="flex gap-2 items-end">
+              <div className="flex-1 relative">
+                <textarea
+                  ref={textareaRef}
                   value={input}
-                  onChange={({ detail }) => setInput(detail.value)}
-                  onKeyDown={({ detail }) => { if (detail.key === "Enter") handleSend(); }}
+                  onChange={(e) => { setInput(e.target.value); autoResize(); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                   placeholder="Ask about vulnerabilities, patching, compliance..."
                   disabled={isStreaming}
                   autoFocus
+                  rows={1}
+                  className="w-full px-3 py-2 pr-8 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400 placeholder:text-gray-400 resize-none overflow-hidden leading-relaxed"
                 />
+                {!input.trim() && !isStreaming && (
+                  <span className="absolute right-3 bottom-2.5 text-[10px] text-gray-300 pointer-events-none select-none">↵</span>
+                )}
               </div>
               {isStreaming ? (
-                <Button onClick={onStop} variant="normal">Stop</Button>
+                <button onClick={onStop} className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition flex items-center gap-1.5">
+                  <StopIcon className="w-4 h-4" /> Stop
+                </button>
               ) : (
-                <Button onClick={handleSend} variant="primary" disabled={!input.trim()}>Send</Button>
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim()}
+                  className="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                >
+                  <PaperAirplaneIcon className="w-4 h-4" /> Send
+                </button>
               )}
             </div>
             {messages.length > 0 && (
-              <Box float="right" margin={{ top: "xxs" }}>
-                <Button variant="link" onClick={onClear} disabled={isStreaming}>New conversation</Button>
-              </Box>
+              <div className="flex justify-end mt-1">
+                <button
+                  onClick={onClear}
+                  disabled={isStreaming}
+                  className="text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400 transition"
+                >
+                  New conversation
+                </button>
+              </div>
             )}
           </>
         )}
@@ -116,49 +142,28 @@ export default function ChatPanel({
 
 function EmptyState({ onSelect }: { onSelect: (text: string) => void }) {
   return (
-    <Box textAlign="center" padding={{ top: "l" }}>
-      <SpaceBetween size="m">
-        <div>
-          <div style={{ fontSize: "32px", marginBottom: "8px" }}>🛡️</div>
-          <Box variant="h3">What can I help you with?</Box>
-          <Box variant="p" color="text-body-secondary" margin={{ top: "xxs" }}>
-            Ask about vulnerabilities, patching, or compliance — or pick a starting point below.
-          </Box>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", maxWidth: "480px", margin: "0 auto" }}>
-          {EXAMPLE_PROMPTS.map((prompt) => (
-            <div
-              key={prompt.text}
-              onClick={() => onSelect(prompt.text)}
-              style={{
-                padding: "12px 14px",
-                borderRadius: "10px",
-                border: "1px solid #e9ebed",
-                background: "#fff",
-                cursor: "pointer",
-                textAlign: "left",
-                transition: "border-color 0.15s, box-shadow 0.15s",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = "#0972d3";
-                e.currentTarget.style.boxShadow = "0 1px 4px rgba(9,114,211,0.12)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = "#e9ebed";
-                e.currentTarget.style.boxShadow = "none";
-              }}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter") onSelect(prompt.text); }}
-              aria-label={prompt.label}
-            >
-              <div style={{ fontSize: "18px", marginBottom: "4px" }}>{prompt.icon}</div>
-              <div style={{ fontSize: "13px", fontWeight: 600, color: "#000716" }}>{prompt.label}</div>
-              <div style={{ fontSize: "12px", color: "#5f6b7a", marginTop: "2px" }}>{prompt.desc}</div>
-            </div>
-          ))}
-        </div>
-      </SpaceBetween>
-    </Box>
+    <div className="flex flex-col items-center pt-16 px-4">
+      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center text-3xl mb-4 shadow-lg shadow-blue-500/20">
+        🛡️
+      </div>
+      <h3 className="text-xl font-bold text-gray-900">What can I help you with?</h3>
+      <p className="text-sm text-gray-500 mt-1.5 mb-8 text-center max-w-sm">
+        Ask about vulnerabilities, patching, or compliance — or pick a starting point below.
+      </p>
+      <div className="grid grid-cols-2 gap-3 max-w-lg w-full">
+        {EXAMPLE_PROMPTS.map((prompt) => (
+          <button
+            key={prompt.text}
+            onClick={() => onSelect(prompt.text)}
+            className="text-left p-4 rounded-xl border border-gray-200 bg-white hover:border-blue-300 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 group cursor-pointer"
+            aria-label={prompt.label}
+          >
+            <div className="text-xl mb-1.5">{prompt.icon}</div>
+            <div className="text-sm font-semibold text-gray-900 group-hover:text-blue-700 transition">{prompt.label}</div>
+            <div className="text-xs text-gray-500 mt-1 leading-relaxed">{prompt.desc}</div>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
