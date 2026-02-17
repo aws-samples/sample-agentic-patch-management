@@ -34,6 +34,8 @@ The agent queries Amazon Inspector for active vulnerability findings across your
 - Instance-level affected resource mapping
 - Cross-environment exposure analysis ("CVE-2025-38477 affects 4 instances in dev, 3 in staging, 0 in prod")
 
+> **Enterprise integration**: The agent queries Amazon Inspector natively. If your organisation uses third-party vulnerability scanners (Qualys, Tenable, Rapid7), you can either feed their findings into Inspector via the [Inspector SBOM integration](https://docs.aws.amazon.com/inspector/latest/user/sbom-generator.html), or extend the vulnerability analyst's tool set in `agent/helper/tools.py` to query your scanner's API directly. The multi-agent architecture means adding a new data source is a single tool function — no changes to routing or decision logic.
+
 ### Intelligent Patch Execution
 
 Every patching operation follows a mandatory safety workflow — the agent enforces this sequence and will not skip steps:
@@ -70,6 +72,8 @@ Every patch operation produces a structured JSON compliance report stored in S3 
 
 The compliance analyst agent can query these reports for trend analysis, SLA breach history, and executive summaries broken down by severity, environment, or team.
 
+> **Enterprise integration**: The S3 compliance reports are structured JSON with consistent schema — they can feed directly into your existing GRC platform (Archer, Drata, Vanta), SIEM (Splunk, Datadog), or BI tools (QuickSight, Tableau) via S3 event notifications, Kinesis Firehose, or scheduled Athena queries. If your organisation already has a compliance data lake, point the agent's S3 bucket at it or add S3 replication to your central audit account.
+
 ### Per-User Audit Trail
 
 Every patch operation records who initiated it:
@@ -93,6 +97,8 @@ Two roles control what operators can do:
 | **Viewer** | ✅ | ❌ | ❌ | ✅ |
 
 In pilot mode, a dropdown in the top navigation switches roles (stored in localStorage, sent via `X-Role` header). In production mode, Cognito groups determine the role and the dropdown is replaced by the authenticated user identity.
+
+> **Enterprise integration**: If your organisation uses AWS IAM Identity Center (SSO) with permission sets and groups, those groups map directly to the operator/viewer roles. Federate Cognito with your Identity Center instance — group membership flows through as JWT claims, and the backend resolves roles without any custom user management.
 
 ### Web UI and Operations Console
 
@@ -231,6 +237,8 @@ For the agent to manage EC2 instances, they need:
 
 The sample environment creates instances with all of these pre-configured.
 
+> **Enterprise integration**: Most organisations already maintain environment and compliance metadata in their CMDB (ServiceNow, Device42, Jira Assets). If your CMDB drives EC2 tagging through AWS Organizations tag policies, Service Catalog, or a CI/CD pipeline, the agent picks up your existing taxonomy automatically — no manual tag mapping needed. The `Environment` and `ComplianceFrameworks` tags are configurable in `agent/config/config.json` if your naming convention differs (e.g., `env` instead of `Environment`, or `Tier` instead of `ComplianceFrameworks`).
+
 ---
 
 ## Configuration
@@ -248,6 +256,20 @@ Defined in `agent/config/config.json`. SLA hours by compliance framework and sev
 
 When multiple frameworks apply to an instance, the strictest SLA wins.
 
+### Integrating with Your Existing Policy Sources
+
+The `agent/config/config.json` file is a starting point, not a constraint. The `_load_config()` function in `agent/helper/tools.py` is a single integration point — swap it for any of these patterns to use your organisation's existing policy data:
+
+| Source | Integration approach |
+|--------|---------------------|
+| **CMDB** (ServiceNow, Device42, Jira Assets) | Replace `_load_config()` with an API call to your CMDB. Most CMDBs already map compliance frameworks to asset groups — query "given this instance, what frameworks apply and what are the SLA thresholds?" |
+| **EC2 tags** | Skip the config file entirely. Put SLA hours directly on instance tags (`SLA-CRITICAL=12`, `SLA-HIGH=48`). The agent already reads tags for framework names — extend `_calculate_sla_requirement()` to read SLA hours from tags. Your CMDB team manages policy through their existing tag governance pipeline. |
+| **SSM Parameter Store** | Store the SLA config as a JSON parameter in Parameter Store. Operations teams update thresholds without redeploying the agent. CloudTrail audits who changed the policy and when. |
+| **S3 with versioning** | Put config.json in an S3 bucket with versioning. The agent fetches it at startup. You get version history, rollback, and cross-account sharing. Add S3 event notifications to trigger agent restarts on config change. |
+| **GRC platforms** (Archer, Drata, ServiceNow GRC) | These tools are often the actual source of truth for compliance SLA requirements. An API integration that pulls "for PCI-DSS, critical vulns must be patched within X hours" directly from the GRC platform means the agent always reflects the latest policy without manual sync. |
+
+The agent's decision logic doesn't care where the SLA thresholds come from — it just needs a framework name, a severity, and an SLA hours value.
+
 ### Maintenance Windows
 
 The agent respects SSM maintenance windows:
@@ -255,6 +277,8 @@ The agent respects SSM maintenance windows:
 - EMERGENCY: next window exceeds SLA → patch immediately
 
 Sample windows (from `--with-sample-env`): dev daily 1AM UTC, staging Tuesday 2AM UTC, prod 1st of month 2AM UTC.
+
+> **Enterprise integration**: If your organisation manages change windows through a change management system (ServiceNow Change Management, Jira change requests, PagerDuty), you can extend the agent to query your change calendar API instead of (or in addition to) SSM maintenance windows. The agent's SLA-vs-window decision logic is in `execute_patch_operation()` — it just needs a "next available window" timestamp, regardless of where that comes from. For organisations using both SSM windows and a change management system, the agent can check both and use the earliest compliant window.
 
 ---
 
