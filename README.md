@@ -106,10 +106,10 @@ Browser-based console with two panels:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────┐
 │                 Patch Automation Supervisor                  │
 │              (Intelligent routing + fallback)                │
-├─────────────┬───────────────────┬───────────────────────────┤
+├──────────────┬───────────────────┬───────────────────────────┤
 │ Vulnerability│   Patch Manager   │   Compliance Analyst      │
 │ Analyst      │                   │                           │
 │ • CVE        │ • Patch Compliance│ • Report Queries          │
@@ -121,7 +121,7 @@ Browser-based console with two panels:
 │              │ • Compliance Delta│                           │
 │              │ • Maintenance     │                           │
 │              │   Windows         │                           │
-└─────────────┴───────────────────┴───────────────────────────┘
+└──────────────┴───────────────────┴───────────────────────────┘
 ```
 
 The supervisor routes queries to the right specialist automatically. If a specialist can't handle a query, the supervisor re-routes or falls back to direct AWS API access via `use_aws`.
