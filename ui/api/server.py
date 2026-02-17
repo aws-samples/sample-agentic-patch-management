@@ -443,6 +443,8 @@ def _fetch_vulnerabilities():
 
     findings = []
     severity_counts: dict[str, int] = {}
+    # Collect findings per severity to ensure all severities are represented
+    findings_by_sev: dict[str, list] = {}
     next_token = None
 
     while True:
@@ -469,9 +471,11 @@ def _fetch_vulnerabilities():
                     if t[0] == "Environment":
                         env = t[1]
 
-            # Keep up to 200 findings for the table display
-            if len(findings) < 200:
-                findings.append({
+            # Collect per severity — cap each bucket at 250
+            if sev not in findings_by_sev:
+                findings_by_sev[sev] = []
+            if len(findings_by_sev[sev]) < 250:
+                findings_by_sev[sev].append({
                     "cve_id": vuln.get("vulnerabilityId", "N/A"),
                     "severity": sev,
                     "cvss_score": (vuln.get("cvss") or [{}])[0].get("baseScore") if vuln.get("cvss") else None,
@@ -484,6 +488,15 @@ def _fetch_vulnerabilities():
         next_token = resp.get("nextToken")
         if not next_token:
             break
+
+    # Merge all severity buckets into a single list, sorted by severity order
+    sev_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL", "UNTRIAGED", "UNKNOWN"]
+    for sev in sev_order:
+        findings.extend(findings_by_sev.get(sev, []))
+    # Include any severities not in the predefined order
+    for sev, items in findings_by_sev.items():
+        if sev not in sev_order:
+            findings.extend(items)
 
     return {"findings": findings, "severity_counts": severity_counts}
 

@@ -50,6 +50,8 @@ export default function VulnTable({ items, severityCounts, loading, onCveClick }
     if (count) counterParts.push(`${count} ${sev[0]}${sev.slice(1).toLowerCase()}`);
   }
   const counter = counterParts.length > 0 ? `(${counterParts.join(", ")})` : `(${items.length})`;
+  const totalFromCounts = Object.values(severityCounts).reduce((s, n) => s + n, 0);
+  const isTruncated = totalFromCounts > items.length;
 
   return (
     <Table
@@ -129,7 +131,16 @@ export default function VulnTable({ items, severityCounts, loading, onCveClick }
         />
       }
       variant="container"
-      empty={<Box textAlign="center" color="text-body-secondary">No active vulnerabilities</Box>}
+      empty={
+        isTruncated && filtered.length === 0 && severityFilter.value !== "ALL" ? (
+          <Box textAlign="center" color="text-body-secondary" padding="l">
+            {severityCounts[severityFilter.value] ?? 0} {severityFilter.value.toLowerCase()} findings exist but are beyond the loaded set ({items.length} of {totalFromCounts} shown).
+            Use the chat to query: "Show {severityFilter.value.toLowerCase()} vulnerabilities"
+          </Box>
+        ) : (
+          <Box textAlign="center" color="text-body-secondary">No active vulnerabilities</Box>
+        )
+      }
     />
   );
 }
