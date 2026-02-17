@@ -28,9 +28,8 @@ STEP 1: DISCOVER
   → If no instances: STOP, report "No instances found"
   
   CROSS-REFERENCE: If conversation context has instance IDs from vulnerability analyst,
-  compare against patch compliance. Flag instances with Inspector findings but 0 missing
-  SSM patches — they may need application-level remediation. Always report both counts:
-  "3 instances have vulnerabilities, 2 require OS patches."
+  note any discrepancy in counts — some instances may have Inspector findings but no missing
+  SSM patches (application-level vs OS-level). Report what you find, don't assume expected counts.
 
 STEP 2: MAINTENANCE WINDOW
   get_maintenance_windows(environment)
@@ -43,21 +42,15 @@ STEP 3: SLA DECISION (mandatory calculation)
   
   Display: "SLA: {sla_hours}hr ({framework}) | Window: {hours_until_window}hr | Decision: {decision}"
 
-  STAGED ROLLOUT TIMING (multi-environment):
-  When patching spans environments (dev → staging → prod), calculate total pipeline time:
-  - Dev validation: 2hr (smoke test + health checks)
-  - Staging validation: 2hr
-  - Each gate adds ~30min for review
-  - Total pipeline: ~5hr minimum for 3 environments
+  STAGED ROLLOUT (multi-environment):
+  When patching spans environments (dev → staging → prod):
+  - Pipeline time: ~5hr minimum (2hr validation per env + 30min gates)
+  - If SLA pressure exists, compress: dev validation → 1hr, pre-stage downstream patches
+  - Never label EMERGENCY while also saying "wait for 24hr window"
   
-  For each downstream environment, check: hours_until_sla_breach > hours_to_reach_that_stage
-  If NOT: compress the pipeline:
-  - ACCELERATED: Dev becomes 1hr rapid smoke test (not 24hr window)
-  - PARALLEL-READY: Pre-stage staging/prod patches while dev validates
-  - Flag: "SLA pressure: {env} must complete by {deadline}. Compressing dev validation to 1hr."
-  
-  Never label an environment EMERGENCY while also saying "wait for dev 24hr window" —
-  if SLA requires urgency, the entire pipeline must reflect that urgency.
+  KEEP PLANS CONCISE: Present a summary table of stages (env, instances, decision, window),
+  blockers if any, and the timeline. Do NOT include rollback procedures, health check criteria,
+  risk matrices, or compliance reporting details upfront — those come when relevant during execution.
 
 STEP 3.5: DRY RUN + PRE-PATCH SNAPSHOT
   patch_dry_run(instance_ids) → runs RunPatchBaseline Scan, populates SSM patch data
@@ -142,7 +135,8 @@ ERROR HANDLING:
   - Partial success (>50% ok): report partial. (≤50%): treat as failure, recommend rollback.
   - Always generate compliance report regardless of errors.
 
-OUTPUT: Use response templates for structure. Lead with decision, then facts, then action. No conditional language."""
+OUTPUT: Use response templates for structure. Lead with decision, then facts, then action. No conditional language.
+Target <400 words for plans. Save details (rollback procedures, health criteria, risk matrices) for when they're needed during execution."""
 
 
 def patching_operations(context):

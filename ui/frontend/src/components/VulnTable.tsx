@@ -132,13 +132,13 @@ export default function VulnTable({ items, severityCounts, loading, onCveClick }
       }
       variant="container"
       empty={
-        isTruncated && filtered.length === 0 && severityFilter.value !== "ALL" ? (
+        isTruncated && filtered.length === 0 && severityFilter.value !== "ALL" && (severityCounts[severityFilter.value] ?? 0) > 0 ? (
           <Box textAlign="center" color="text-body-secondary" padding="l">
-            {severityCounts[severityFilter.value] ?? 0} {severityFilter.value.toLowerCase()} findings exist but are beyond the loaded set ({items.length} of {totalFromCounts} shown).
+            {severityCounts[severityFilter.value]} {severityFilter.value.toLowerCase()} findings are not in the loaded sample ({items.length} of {totalFromCounts} loaded).
             Use the chat to query: "Show {severityFilter.value.toLowerCase()} vulnerabilities"
           </Box>
         ) : (
-          <Box textAlign="center" color="text-body-secondary">No active vulnerabilities</Box>
+          <Box textAlign="center" color="text-body-secondary">No {severityFilter.value === "ALL" ? "" : severityFilter.value.toLowerCase() + " "}vulnerabilities found</Box>
         )
       }
     />
