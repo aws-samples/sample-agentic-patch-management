@@ -20,6 +20,7 @@ vuln_scan:
     | CVE ID | CVSS | Severity | Instances | Environments |
 
     Instances = total affected count. Environments = comma-separated list.
+    Do NOT add Exposure or Impact columns — you have no data for these.
 
     FLEET IMPACT (for top 1-3 CVEs where assess_fleet_impact was called):
     | Environment | Instances | SLA Deadline | Next Window | Hours Until |
@@ -71,9 +72,9 @@ vuln_detail:
     ATTACK VECTOR: 2-3 sentences max. What can an attacker do and how.
 
     AFFECTED INSTANCES (only if ≤10):
-    - {instance_id} ({environment}, Exposure: {impact_level})
+    - {instance_id} ({environment})
 
-    RISK CONTEXT: 1-2 sentences combining CVSS + exposure + environment to give operator the real-world risk.
+    REMEDIATION PRIORITY: 1-2 sentences based on CVSS score, instance count, and environment criticality (prod > staging > dev). Do NOT estimate exposure or blast radius — only use data from tools.
 
 vuln_empty:
   description: "No vulnerabilities found"
@@ -225,9 +226,9 @@ next_steps:
   agent: supervisor
   structure: |
     ## Next Steps
-    Exactly 3 numbered actions. Rules:
-    - Each references specific data from the response (CVE IDs, instance IDs, environments, scores)
-    - ONLY reference environments where data actually exists. If vulns are only in test, do not suggest prod/staging actions unless checking if they're affected.
-    - Use enterprise vocabulary: TRIAGE, DRY RUN, PATCH, VERIFY, AUDIT, ROLLBACK, VERIFY ROLLBACK, STAGED ROLLOUT
-    - Under 80 characters each
-    - Never repeat the same action type
+    Exactly 3 numbered actions the operator can click to execute.
+    - Plain language — what the operator wants to do, not system jargon
+    - Reference specific data (CVE counts, instance counts, environments)
+    - ONLY reference environments where data exists in the response
+    - Think environment-first: "Preview patches for dev" not "Assess CVE-X on instance-Y"
+    - Use patterns: PLAN, PREVIEW, PATCH, STAGED ROLLOUT, VERIFY, AUDIT, ROLLBACK, SCAN

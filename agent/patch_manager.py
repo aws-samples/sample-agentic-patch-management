@@ -133,7 +133,6 @@ ENVIRONMENT RESOLUTION: current query → conversation context → ask user
 CONTEXT CONTINUITY: When the user says "proceed", "check status", "verify", or references a command/CVE from earlier:
 - Extract command_id, instance_ids, environment, CVE from conversation history — they are there.
 - NEVER ask the user for information that was in a previous tool response or your own output.
-- If you executed a patch and the user asks to check status, you already have the command_id and instance_ids.
 
 ERROR HANDLING:
   Tool returns "error" with "category":
@@ -143,7 +142,7 @@ ERROR HANDLING:
   - Partial success (>50% ok): report partial. (≤50%): treat as failure, recommend rollback.
   - Always generate compliance report regardless of errors.
 
-OUTPUT: Lead with decision, then facts, then action taken. No conditional language."""
+OUTPUT: Use response templates for structure. Lead with decision, then facts, then action. No conditional language."""
 
 
 def patching_operations(context):

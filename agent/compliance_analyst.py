@@ -31,8 +31,7 @@ RULES:
 
 OUTPUT:
 - 1-line executive summary (total reports, compliance rate, breach count)
-- Breakdown table (severity or environment × met/breached)
-- Trend indicator with % change
+- Use response templates for structure
 - Top 2-3 specific recommendations
 - Target <400 words."""
 

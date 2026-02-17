@@ -53,35 +53,34 @@ RULES:
 
 OUTPUT:
 - Lead with status emoji (✅ ⚠️ ❌) and 1-line summary
-- Tables for >3 items (max 3 columns). Lists >10: show first 10 with "Showing 10 of X"
+- Tables for >3 items (max 3 columns)
 - Target <500 words. No conditional language.
+- Use response templates for structure — do not invent new formats
 
 NEXT STEPS (required at end of every response):
-Write a section headed "## Next Steps" with exactly 3 numbered actions. These are operator-facing recommendations — think enterprise change management workflow.
+Write "## Next Steps" with exactly 3 numbered actions the operator can click to execute.
 
 Rules:
-1. Each action must reference specific data from your response (CVE IDs, instance IDs, environment names, CVSS scores)
-2. Actions must be executable commands an operator would run through this system — not vague advice
-3. Keep each action under 80 characters
-4. Never suggest the same action type twice (e.g., don't list two "patch" actions)
-5. ONLY reference environments where data actually exists in the response. If vulns are only in test, do NOT suggest staging/prod actions. If you want to check other environments, phrase it as "Scan prod for CVE-XXXX exposure"
+1. Reference specific data from your response (CVE IDs, counts, environments, CVSS scores)
+2. Plain language — write what the operator wants to do, not system jargon
+3. Under 80 characters each. Never repeat the same action type.
+4. ONLY reference environments where data exists in the response
 
-Action vocabulary (use these patterns):
-- TRIAGE: "Assess [CVE-ID] impact on [env] ([N] instances, CVSS [X])"
-- FLEET IMPACT: "Assess fleet-wide impact of [CVE-ID] across all environments"
-- DRY RUN: "Preview patch changes for [CVE-ID] in [env] ([N] instances)"
-- PATCH: "Patch [CVE-ID] in [env] starting with [instance/service]"
-- STAGED ROLLOUT: "Stage [CVE-ID] remediation: [env1] → [env2]" (only if vulns exist in multiple envs)
-- VERIFY: "Verify patch compliance for [CVE-ID] across [env]"
-- AUDIT: "Generate compliance report for [framework] in [env]"
-- ROLLBACK: "Check rollback readiness for [instance/service] in [env]"
-- VERIFY ROLLBACK: "Verify rollback succeeded for [instance/service] in [env]"
-- SCAN: "Scan [env] for [CVE-ID] exposure" (to check if other envs are affected)
+Action patterns (adapt phrasing naturally):
+- PLAN: "Build remediation plan for [N] [severity] CVEs in [env]"
+- PREVIEW: "Preview patches for [env] — [N] instances, [N] CVEs"
+- PATCH: "Start patching [env] — [N] instances ([severity] CVEs)"
+- STAGED ROLLOUT: "Stage rollout: [env1] → [env2] ([N] CVEs)"
+- VERIFY: "Check patch results for [env]"
+- AUDIT: "Generate compliance report for [env]"
+- ROLLBACK: "Roll back [env] patches"
+- VERIFY ROLLBACK: "Confirm rollback succeeded in [env]"
+- SCAN: "Check if [env] is also affected"
 
-After vulnerability scan → 1. Fleet impact assessment for top CVE, 2. Dry-run patch preview for top CVE in first env, 3. Scan other envs for exposure
-After patching → 1. Verify compliance delta, 2. Generate compliance report, 3. Address next highest CVE
-After rollback → 1. Verify rollback succeeded, 2. Investigate root cause, 3. Re-assess patching approach
-After compliance report → 1. Address SLA breaches, 2. Patch non-compliant instances, 3. Generate audit trail"""
+After vulnerability scan → 1. Preview patches for the most affected environment, 2. Build remediation plan across affected environments, 3. Check if unscanned environments are affected
+After patching → 1. Check patch results, 2. Generate compliance report, 3. Start next environment or next severity
+After rollback → 1. Confirm rollback succeeded, 2. Investigate root cause, 3. Re-plan patching approach
+After compliance report → 1. Address SLA breaches, 2. Patch non-compliant instances, 3. Review audit trail"""
 
 
 def _route_to_specialist(specialist_name: str, agent_factory_fn, query: str,
