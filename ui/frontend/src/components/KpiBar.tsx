@@ -1,6 +1,4 @@
-import Container from "@cloudscape-design/components/container";
-import ColumnLayout from "@cloudscape-design/components/column-layout";
-import Box from "@cloudscape-design/components/box";
+import { Card, CardContent } from "./ui/Card";
 import type { DashboardData } from "../lib/api";
 
 interface Props {
@@ -21,58 +19,48 @@ export default function KpiBar({ data }: Props) {
   const envCount = data.environments.length;
 
   return (
-    <Container>
-      <ColumnLayout columns={6} variant="text-grid">
-        <KpiItem
-          label="Environments"
-          value={envCount.toString()}
-          detail={`${totalInstances} instances · ${offlineInstances > 0 ? `${offlineInstances} offline` : "all online"}`}
-        />
-        <KpiItem
-          label="Instances Online"
-          value={`${onlineInstances} / ${totalInstances}`}
-          detail={onlineInstances === totalInstances ? "all healthy" : `${offlineInstances} need attention`}
-          color={onlineInstances === totalInstances ? "#037f0c" : "#d91515"}
-        />
-        <KpiItem
-          label="Critical Vulnerabilities"
-          value={criticalVulns.toString()}
-          detail={criticalVulns === 0 ? "none detected" : "immediate action needed"}
-          color={criticalVulns > 0 ? "#d91515" : "#037f0c"}
-        />
-        <KpiItem
-          label="High Vulnerabilities"
-          value={highVulns.toString()}
-          detail={`${mediumVulns} medium · ${totalVulns} total`}
-          color={highVulns > 0 ? "#ce5a00" : undefined}
-        />
-        <KpiItem
-          label="SLA Compliance"
-          value={totalReports > 0 ? `${slaRate}%` : "—"}
-          detail={totalReports > 0 ? `${totalReports} reports · 30 days` : "no reports yet"}
-          color={totalReports > 0 ? (slaRate >= 95 ? "#037f0c" : slaRate >= 80 ? "#ce5a00" : "#d91515") : undefined}
-        />
-        <KpiItem
-          label="SLA Breaches"
-          value={slaBreached.toString()}
-          detail={slaBreached === 0 ? "none in 30 days" : "review required"}
-          color={slaBreached > 0 ? "#d91515" : "#037f0c"}
-        />
-      </ColumnLayout>
-    </Container>
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <KpiCard label="Environments" value={envCount.toString()} detail={`${totalInstances} instances · ${offlineInstances > 0 ? `${offlineInstances} offline` : "all online"}`} icon="🌐" />
+      <KpiCard label="Instances Online" value={`${onlineInstances}/${totalInstances}`} detail={onlineInstances === totalInstances ? "all healthy" : `${offlineInstances} need attention`} color={onlineInstances === totalInstances ? "green" : "red"} icon="🖥️" />
+      <KpiCard label="Critical Vulns" value={criticalVulns.toString()} detail={criticalVulns === 0 ? "none detected" : "immediate action needed"} color={criticalVulns > 0 ? "red" : "green"} icon="🚨" />
+      <KpiCard label="High Vulns" value={highVulns.toString()} detail={`${mediumVulns} medium · ${totalVulns} total`} color={highVulns > 0 ? "amber" : undefined} icon="⚠️" />
+      <KpiCard label="SLA Compliance" value={totalReports > 0 ? `${slaRate}%` : "—"} detail={totalReports > 0 ? `${totalReports} reports · 30d` : "no reports yet"} color={totalReports > 0 ? (slaRate >= 95 ? "green" : slaRate >= 80 ? "amber" : "red") : undefined} icon="📊" />
+      <KpiCard label="SLA Breaches" value={slaBreached.toString()} detail={slaBreached === 0 ? "none in 30 days" : "review required"} color={slaBreached > 0 ? "red" : "green"} icon="🔔" />
+    </div>
   );
 }
 
-function KpiItem({ label, detail, value, color }: { label: string; value: string; detail: string; color?: string }) {
+const ACCENT = {
+  green: "border-l-emerald-500",
+  red: "border-l-red-500",
+  amber: "border-l-amber-500",
+} as const;
+
+const BG_TINT = {
+  green: "",
+  red: "bg-red-50/40",
+  amber: "bg-amber-50/30",
+} as const;
+
+const VALUE_COLOR = {
+  green: "text-emerald-600",
+  red: "text-red-700",
+  amber: "text-amber-700",
+} as const;
+
+function KpiCard({ label, value, detail, color, icon }: { label: string; value: string; detail: string; color?: "green" | "red" | "amber"; icon: string }) {
   return (
-    <div style={{ textAlign: "center" }}>
-      <Box variant="awsui-key-label">{label}</Box>
-      <div style={{ fontSize: "24px", fontWeight: 700, lineHeight: 1.3, margin: "4px 0", color: color ?? "inherit" }}>
-        {value}
-      </div>
-      <Box variant="small" color="text-body-secondary">
-        {detail}
-      </Box>
-    </div>
+    <Card className={`border-l-4 ${color ? ACCENT[color] : "border-l-gray-300"} ${color ? BG_TINT[color] : ""} hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-default`}>
+      <CardContent className="p-3.5">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className="text-sm">{icon}</span>
+          <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">{label}</span>
+        </div>
+        <div className={`text-2xl font-bold ${color ? VALUE_COLOR[color] : "text-gray-900"}`}>
+          {value}
+        </div>
+        <div className="text-[11px] text-gray-500 mt-0.5">{detail}</div>
+      </CardContent>
+    </Card>
   );
 }

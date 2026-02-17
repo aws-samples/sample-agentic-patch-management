@@ -1,14 +1,6 @@
-import Table from "@cloudscape-design/components/table";
-import Header from "@cloudscape-design/components/header";
-import StatusIndicator from "@cloudscape-design/components/status-indicator";
-import Box from "@cloudscape-design/components/box";
+import { Badge, decisionVariant, SlaBadge } from "./ui/Badge";
+import { TableSkeleton } from "./ui/Skeleton";
 import type { ActivityItem } from "../lib/api";
-
-interface Props {
-  items: ActivityItem[];
-  loading: boolean;
-  onRowClick?: (cveId: string, environment: string) => void;
-}
 
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -22,71 +14,68 @@ function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+interface Props {
+  items: ActivityItem[];
+  loading: boolean;
+  onRowClick?: (cveId: string, environment: string) => void;
+}
+
 export default function ActivityTable({ items, loading, onRowClick }: Props) {
-  // Show 10 most recent with full tab space
   const recent = items.slice(0, 10);
 
+  if (loading && items.length === 0) {
+    return <TableSkeleton rows={5} cols={5} />;
+  }
+
   return (
-    <Table
-      loading={loading}
-      loadingText="Loading activity..."
-      header={
-        <Header variant="h2">
-          Recent Activity
-        </Header>
-      }
-      columnDefinitions={[
-        {
-          id: "time",
-          header: "When",
-          cell: (item) => (
-            <Box variant="small">
-              {relativeTime(item.timestamp)}
-            </Box>
-          ),
-        },
-        {
-          id: "cve",
-          header: "CVE",
-          cell: (item) => (
-            <span
-              style={{ cursor: onRowClick ? "pointer" : "default", color: "#0972d3" }}
-              onClick={() => onRowClick?.(item.cve_id, item.environment)}
-            >
-              {item.cve_id}
-            </span>
-          ),
-        },
-        {
-          id: "env",
-          header: "Env",
-          cell: (item) => item.environment,
-        },
-        {
-          id: "decision",
-          header: "Type",
-          cell: (item) => (
-            <StatusIndicator type={item.decision === "EMERGENCY" ? "warning" : "info"}>
-              {item.decision}
-            </StatusIndicator>
-          ),
-        },
-        {
-          id: "sla",
-          header: "SLA",
-          cell: (item) =>
-            item.sla_met === "True" ? (
-              <StatusIndicator type="success">Met</StatusIndicator>
-            ) : item.sla_met === "False" ? (
-              <StatusIndicator type="error">Breached</StatusIndicator>
-            ) : (
-              <Box color="text-status-inactive">—</Box>
-            ),
-        },
-      ]}
-      items={recent}
-      variant="container"
-      empty={<Box textAlign="center" color="text-body-secondary">No patching activity yet</Box>}
-    />
+    <div>
+      <h3 className="text-base font-semibold text-gray-900 mb-3">Recent Activity</h3>
+      <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50/80 border-b border-gray-200">
+              <Th>When</Th>
+              <Th>CVE</Th>
+              <Th>Env</Th>
+              <Th>Type</Th>
+              <Th>SLA</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {recent.map((item, i) => (
+              <tr key={`${item.cve_id}-${item.timestamp}-${i}`} className="hover:bg-blue-50/30 transition-colors">
+                <td className="py-2.5 px-3 text-xs text-gray-500">{relativeTime(item.timestamp)}</td>
+                <td className="py-2.5 px-3">
+                  <button
+                    onClick={() => onRowClick?.(item.cve_id, item.environment)}
+                    className="text-blue-600 hover:text-blue-800 font-medium bg-transparent border-0 cursor-pointer p-0 transition"
+                  >
+                    {item.cve_id}
+                  </button>
+                </td>
+                <td className="py-2.5 px-3 text-gray-700">{item.environment}</td>
+                <td className="py-2.5 px-3">
+                  <Badge variant={decisionVariant(item.decision)}>{item.decision}</Badge>
+                </td>
+                <td className="py-2.5 px-3">
+                  <SlaBadge met={item.sla_met} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {recent.length === 0 && (
+          <div className="text-center py-10">
+            <div className="text-3xl mb-2">📋</div>
+            <p className="text-sm font-medium text-gray-700">No patching activity yet</p>
+            <p className="text-xs text-gray-500 mt-1">Activity will appear here after running patch workflows</p>
+          </div>
+        )}
+      </div>
+    </div>
   );
+}
+
+function Th({ children }: { children: React.ReactNode }) {
+  return <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{children}</th>;
 }
