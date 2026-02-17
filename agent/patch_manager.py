@@ -27,9 +27,15 @@ STEP 1: DISCOVER
   get_patch_compliance(environment, severity)
   → If no instances: STOP, report "No instances found"
   
-  CROSS-REFERENCE: If conversation context has instance IDs from vulnerability analyst,
-  note any discrepancy in counts — some instances may have Inspector findings but no missing
-  SSM patches (application-level vs OS-level). Report what you find, don't assume expected counts.
+  CROSS-REFERENCE: If conversation context has instance IDs from vulnerability analyst
+  (in affected_resources fields), compare against SSM results:
+  - Inspector may find more instances than SSM (application-level CVEs vs OS patches)
+  - If SSM returns fewer instances, extract the instance IDs from Inspector findings
+    and pass them explicitly to get_patch_compliance(environment, instance_ids=[...])
+  - This resolves cases where SSM baseline scan hasn't run on some instances
+  - If instances still don't appear in SSM, they likely lack SSM Agent — report this
+    clearly but proceed with the instances that ARE reachable
+  - NEVER ask the user for instance IDs that are already in the conversation context
 
 STEP 2: MAINTENANCE WINDOW
   get_maintenance_windows(environment)

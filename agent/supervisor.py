@@ -44,6 +44,7 @@ CONTEXT FORWARDING: When routing follow-up queries ("proceed", "check status", "
 - Example: user says "check status" → route to patch manager with "Check status of command {cmd_id} on instances {ids} in {env}"
 - Never forward a bare "proceed" — always enrich with the context the specialist needs.
 - You have full conversation history. The specialist does NOT. Extract and include: command_ids, instance_ids, CVE IDs, environments, window_ids — anything the specialist needs to act without asking the user.
+- CRITICAL for vuln→patch handoff: When vulnerability analyst returns affected_resources with instance IDs, ALWAYS include those instance IDs in the query to patch_manager. Example: "Build remediation plan for CVE-2024-1234 affecting instances i-abc, i-def in dev, staging, prod"
 
 RULES:
 - Trust specialist responses — do not reinterpret or fabricate data
