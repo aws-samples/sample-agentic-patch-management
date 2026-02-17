@@ -15,9 +15,13 @@ export default function App() {
     useAgentStream(role);
   const [chatPrefill, setChatPrefill] = useState("");
   const [dashboardOpen, setDashboardOpen] = useState(true);
+  const [chatHighlight, setChatHighlight] = useState(false);
 
   const handleChatPrefill = useCallback((text: string) => {
     setChatPrefill(text);
+    // Brief highlight pulse on chat header to draw attention
+    setChatHighlight(true);
+    setTimeout(() => setChatHighlight(false), 1200);
   }, []);
 
   return (
@@ -25,6 +29,12 @@ export default function App() {
       <TopNavigation
         identity={{ href: "/", title: "🛡️ Patchy — Intelligent Patch Automation" }}
         utilities={[
+          {
+            type: "button",
+            text: `Session: ${sessionId.slice(0, 12)}…`,
+            iconName: "user-profile",
+            disableUtilityCollapse: true,
+          },
           {
             type: "menu-dropdown",
             text: role === "operator" ? "👤 Operator" : "👁️ Viewer",
@@ -34,6 +44,14 @@ export default function App() {
               { id: "viewer", text: "👁️ Viewer — read-only" },
             ],
             onItemClick: ({ detail }) => setRole(detail.id as Role),
+          },
+          {
+            type: "button",
+            iconName: "status-info",
+            text: "Help",
+            href: "https://github.com/aws-samples",
+            external: true,
+            externalIconAriaLabel: "Opens in new tab",
           },
         ]}
       />
@@ -80,8 +98,9 @@ export default function App() {
             gap: 8,
             padding: "8px 16px",
             borderBottom: "1px solid #e9ebed",
-            background: "#fff",
+            background: chatHighlight ? "#e6f2ff" : "#fff",
             flexShrink: 0,
+            transition: "background 0.3s ease",
           }}>
             {!dashboardOpen && (
               <Button

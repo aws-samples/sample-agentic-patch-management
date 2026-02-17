@@ -32,37 +32,42 @@ export default function KpiBar({ data }: Props) {
           label="Instances Online"
           value={`${onlineInstances} / ${totalInstances}`}
           detail={onlineInstances === totalInstances ? "all healthy" : `${offlineInstances} need attention`}
+          color={onlineInstances === totalInstances ? "#037f0c" : "#d91515"}
         />
         <KpiItem
           label="Critical Vulnerabilities"
           value={criticalVulns.toString()}
           detail={criticalVulns === 0 ? "none detected" : "immediate action needed"}
+          color={criticalVulns > 0 ? "#d91515" : "#037f0c"}
         />
         <KpiItem
           label="High Vulnerabilities"
           value={highVulns.toString()}
           detail={`${mediumVulns} medium · ${totalVulns} total`}
+          color={highVulns > 0 ? "#ce5a00" : undefined}
         />
         <KpiItem
           label="SLA Compliance"
           value={totalReports > 0 ? `${slaRate}%` : "—"}
           detail={totalReports > 0 ? `${totalReports} reports · 30 days` : "no reports yet"}
+          color={totalReports > 0 ? (slaRate >= 95 ? "#037f0c" : slaRate >= 80 ? "#ce5a00" : "#d91515") : undefined}
         />
         <KpiItem
           label="SLA Breaches"
           value={slaBreached.toString()}
           detail={slaBreached === 0 ? "none in 30 days" : "review required"}
+          color={slaBreached > 0 ? "#d91515" : "#037f0c"}
         />
       </ColumnLayout>
     </Container>
   );
 }
 
-function KpiItem({ label, detail, value }: { label: string; value: string; detail: string }) {
+function KpiItem({ label, detail, value, color }: { label: string; value: string; detail: string; color?: string }) {
   return (
     <div style={{ textAlign: "center" }}>
       <Box variant="awsui-key-label">{label}</Box>
-      <div style={{ fontSize: "24px", fontWeight: 700, lineHeight: 1.3, margin: "4px 0" }}>
+      <div style={{ fontSize: "24px", fontWeight: 700, lineHeight: 1.3, margin: "4px 0", color: color ?? "inherit" }}>
         {value}
       </div>
       <Box variant="small" color="text-body-secondary">

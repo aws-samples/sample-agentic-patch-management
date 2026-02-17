@@ -20,10 +20,10 @@ interface Props {
 }
 
 const EXAMPLE_PROMPTS = [
-  "What critical vulnerabilities do we have?",
-  "Show EC2 instances in dev environment",
-  "Show me patch compliance status",
-  "Handle CVE-2025-38527 in dev",
+  { icon: "🔍", label: "Discover vulnerabilities", text: "What critical vulnerabilities do we have?", desc: "Scan fleet for active CVEs" },
+  { icon: "🖥️", label: "Fleet status", text: "Show EC2 instances in dev environment", desc: "Check instance health and SSM status" },
+  { icon: "📋", label: "Patch compliance", text: "Show me patch compliance status", desc: "Missing patches and compliance gaps" },
+  { icon: "⚡", label: "Remediate a CVE", text: "Handle CVE-2025-38527 in dev", desc: "End-to-end patch workflow" },
 ];
 
 export default function ChatPanel({
@@ -117,16 +117,47 @@ export default function ChatPanel({
 function EmptyState({ onSelect }: { onSelect: (text: string) => void }) {
   return (
     <Box textAlign="center" padding={{ top: "l" }}>
-      <SpaceBetween size="s">
-        <Box variant="p" color="text-body-secondary">
-          Ask Patchy about vulnerabilities, patching, or compliance.
-          Or click items on the dashboard to get started.
-        </Box>
-        <SpaceBetween size="xxs">
+      <SpaceBetween size="m">
+        <div>
+          <div style={{ fontSize: "32px", marginBottom: "8px" }}>🛡️</div>
+          <Box variant="h3">What can I help you with?</Box>
+          <Box variant="p" color="text-body-secondary" margin={{ top: "xxs" }}>
+            Ask about vulnerabilities, patching, or compliance — or pick a starting point below.
+          </Box>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", maxWidth: "480px", margin: "0 auto" }}>
           {EXAMPLE_PROMPTS.map((prompt) => (
-            <Button key={prompt} variant="link" onClick={() => onSelect(prompt)}>{prompt}</Button>
+            <div
+              key={prompt.text}
+              onClick={() => onSelect(prompt.text)}
+              style={{
+                padding: "12px 14px",
+                borderRadius: "10px",
+                border: "1px solid #e9ebed",
+                background: "#fff",
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "border-color 0.15s, box-shadow 0.15s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = "#0972d3";
+                e.currentTarget.style.boxShadow = "0 1px 4px rgba(9,114,211,0.12)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = "#e9ebed";
+                e.currentTarget.style.boxShadow = "none";
+              }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter") onSelect(prompt.text); }}
+              aria-label={prompt.label}
+            >
+              <div style={{ fontSize: "18px", marginBottom: "4px" }}>{prompt.icon}</div>
+              <div style={{ fontSize: "13px", fontWeight: 600, color: "#000716" }}>{prompt.label}</div>
+              <div style={{ fontSize: "12px", color: "#5f6b7a", marginTop: "2px" }}>{prompt.desc}</div>
+            </div>
           ))}
-        </SpaceBetween>
+        </div>
       </SpaceBetween>
     </Box>
   );

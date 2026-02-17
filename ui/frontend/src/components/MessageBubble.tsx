@@ -70,26 +70,52 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
           <Box color="inherit" variant="p">{message.content}</Box>
         ) : (
           <>
-            {/* Tool workflow steps */}
+            {/* Tool workflow steps — vertical timeline */}
             {message.tools.length > 0 && (
               <div style={{
                 marginBottom: "10px",
-                padding: "8px 12px",
+                padding: "10px 14px",
                 background: "var(--color-background-layout-toggle-default, #f2f3f3)",
-                borderRadius: "8px",
-                borderLeft: "3px solid #0972d3",
+                borderRadius: "10px",
               }}>
-                <div style={{ fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "#5f6b7a", marginBottom: "4px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: "#5f6b7a", marginBottom: "6px" }}>
                   Workflow
                 </div>
                 {message.tools.map((tool, i) => {
                   const isLast = i === message.tools.length - 1;
                   const isDone = !isLast || (isLast && message.content.length > 0);
                   return (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "2px 0" }}>
-                      <StatusIndicator type={isDone ? "success" : "in-progress"}>
-                        <span style={{ fontSize: "12px" }}>{tool}</span>
-                      </StatusIndicator>
+                    <div key={i} style={{ display: "flex", gap: "8px", position: "relative" }}>
+                      {/* Vertical connector line */}
+                      {i < message.tools.length - 1 && (
+                        <div style={{
+                          position: "absolute",
+                          left: "8px",
+                          top: "18px",
+                          bottom: "-2px",
+                          width: "2px",
+                          background: isDone ? "#037f0c" : "#d5dbdb",
+                        }} />
+                      )}
+                      {/* Step dot */}
+                      <div style={{
+                        width: "16px",
+                        height: "16px",
+                        borderRadius: "50%",
+                        background: isDone ? "#037f0c" : "#0972d3",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        marginTop: "2px",
+                        fontSize: "9px",
+                        color: "#fff",
+                      }}>
+                        {isDone ? "✓" : i + 1}
+                      </div>
+                      <div style={{ fontSize: "12px", padding: "2px 0 8px", color: isDone ? "#000716" : "#5f6b7a" }}>
+                        {tool}
+                      </div>
                     </div>
                   );
                 })}
@@ -161,6 +187,21 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
           </>
         )}
       </div>
+
+      {/* Timestamp — shown for all messages */}
+      {!isStreaming && (
+        <div style={{
+          fontSize: "10px",
+          color: "#8d9baa",
+          alignSelf: "flex-end",
+          marginLeft: isUser ? "0" : "4px",
+          marginRight: isUser ? "4px" : "0",
+          flexShrink: 0,
+          whiteSpace: "nowrap",
+        }}>
+          {new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        </div>
+      )}
     </div>
   );
 }
