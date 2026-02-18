@@ -57,6 +57,21 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     # Inject response templates for this agent
     full_prompt = system_prompt + get_templates_for_agent(name)
 
+    # Guardrail config (opt-in via env vars — see setup_guardrail.py)
+    guardrail_kwargs = {}
+    guardrail_id = os.environ.get('GUARDRAIL_ID')
+    guardrail_version = os.environ.get('GUARDRAIL_VERSION')
+    if guardrail_id and guardrail_version:
+        guardrail_kwargs = {
+            'guardrail_id': guardrail_id,
+            'guardrail_version': guardrail_version,
+            'guardrail_trace': 'enabled',
+            'guardrail_stream_processing_mode': 'async',
+            'guardrail_redact_input': True,
+            'guardrail_redact_output': False,
+        }
+        logger.info(f"Guardrail enabled for {name}: {guardrail_id} v{guardrail_version}")
+
     # Create and return agent
     return Agent(
         name=name,
@@ -64,7 +79,8 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             region_name=os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')),
             temperature=0.1,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            **guardrail_kwargs
         ),
         system_prompt=full_prompt,
         tools=tools,

@@ -79,8 +79,9 @@ Cross-referenced against:
 
 ## SECURITY GAPS
 
-### GAP-8: No Bedrock Guardrails integration (sample implementation)
+### GAP-8: No Bedrock Guardrails integration (sample implementation) ✅ IMPLEMENTED
 **Severity:** LOW — sample pattern for enterprise customers  
+**Status:** DONE — `setup_guardrail.py` creates sample guardrail, `agent_factory.py` applies it via env vars  
 **Current state:** We handle out-of-scope queries via prompt engineering only. No content filtering on inputs or outputs.  
 **What the sources say:** The Accelerator passes user questions and final responses through Amazon Bedrock Guardrails when enabled. Guardrails can redact PII, block harmful content, and enforce topic boundaries. The enterprise best practices blog emphasizes "security and access control must be enforced before tools execute."  
 **Impact:** Prompt-based guardrails work well for the pilot's scope. Enterprise customers in regulated industries will want Bedrock Guardrails for defense-in-depth.  

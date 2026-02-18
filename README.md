@@ -241,6 +241,47 @@ The sample environment creates instances with all of these pre-configured.
 
 ---
 
+## Post-Deployment Setup
+
+After deploying the agent (`./deploy.sh agent`), run these one-time setup scripts to enable advanced features:
+
+### Long-Term Memory (Recommended)
+
+Enables cross-session recall — the agent remembers patching outcomes, CVE history, and operator preferences across conversations.
+
+```bash
+cd agent && python setup_memory_strategies.py
+```
+
+This adds SEMANTIC (fact extraction) and SUMMARY (session summaries) strategies to the existing memory resource. Memories are automatically scoped per operator — Operator A's extracted facts are invisible to Operator B.
+
+### Bedrock Guardrails (Optional)
+
+Creates a sample guardrail with topic filtering, content safety, and sensitive data masking.
+
+```bash
+cd agent && python setup_guardrail.py
+```
+
+Then add the output values to your deployment environment:
+```bash
+# In .env or container environment
+GUARDRAIL_ID=<guardrail-id-from-output>
+GUARDRAIL_VERSION=<version-from-output>
+```
+
+Redeploy the agent to pick up the guardrail: `./deploy.sh agent`
+
+The sample guardrail includes:
+- Denied topic: non-patching queries (general knowledge, unrelated AWS services)
+- Content filters: blocks harmful content at HIGH threshold
+- Sensitive data: anonymizes AWS account IDs and IP addresses in responses
+- Prompt attack detection: blocks prompt injection attempts
+
+Extend it in the Bedrock console or via API with additional policies for your compliance requirements (PII redaction, custom word filters, additional denied topics).
+
+---
+
 ## Configuration
 
 ### SLA Policies
@@ -443,7 +484,7 @@ The solution exposes an HTTP API with SSE streaming, making it embeddable in exi
 
 ### Agent Reliability
 
-- **Guardrails**: Add Bedrock Guardrails to constrain agent responses — prevent the agent from executing actions outside its intended scope (e.g., terminating instances, modifying security groups).
+- **Guardrails**: Amazon Bedrock Guardrails are supported out of the box. Run `python agent/setup_guardrail.py` to create a sample guardrail with a denied topic (non-patching queries), content filters, and sensitive data masking (AWS account IDs, IP addresses). Then set `GUARDRAIL_ID` and `GUARDRAIL_VERSION` environment variables — the agent picks them up automatically. The sample guardrail is a starting point; extend it with additional denied topics, PII redaction policies, and custom word filters for your compliance requirements. See [Amazon Bedrock Guardrails documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html) for the full policy options.
 - **Token budget limits**: Set per-invocation token limits to prevent runaway conversations from consuming excessive Bedrock capacity.
 - **Dead letter queue**: Add an SQS DLQ for failed agent invocations to capture and retry failed patch operations.
 - **Idempotency**: Add idempotency keys to patch operations to prevent duplicate patching if an operator retries a failed request.
