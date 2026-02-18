@@ -99,7 +99,6 @@ def _route_to_specialist(specialist_name: str, agent_factory_fn, query: str,
     Enriches the query with conversation context, creates a stateless specialist
     agent, invokes it, and returns the response text.
     """
-    from helper.context_helper import get_relevant_context
     from helper.decision_logger import get_decision_logger
     from types import SimpleNamespace
 
@@ -111,16 +110,11 @@ def _route_to_specialist(specialist_name: str, agent_factory_fn, query: str,
         confidence="high"
     )
 
-    context_str = get_relevant_context(memory_id, session_id, max_turns=5)
-
-    if context_str:
-        logger.info(f"✓ Passing {len(context_str)} chars of context to {specialist_name}")
-        enhanced_query = f"Previous conversation:\n{context_str}\n\nCurrent query: {query}"
-    else:
-        logger.info(f"No context available for {specialist_name}")
-        enhanced_query = query
-
-    context = SimpleNamespace(memory_id=None, session_id=session_id)
+    # Specialists get read-only memory access — they can see the supervisor's
+    # conversation history (including tool results from other specialists) but
+    # don't write to it, keeping the supervisor's memory clean.
+    enhanced_query = query
+    context = SimpleNamespace(memory_id=memory_id, session_id=session_id, memory_read_only=True)
     agent = agent_factory_fn(context)
     result = agent(enhanced_query)
     return result.message['content'][0]['text']
@@ -165,7 +159,11 @@ async def agent_invocation(payload, context):
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
     operator_identity = payload.get("operator", "unknown")
-    os.environ["PATCH_OPERATOR"] = operator_identity
+    
+    # Set operator identity in request-scoped context (safe for concurrent requests)
+    from helper.tools import set_operator
+    set_operator(operator_identity)
+    
     logger.info(f"New request: operator={operator_identity} message={user_message[:100]}")
     
     # Load memory_id from AgentCore config (set during agentcore launch)

@@ -3,6 +3,7 @@
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+import contextvars
 import functools
 import json
 import logging
@@ -20,6 +21,19 @@ logger = logging.getLogger(__name__)
 
 # Region from environment variable (default: us-east-1)
 AWS_REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
+
+# Per-request operator identity — safe for concurrent async requests
+_current_operator: contextvars.ContextVar[str] = contextvars.ContextVar('_current_operator', default='unknown')
+
+
+def set_operator(identity: str) -> None:
+    """Set the operator identity for the current request context."""
+    _current_operator.set(identity)
+
+
+def get_operator() -> str:
+    """Get the operator identity for the current request context."""
+    return _current_operator.get()
 
 # Instance ID validation pattern
 INSTANCE_ID_PATTERN = re.compile(r'^i-[0-9a-f]{8,17}$')
@@ -275,7 +289,15 @@ def get_patch_compliance(environment: str,
         severity: If provided, includes SLA calculation based on compliance frameworks
     
     Returns:
-        dict: {'instances': list, 'total_count': int, 'summary': dict, 'sla_requirement': dict (optional)}
+        dict: {
+            'instances': list (SSM patch data — only populated after a scan has run),
+            'total_count': int (instances WITH SSM patch data),
+            'ec2_instance_ids': list (ALL running instances found via EC2 tags),
+            'ec2_instance_count': int (total running instances in this environment),
+            'unscanned_instance_ids': list (instances in EC2 but missing from SSM — optional),
+            'summary': dict,
+            'sla_requirement': dict (optional)
+        }
     """
     try:
         instance_tags = {}
@@ -301,13 +323,15 @@ def get_patch_compliance(environment: str,
                             instance_tags[instance_id] = tags
         
         if not instance_ids:
-            return {"instances": [], "total_count": 0}
+            return {"instances": [], "total_count": 0, "ec2_instance_ids": []}
         
         # Single API call to get patch states for all instances
         response = ssm_client.describe_instance_patch_states(InstanceIds=instance_ids)
         
         instances = []
+        ssm_found_ids = set()
         for state in response.get('InstancePatchStates', []):
+            ssm_found_ids.add(state['InstanceId'])
             instances.append({
                 'instance_id': state['InstanceId'],
                 'patch_group': state.get('PatchGroup', 'N/A'),
@@ -321,15 +345,23 @@ def get_patch_compliance(environment: str,
                 'reboot_option': state.get('RebootOption', 'N/A')
             })
         
+        # Instances EC2 found but SSM has no patch data for (never scanned)
+        unscanned_ids = [iid for iid in instance_ids if iid not in ssm_found_ids]
+        
         result = {
             "instances": instances,
             "total_count": len(instances),
+            "ec2_instance_ids": instance_ids,
+            "ec2_instance_count": len(instance_ids),
             "summary": {
                 "total_missing": sum(i['missing_count'] for i in instances),
                 "total_security_non_compliant": sum(i['security_non_compliant_count'] for i in instances),
                 "instances_needing_patches": sum(1 for i in instances if i['missing_count'] > 0)
             }
         }
+        
+        if unscanned_ids:
+            result['unscanned_instance_ids'] = unscanned_ids
         
         # Calculate SLA if severity provided — use strictest across ALL instances
         if severity and instance_tags:
@@ -654,7 +686,7 @@ def execute_patch_operation(
             # Get window details
             window_details = ssm_client.get_maintenance_window(WindowId=maintenance_window_id)
             
-            operator = os.environ.get("PATCH_OPERATOR", "unknown")
+            operator = get_operator()
             logger.info(f"PATCH_SCHEDULED: operator={operator} environment={environment} "
                         f"mode=scheduled window={window_details.get('Name')} "
                         f"instances={len(instance_ids)}")
@@ -673,7 +705,7 @@ def execute_patch_operation(
         
         elif execution_mode == "immediate":
             # Execute immediately (EMERGENCY)
-            operator = os.environ.get("PATCH_OPERATOR", "unknown")
+            operator = get_operator()
             response = ssm_client.send_command(
                 DocumentName='AWS-RunPatchBaseline',
                 InstanceIds=instance_ids,
@@ -1910,7 +1942,7 @@ def generate_compliance_report(
         report = {
             "report_id": report_id,
             "timestamp": timestamp.isoformat() + 'Z',
-            "operator": os.environ.get("PATCH_OPERATOR", "unknown"),
+            "operator": get_operator(),
             
             "vulnerability": {
                 "cve_id": cve_id,
@@ -2007,7 +2039,7 @@ def generate_compliance_report(
                 'sla-met': str(report['compliance']['sla_met']) if report['compliance']['sla_met'] is not None else 'UNKNOWN',
                 'team': team,
                 'product': product,
-                'operator': os.environ.get("PATCH_OPERATOR", "unknown")
+                'operator': get_operator()
             }
         )
         

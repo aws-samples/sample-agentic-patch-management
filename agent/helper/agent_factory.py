@@ -19,7 +19,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
         name: Agent name (e.g., "supervisor", "vulnerability_analyst")
         system_prompt: Agent's system prompt
         tools: List of tools available to agent
-        context: AgentCore context with session_id and memory_id
+        context: AgentCore context with session_id, memory_id, and optional memory_read_only
         max_tokens: Maximum tokens for response (default 6000, 12000 for patch_manager)
     
     Returns:
@@ -29,6 +29,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     memory_client = MemoryClient()
     memory_id = getattr(context, 'memory_id', None)
     session_id = getattr(context, 'session_id', None)
+    memory_read_only = getattr(context, 'memory_read_only', False)
     
     if not memory_id:
         logger.warning(f"No memory_id in context for {name}, memory will not persist")
@@ -36,11 +37,15 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     # Create memory hook only if memory_id available
     hooks = []
     if memory_id:
+        # Specialists read the supervisor's memory (same actor_id) in read-only mode
+        # so they can see conversation history without polluting it
+        supervisor_actor_id = "patch-automation-supervisor_agent"
         memory_hook = AgentCoreMemoryHook(
             memory_client=memory_client,
             memory_id=memory_id,
-            actor_id=f"{name}_agent",
-            session_id=session_id
+            actor_id=supervisor_actor_id,
+            session_id=session_id,
+            read_only=memory_read_only
         )
         hooks.append(memory_hook)
     

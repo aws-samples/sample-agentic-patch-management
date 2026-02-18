@@ -14,9 +14,11 @@ class AgentCoreMemoryHook(HookProvider):
     Memory hook provider that integrates Strands agents with AgentCore memory.
     
     Enables persistent conversations across vulnerability response workflows.
+    Supports read-write (supervisor) and read-only (specialist) modes.
     """
     
-    def __init__(self, memory_client: MemoryClient, memory_id: str, actor_id: str, session_id: str):
+    def __init__(self, memory_client: MemoryClient, memory_id: str, actor_id: str, session_id: str,
+                 read_only: bool = False):
         """
         Initialize the memory hook provider.
         
@@ -25,12 +27,16 @@ class AgentCoreMemoryHook(HookProvider):
             memory_id: AgentCore memory resource ID  
             actor_id: Unique identifier for this agent (supervisor_agent, etc.)
             session_id: Session identifier for conversation isolation
+            read_only: If True, load history on init but don't store new messages.
+                       Used by specialists to read supervisor context without polluting it.
         """
         self.memory_client = memory_client
         self.memory_id = memory_id
         self.actor_id = actor_id
         self.session_id = session_id
-        logger.info(f"Memory hook initialized for {actor_id} with memory_id: {memory_id}")
+        self.read_only = read_only
+        mode_label = "read-only" if read_only else "read-write"
+        logger.info(f"Memory hook initialized for {actor_id} ({mode_label}) with memory_id: {memory_id}")
     
     def on_agent_initialized(self, event: AgentInitializedEvent):
         """Load recent conversation history when agent starts."""
@@ -81,7 +87,10 @@ class AgentCoreMemoryHook(HookProvider):
             logger.warning(f"Traceback: {traceback.format_exc()}")
     
     def on_message_added(self, event: MessageAddedEvent):
-        """Store conversation turns in AgentCore memory."""
+        """Store conversation turns in AgentCore memory (skipped in read-only mode)."""
+        if self.read_only:
+            return
+        
         try:
             messages = event.agent.messages
             if not messages:

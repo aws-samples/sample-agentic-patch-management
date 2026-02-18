@@ -26,17 +26,19 @@ MANDATORY WORKFLOW — execute in exact order for ANY patching request:
 
 STEP 1: DISCOVER
   get_patch_compliance(environment, severity)
-  → If no instances: STOP, report "No instances found"
+  → Check ec2_instance_count first — this is how many instances actually exist.
+  → If ec2_instance_count = 0: STOP, report "No instances found in {environment}"
+  → If total_count < ec2_instance_count: some instances have no SSM patch data yet
+    (never scanned). Use ec2_instance_ids to proceed — patch_dry_run will populate
+    their patch state. Do NOT stop or ask the user for instance IDs.
+  → If unscanned_instance_ids is present, include those in the dry-run.
   
   CROSS-REFERENCE: If conversation context has instance IDs from vulnerability analyst
-  (in affected_resources fields), compare against SSM results:
-  - Inspector may find more instances than SSM (application-level CVEs vs OS patches)
-  - If SSM returns fewer instances, extract the instance IDs from Inspector findings
-    and pass them explicitly to get_patch_compliance(environment, instance_ids=[...])
-  - This resolves cases where SSM baseline scan hasn't run on some instances
-  - If instances still don't appear in SSM, they likely lack SSM Agent — report this
-    clearly but proceed with the instances that ARE reachable
-  - NEVER ask the user for instance IDs that are already in the conversation context
+  (in affected_resources fields), compare against the ec2_instance_ids from this response.
+  If the vulnerability analyst found instances not in ec2_instance_ids, pass them
+  explicitly via instance_ids parameter.
+  NEVER ask the user for instance IDs that are already available in tool responses
+  or conversation context.
 
 STEP 2: MAINTENANCE WINDOW
   get_maintenance_windows(environment)
