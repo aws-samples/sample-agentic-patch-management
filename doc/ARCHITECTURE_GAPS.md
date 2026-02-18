@@ -32,11 +32,12 @@ Cross-referenced against:
 
 ### GAP-3: No cross-session context retrieval ✅ IMPLEMENTED
 **Severity:** MEDIUM — impacts continuity across sessions  
-**Status:** DONE — `memory_hooks.py` now calls `retrieve_memories` with semantic search on agent init  
+**Status:** DONE — Supervisor uses `AgentCoreMemorySessionManager` with `RetrievalConfig` for automatic LTM retrieval on every user message  
 **Current state:** `on_agent_initialized` calls `get_last_k_turns` which only loads the current session's history. New sessions start empty.  
 **What the sources say:** The whole point of long-term memory is cross-session continuity. The Accelerator's reference implementation explicitly tests "start a new session and reference previous conversations — verify the agent remembers context."  
 **Impact:** Operators lose all context when starting a new conversation. They have to re-explain their fleet state, which CVEs they're tracking, and what was already patched.  
 **Fix:** After loading short-term turns (current session), call `retrieve_memory_records` with a semantic search query derived from the user's current message. Inject top-k results as context messages. This gives the agent cross-session recall.  
+**Implementation note:** Aligned with the Agentic AI Accelerator reference architecture — uses `AgentCoreMemorySessionManager` (from `bedrock_agentcore.memory.integrations.strands.session_manager`) instead of custom `HookProvider`. The session manager handles STM persistence, session rehydration, monotonic timestamps, and LTM retrieval via its `retrieve_customer_context` hook on every `MessageAddedEvent`. Specialists use a lightweight `ReadOnlyMemoryHook` that loads the supervisor's conversation context without writing to memory.  
 **Phase:** 1 (Pilot) — depends on GAP-1
 
 ### GAP-4: Specialists load full conversation history instead of targeted context
