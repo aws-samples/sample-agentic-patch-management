@@ -93,7 +93,8 @@ After compliance report → 1. Address SLA breaches, 2. Patch non-compliant inst
 
 
 def _route_to_specialist(specialist_name: str, agent_factory_fn, query: str,
-                         keywords: list[str], memory_id: str | None, session_id: str) -> str:
+                         keywords: list[str], memory_id: str | None, session_id: str,
+                         operator_id: str = "unknown") -> str:
     """Shared routing logic for all specialist consultations.
     
     Enriches the query with conversation context, creates a stateless specialist
@@ -114,13 +115,14 @@ def _route_to_specialist(specialist_name: str, agent_factory_fn, query: str,
     # conversation history (including tool results from other specialists) but
     # don't write to it, keeping the supervisor's memory clean.
     enhanced_query = query
-    context = SimpleNamespace(memory_id=memory_id, session_id=session_id, memory_read_only=True)
+    context = SimpleNamespace(memory_id=memory_id, session_id=session_id,
+                              operator_id=operator_id, memory_read_only=True)
     agent = agent_factory_fn(context)
     result = agent(enhanced_query)
     return result.message['content'][0]['text']
 
 
-def _make_tools(memory_id: str | None, session_id: str):
+def _make_tools(memory_id: str | None, session_id: str, operator_id: str = "unknown"):
     """Create tool functions with captured context (no globals needed)."""
 
     @tool
@@ -128,7 +130,7 @@ def _make_tools(memory_id: str | None, session_id: str):
         """Get vulnerability analysis from security specialist."""
         return _route_to_specialist(
             "vulnerability_analyst", gather_vulnerabilities, query,
-            ["CVE", "vulnerability", "security"], memory_id, session_id
+            ["CVE", "vulnerability", "security"], memory_id, session_id, operator_id
         )
 
     @tool
@@ -136,7 +138,7 @@ def _make_tools(memory_id: str | None, session_id: str):
         """Get patch deployment plan from infrastructure specialist."""
         return _route_to_specialist(
             "patch_manager", patching_operations, query,
-            ["patch", "instance", "deploy"], memory_id, session_id
+            ["patch", "instance", "deploy"], memory_id, session_id, operator_id
         )
 
     @tool
@@ -144,7 +146,7 @@ def _make_tools(memory_id: str | None, session_id: str):
         """Get compliance reporting and audit trail analysis."""
         return _route_to_specialist(
             "compliance_analyst", analyze_compliance, query,
-            ["compliance", "report", "audit"], memory_id, session_id
+            ["compliance", "report", "audit"], memory_id, session_id, operator_id
         )
 
     return [consult_vulnerability_analyst, consult_patch_manager, consult_compliance_analyst]
@@ -185,15 +187,16 @@ async def agent_invocation(payload, context):
     logger.info(f"✓ Memory enabled: {memory_id}")
     logger.info(f"Session ID: {context.session_id}")
     
-    # Create context with memory_id
+    # Create context with memory_id and operator identity
     from types import SimpleNamespace
     agent_context = SimpleNamespace(
         memory_id=memory_id,
-        session_id=context.session_id
+        session_id=context.session_id,
+        operator_id=operator_identity
     )
     
     # Build tools with captured context (no globals)
-    specialist_tools = _make_tools(memory_id, context.session_id)
+    specialist_tools = _make_tools(memory_id, context.session_id, operator_identity)
     
     # Create agent with factory
     agent = create_agent(

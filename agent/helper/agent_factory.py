@@ -19,7 +19,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
         name: Agent name (e.g., "supervisor", "vulnerability_analyst")
         system_prompt: Agent's system prompt
         tools: List of tools available to agent
-        context: AgentCore context with session_id, memory_id, and optional memory_read_only
+        context: AgentCore context with session_id, memory_id, operator_id, and optional memory_read_only
         max_tokens: Maximum tokens for response (default 6000, 12000 for patch_manager)
     
     Returns:
@@ -29,6 +29,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     memory_client = MemoryClient()
     memory_id = getattr(context, 'memory_id', None)
     session_id = getattr(context, 'session_id', None)
+    operator_id = getattr(context, 'operator_id', None)
     memory_read_only = getattr(context, 'memory_read_only', False)
     
     if not memory_id:
@@ -37,13 +38,17 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     # Create memory hook only if memory_id available
     hooks = []
     if memory_id:
-        # Specialists read the supervisor's memory (same actor_id) in read-only mode
-        # so they can see conversation history without polluting it
-        supervisor_actor_id = "patch-automation-supervisor_agent"
+        # actor_id scoped per operator for memory isolation (GAP-2).
+        # Long-term memory namespaces use {actorId} as a template variable,
+        # so operator-scoped actor_id gives us per-operator memory isolation for free.
+        # Specialists use the SAME actor_id (read-only) so they can see the
+        # operator's conversation context without polluting it.
+        actor_id = f"patch-automation/{operator_id}" if operator_id else "patch-automation/anonymous"
+        
         memory_hook = AgentCoreMemoryHook(
             memory_client=memory_client,
             memory_id=memory_id,
-            actor_id=supervisor_actor_id,
+            actor_id=actor_id,
             session_id=session_id,
             read_only=memory_read_only
         )

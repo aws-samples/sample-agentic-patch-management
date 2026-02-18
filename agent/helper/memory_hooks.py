@@ -15,6 +15,7 @@ class AgentCoreMemoryHook(HookProvider):
     
     Enables persistent conversations across vulnerability response workflows.
     Supports read-write (supervisor) and read-only (specialist) modes.
+    Retrieves long-term memories (semantic + summary) for cross-session context.
     """
     
     def __init__(self, memory_client: MemoryClient, memory_id: str, actor_id: str, session_id: str,
@@ -25,7 +26,7 @@ class AgentCoreMemoryHook(HookProvider):
         Args:
             memory_client: AgentCore memory client instance
             memory_id: AgentCore memory resource ID  
-            actor_id: Unique identifier for this agent (supervisor_agent, etc.)
+            actor_id: Operator-scoped identifier (e.g., "patch-automation/operator@web-abc123")
             session_id: Session identifier for conversation isolation
             read_only: If True, load history on init but don't store new messages.
                        Used by specialists to read supervisor context without polluting it.
@@ -35,32 +36,31 @@ class AgentCoreMemoryHook(HookProvider):
         self.actor_id = actor_id
         self.session_id = session_id
         self.read_only = read_only
+        self._first_user_message = None  # Captured for semantic retrieval
         mode_label = "read-only" if read_only else "read-write"
         logger.info(f"Memory hook initialized for {actor_id} ({mode_label}) with memory_id: {memory_id}")
     
     def on_agent_initialized(self, event: AgentInitializedEvent):
-        """Load recent conversation history when agent starts."""
+        """Load conversation history and long-term memories when agent starts."""
         try:
             logger.info(f"Loading conversation history for {self.actor_id}")
 
-            # Load recent conversation turns from AgentCore memory
+            # 1. Load recent conversation turns from current session (short-term memory)
             recent_turns = self.memory_client.get_last_k_turns(
                 memory_id=self.memory_id,
                 actor_id=self.actor_id,
                 session_id=self.session_id,
-                k=10,  # Last 10 turns for context
+                k=10,
                 branch_name="main"
             )
             
             if recent_turns and isinstance(recent_turns, list):
                 logger.info(f"Loaded {len(recent_turns)} conversation turns")
                 
-                # Process each turn - each turn is a list of messages
                 for turn in recent_turns:
                     if isinstance(turn, list):
                         for message in turn:
                             if isinstance(message, dict):
-                                # Extract content and role from AgentCore format
                                 content_obj = message.get('content', {})
                                 if isinstance(content_obj, dict):
                                     content = content_obj.get('text', '')
@@ -70,7 +70,10 @@ class AgentCoreMemoryHook(HookProvider):
                                 role = message.get('role', 'user').lower()
                                 
                                 if content.strip():
-                                    # Add to agent's conversation history
+                                    # Capture first user message for semantic retrieval
+                                    if role == 'user' and self._first_user_message is None:
+                                        self._first_user_message = content
+                                    
                                     event.agent.messages.append({
                                         "role": role,
                                         "content": [{"text": content, "type": "text"}]
@@ -80,11 +83,78 @@ class AgentCoreMemoryHook(HookProvider):
                 logger.info(f"Total agent messages after loading: {len(event.agent.messages)}")
             else:
                 logger.info("No previous conversation history found")
+            
+            # 2. Retrieve long-term memories (cross-session context) — GAP-3
+            # Only for supervisor (read-write mode). Specialists get context from
+            # the supervisor's conversation history which already includes this.
+            if not self.read_only:
+                self._inject_long_term_memories(event)
                 
         except Exception as e:
             logger.warning(f"Failed to load conversation history for {self.actor_id}: {e}")
             import traceback
             logger.warning(f"Traceback: {traceback.format_exc()}")
+    
+    def _inject_long_term_memories(self, event: AgentInitializedEvent):
+        """Retrieve and inject long-term memories as context for cross-session recall.
+        
+        Searches semantic memory using the first user message (or a generic query)
+        to find relevant facts from previous sessions. Injected as a system-context
+        message at the start of the conversation.
+        """
+        try:
+            # Build search query from first user message or generic
+            search_query = self._first_user_message or "patch automation vulnerability compliance"
+            
+            # Retrieve semantic memories scoped to this operator
+            # Namespace pattern: /actor/{actorId}/strategy/{strategyId}/{sessionId}
+            # We search at the actor level to get cross-session results
+            semantic_namespace = f"/actor/{self.actor_id}"
+            
+            memories = self.memory_client.retrieve_memories(
+                memory_id=self.memory_id,
+                namespace=semantic_namespace,
+                query=search_query,
+                top_k=5
+            )
+            
+            if memories:
+                # Format memories as context
+                memory_lines = []
+                for mem in memories:
+                    content = mem.get('content', {})
+                    if isinstance(content, dict):
+                        text = content.get('text', '')
+                    else:
+                        text = str(content)
+                    if text.strip():
+                        memory_lines.append(f"- {text}")
+                
+                if memory_lines:
+                    context_text = (
+                        "CONTEXT FROM PREVIOUS SESSIONS (long-term memory):\n"
+                        + "\n".join(memory_lines[:10])  # Cap at 10 facts
+                        + "\n\nUse this context to provide continuity. "
+                        "Do not repeat these facts unless relevant to the current query."
+                    )
+                    
+                    # Inject as the first message (before conversation history)
+                    event.agent.messages.insert(0, {
+                        "role": "user",
+                        "content": [{"text": context_text, "type": "text"}]
+                    })
+                    event.agent.messages.insert(1, {
+                        "role": "assistant",
+                        "content": [{"text": "Understood. I have context from your previous sessions and will use it as needed.", "type": "text"}]
+                    })
+                    
+                    logger.info(f"Injected {len(memory_lines)} long-term memories as context")
+            else:
+                logger.info("No long-term memories found for this operator")
+                
+        except Exception as e:
+            # Long-term memory retrieval is best-effort — don't break the agent
+            logger.warning(f"Failed to retrieve long-term memories: {e}")
     
     def on_message_added(self, event: MessageAddedEvent):
         """Store conversation turns in AgentCore memory (skipped in read-only mode)."""
