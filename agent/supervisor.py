@@ -184,15 +184,26 @@ async def agent_invocation(payload, context):
     # Load memory_id from AgentCore config (set during agentcore launch)
     memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
     if not memory_id:
-        try:
-            import yaml
-            config_path = os.path.join(os.path.dirname(__file__), ".bedrock_agentcore.yaml")
-            with open(config_path) as f:
-                ac_config = yaml.safe_load(f)
-            default_agent = ac_config.get("default_agent", "")
-            memory_id = ac_config.get("agents", {}).get(default_agent, {}).get("memory", {}).get("memory_id")
-        except Exception as e:
-            print(f"[SUPERVISOR] Failed to load memory_id from config: {e}", file=sys.stderr, flush=True)
+        import yaml
+        # Try multiple paths — local dev vs Docker container
+        config_candidates = [
+            os.path.join(os.path.dirname(__file__), ".bedrock_agentcore.yaml"),
+            "/app/.bedrock_agentcore.yaml",
+            "/app/agent/.bedrock_agentcore.yaml",
+        ]
+        for config_path in config_candidates:
+            try:
+                with open(config_path) as f:
+                    ac_config = yaml.safe_load(f)
+                default_agent = ac_config.get("default_agent", "")
+                memory_id = ac_config.get("agents", {}).get(default_agent, {}).get("memory", {}).get("memory_id")
+                if memory_id:
+                    print(f"[SUPERVISOR] Loaded memory_id from {config_path}", file=sys.stderr, flush=True)
+                    break
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                print(f"[SUPERVISOR] Error reading {config_path}: {e}", file=sys.stderr, flush=True)
     
     if not memory_id:
         print("[SUPERVISOR] WARNING: No memory_id found — memory will not persist", file=sys.stderr, flush=True)
@@ -218,7 +229,7 @@ async def agent_invocation(payload, context):
         context=agent_context
     )
     
-    print(f"[SUPERVISOR] Agent created. session_manager={agent.session_manager is not None} hooks={len(agent.hooks) if hasattr(agent, 'hooks') else '?'}", file=sys.stderr, flush=True)
+    print(f"[SUPERVISOR] Agent created. session_manager={'yes' if getattr(agent, '_session_manager', None) else 'no'}", file=sys.stderr, flush=True)
     
     # Stream response
     stream = agent.stream_async(user_message)

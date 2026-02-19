@@ -11,6 +11,11 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 ENV AWS_REGION=us-east-1
 ENV AWS_DEFAULT_REGION=us-east-1
 
+# AgentCore Memory ID — extracted from .bedrock_agentcore.yaml at build time.
+# This ensures memory works regardless of whether the yaml is in the container.
+# Update this value if the memory resource is recreated.
+ENV AGENTCORE_MEMORY_ID=intelligent_patch_automation_mem_20251201144427-55J3BSGwvF
+
 # Signal that this is running in Docker
 ENV DOCKER_CONTAINER=1
 
