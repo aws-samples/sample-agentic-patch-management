@@ -188,14 +188,22 @@ deploy_agent() {
         print_status "AgentCore CLI installed"
     fi
 
-    # First-time setup: generate .bedrock_agentcore.yaml if it doesn't exist
+    # First-time setup: generate .bedrock_agentcore.yaml + Dockerfile if they don't exist.
+    # agentcore configure creates the memory resource, IAM role, ECR repo, and writes
+    # the config yaml + generated Dockerfile. On subsequent deploys, agentcore launch
+    # reads the existing yaml — no need to re-configure.
     if [ ! -f ".bedrock_agentcore.yaml" ]; then
         print_warning "No .bedrock_agentcore.yaml found — running first-time configuration"
+        echo "  This creates the AgentCore runtime, memory resource, IAM role, and ECR repo."
         agentcore configure \
             --entrypoint supervisor.py \
             --name intelligent_patch_automation \
             --non-interactive
         print_status "AgentCore configuration created"
+
+        # Run memory strategies setup (adds SEMANTIC + SUMMARY for LTM)
+        echo -e "${BLUE}Setting up long-term memory strategies...${NC}"
+        python setup_memory_strategies.py || print_warning "Memory strategies setup failed — LTM will not be available. Run manually: python agent/setup_memory_strategies.py"
     fi
 
     agentcore launch --auto-update-on-conflict
