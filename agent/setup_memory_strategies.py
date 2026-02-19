@@ -23,12 +23,38 @@ logger = logging.getLogger(__name__)
 
 
 def load_memory_id() -> str:
-    """Load memory_id from .bedrock_agentcore.yaml"""
+    """Load memory_id from .bedrock_agentcore.yaml or discover it from the API."""
     config_path = os.path.join(os.path.dirname(__file__), '.bedrock_agentcore.yaml')
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    default_agent = config.get('default_agent', '')
-    memory_id = config['agents'][default_agent]['memory']['memory_id']
+
+    # Try loading from yaml first
+    memory_id = None
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+        default_agent = config.get('default_agent', '')
+        memory_id = config['agents'][default_agent]['memory'].get('memory_id')
+    except (FileNotFoundError, KeyError) as e:
+        logger.warning(f"Could not read memory_id from yaml: {e}")
+
+    # If yaml has no memory_id, try discovering it from the API
+    if not memory_id:
+        logger.info("memory_id not in yaml — discovering from AgentCore API...")
+        try:
+            from bedrock_agentcore.memory import MemoryClient
+            client = MemoryClient()
+            response = client.gmcp_client.list_memories()
+            for mem in response.get('memories', []):
+                if 'intelligent_patch_automation' in mem.get('name', ''):
+                    memory_id = mem['id']
+                    logger.info(f"Discovered memory: {memory_id}")
+                    break
+        except Exception as e:
+            logger.error(f"Failed to discover memory: {e}")
+
+    if not memory_id:
+        logger.error("No memory_id found. Run 'agentcore launch' first to create the memory resource.")
+        sys.exit(1)
+
     logger.info(f"Memory ID: {memory_id}")
     return memory_id
 

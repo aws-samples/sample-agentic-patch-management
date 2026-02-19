@@ -141,13 +141,18 @@ setup_environment() {
 # ── CDK bootstrap ──────────────────────────────────────────────────
 
 ensure_cdk_bootstrap() {
-    echo "Checking CDK bootstrap..."
-    if ! npx cdk bootstrap --show-template &> /dev/null 2>&1; then
-        echo "Bootstrapping CDK..."
-        npx cdk bootstrap "aws://${CDK_DEFAULT_ACCOUNT:-$(aws sts get-caller-identity --query Account --output text)}/${AWS_REGION}"
-        print_status "CDK bootstrapped"
-    else
+    local account_id
+    account_id="${CDK_DEFAULT_ACCOUNT:-$(aws sts get-caller-identity --query Account --output text)}"
+
+    echo "Checking CDK bootstrap for ${account_id}/${AWS_REGION}..."
+
+    # Check if the bootstrap SSM parameter exists — this is the definitive check
+    if aws ssm get-parameter --name "/cdk-bootstrap/hnb659fds/version" &> /dev/null; then
         print_status "CDK already bootstrapped"
+    else
+        echo "Bootstrapping CDK..."
+        npx cdk bootstrap "aws://${account_id}/${AWS_REGION}"
+        print_status "CDK bootstrapped"
     fi
 }
 
@@ -200,14 +205,20 @@ deploy_agent() {
             --name intelligent_patch_automation \
             --non-interactive
         print_status "AgentCore configuration created"
-
-        # Run memory strategies setup (adds SEMANTIC + SUMMARY for LTM)
-        echo -e "${BLUE}Setting up long-term memory strategies...${NC}"
-        python setup_memory_strategies.py || print_warning "Memory strategies setup failed — LTM will not be available. Run manually: python agent/setup_memory_strategies.py"
+        FIRST_DEPLOY=true
+    else
+        FIRST_DEPLOY=false
     fi
 
     agentcore launch --auto-update-on-conflict
     print_status "Agent deployed"
+
+    # On first deploy, set up LTM strategies after launch (launch populates memory_id)
+    if [ "$FIRST_DEPLOY" = true ]; then
+        echo -e "${BLUE}Setting up long-term memory strategies...${NC}"
+        python setup_memory_strategies.py || print_warning "Memory strategies setup failed — run manually later: python agent/setup_memory_strategies.py"
+    fi
+
     cd ..
 }
 
