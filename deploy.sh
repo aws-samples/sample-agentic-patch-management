@@ -187,6 +187,17 @@ deploy_agent() {
         pip install bedrock-agentcore -q
         print_status "AgentCore CLI installed"
     fi
+
+    # First-time setup: generate .bedrock_agentcore.yaml if it doesn't exist
+    if [ ! -f ".bedrock_agentcore.yaml" ]; then
+        print_warning "No .bedrock_agentcore.yaml found — running first-time configuration"
+        agentcore configure \
+            --entrypoint supervisor.py \
+            --name intelligent_patch_automation \
+            --non-interactive
+        print_status "AgentCore configuration created"
+    fi
+
     agentcore launch --auto-update-on-conflict
     print_status "Agent deployed"
     cd ..
