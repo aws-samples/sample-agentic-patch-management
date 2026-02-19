@@ -268,7 +268,7 @@ This adds SEMANTIC (fact extraction) and SUMMARY (session summaries) strategies 
 
 ### Bedrock Guardrails (Optional)
 
-Creates a sample guardrail with topic filtering, content safety, and sensitive data masking. Guardrails filter what the agent can *say* — content-level controls on LLM inputs and outputs.
+Creates a sample guardrail with topic filtering, content safety, and sensitive data masking.
 
 ```bash
 source venv/bin/activate
@@ -290,23 +290,7 @@ The sample guardrail includes:
 - Sensitive data: anonymizes AWS account IDs and IP addresses in responses
 - Prompt attack detection: blocks prompt injection attempts
 
-### AgentCore Policy (Optional)
-
-AgentCore Policy controls what the agent can *do* — deterministic, tool-level access control enforced at the Gateway boundary, outside the agent's code. Policies are written in Cedar and evaluated before every tool call.
-
-Sample Cedar policies are in `agent/config/sample_policies.cedar`:
-
-| Policy | What it does |
-|--------|-------------|
-| Operator access | Permits all tools for users with `role=operator` |
-| Viewer restrictions | Blocks `execute_patch_operation` and `rollback_patches` for viewers |
-| Prod protection | Blocks prod patching unless `emergency=true` flag is set |
-| Emergency shutdown | Uncomment to immediately disable all agent actions |
-| Suspended users | Blocks all actions for accounts with `account_status=suspended` |
-
-To use: create an AgentCore Gateway + Policy Engine, attach the Cedar policies, and route agent tool calls through the Gateway. See [AgentCore Policy docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/policy.html).
-
-Guardrails and Policy are complementary — Guardrails filter content (what the agent says), Policy controls actions (what the agent does). Use both for defense-in-depth.
+Extend it in the Bedrock console or via API with additional policies for your compliance requirements (PII redaction, custom word filters, additional denied topics).
 
 ---
 
