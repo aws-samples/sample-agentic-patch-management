@@ -114,7 +114,8 @@ Browser-based console with two panels:
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                 Patch Automation Supervisor                  │
-│              (Intelligent routing + fallback)                │
+│         (Intelligent routing + memory + fallback)           │
+│         AgentCoreMemorySessionManager (STM + LTM)           │
 ├──────────────┬───────────────────┬───────────────────────────┤
 │ Vulnerability│   Patch Manager   │   Compliance Analyst      │
 │ Analyst      │                   │                           │
@@ -128,6 +129,7 @@ Browser-based console with two panels:
 │              │ • Maintenance     │                           │
 │              │   Windows         │                           │
 └──────────────┴───────────────────┴───────────────────────────┘
+  (Read-only memory)  (Read-only memory)  (Read-only memory)
 ```
 
 The supervisor routes queries to the right specialist automatically. If a specialist can't handle a query, the supervisor re-routes or falls back to direct AWS API access via `use_aws`.
@@ -250,10 +252,19 @@ After deploying the agent (`./deploy.sh agent`), run these one-time setup script
 Enables cross-session recall — the agent remembers patching outcomes, CVE history, and operator preferences across conversations.
 
 ```bash
-cd agent && python setup_memory_strategies.py
+source venv/bin/activate
+python agent/setup_memory_strategies.py
 ```
 
-This adds SEMANTIC (fact extraction) and SUMMARY (session summaries) strategies to the existing memory resource. Memories are automatically scoped per operator — Operator A's extracted facts are invisible to Operator B.
+This adds SEMANTIC (fact extraction) and SUMMARY (session summaries) strategies to the existing memory resource. Memories are automatically scoped per operator via `actor_id` — Operator A's extracted facts are invisible to Operator B.
+
+**How memory works:**
+
+- **Short-term (STM)**: Conversation turns are persisted to AgentCore Memory via `AgentCoreMemorySessionManager` (the official Strands integration). Sessions survive page refreshes — the frontend stores the `session_id` in localStorage.
+- **Long-term (LTM)**: After each conversation, AgentCore asynchronously extracts semantic facts and session summaries. On the next session, the agent retrieves relevant LTM records and injects them as `<user_context>` before the first model call.
+- **Operator isolation**: The `actor_id` is scoped as `patch-automation/{operator_identity}`, ensuring memory isolation between operators. Invalid characters (like `@`) are automatically sanitized.
+
+**Important**: The `AGENTCORE_MEMORY_ID` environment variable in `agent/Dockerfile` must match your memory resource ID. This is set automatically during initial deployment, but if you recreate the memory resource, update the Dockerfile and redeploy.
 
 ### Bedrock Guardrails (Optional)
 
@@ -359,20 +370,55 @@ cd ui/frontend && npm run dev          # Frontend on port 5173
 
 ## Observability
 
+The agent ships with full observability via OpenTelemetry auto-instrumentation and CloudWatch.
+
+### Log Streams
+
+All logs flow to CloudWatch under `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT/`:
+
+| Stream | Content |
+|--------|---------|
+| `[runtime-logs]<uuid>` | Application logs (`[SUPERVISOR]`, `[MEMORY]`), Strands debug, memory lifecycle |
+| `otel-rt-logs` | OTEL structured JSON logs with `traceId`/`spanId` for end-to-end correlation |
+
+### Tailing Logs
+
 ```bash
-# Real-time agent logs
-aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT --follow
+# Real-time agent logs (all streams)
+aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT \
+  --log-stream-name-prefix "$(date -u +%Y/%m/%d)/[runtime-logs]" --follow
 
-# Recent errors
+# Filter to application-level events
 aws logs filter-log-events \
-  --log-group-name "/aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT" \
-  --filter-pattern "ERROR" --start-time $(date -v-1H +%s)000
+  --log-group-name "/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT" \
+  --filter-pattern "SUPERVISOR" --start-time $(date -v-1H +%s)000
 
-# Find your runtime name
-agentcore status | grep "Runtime:"
+# Memory operations
+aws logs filter-log-events \
+  --log-group-name "/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT" \
+  --filter-pattern "customer context" --start-time $(date -v-1H +%s)000
+
+# Errors only
+aws logs filter-log-events \
+  --log-group-name "/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT" \
+  --filter-pattern "ERROR" --start-time $(date -v-1H +%s)000
 ```
 
-GenAI observability: `CloudWatch Console → GenAI Observability → AgentCore` for token usage, latency, and X-Ray tracing.
+### OTEL Traces and GenAI Dashboard
+
+The agent container runs with `opentelemetry-instrument` (via `aws-opentelemetry-distro`), which auto-instruments all Bedrock model calls, tool executions, and memory operations. Every log entry includes `traceId` and `spanId` for correlation.
+
+View traces: `CloudWatch Console → Transaction Search → filter by service name`
+
+View agent metrics: `CloudWatch Console → GenAI Observability → AgentCore` for token usage, latency, session counts, and per-tool execution times.
+
+### What's Logged
+
+- Supervisor routing decisions (which specialist, why)
+- Memory lifecycle: session creation, STM event writes, LTM retrieval counts
+- Bedrock model calls: request/response payloads, token counts, latency
+- Tool execution: tool name, duration, success/failure
+- Specialist handoffs: query enrichment, context forwarding
 
 Every agent decision is logged to CloudWatch and S3 compliance reports. CloudWatch Insights query:
 ```
