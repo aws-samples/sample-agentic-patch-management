@@ -6,6 +6,7 @@ for full STM persistence and LTM retrieval. Specialists only need to READ the
 supervisor's conversation context without writing to memory — this hook handles that.
 """
 
+import re
 import logging
 from botocore.config import Config as BotocoreConfig
 from strands.hooks import AgentInitializedEvent, HookProvider, HookRegistry
@@ -16,6 +17,13 @@ logger = logging.getLogger(__name__)
 _RETRY_CONFIG = BotocoreConfig(
     retries={"max_attempts": 5, "mode": "adaptive"}
 )
+
+
+def _sanitize_actor_id(actor_id: str) -> str:
+    """Ensure actor_id matches [a-zA-Z0-9][a-zA-Z0-9-_/]* — strip invalid chars like '@'."""
+    sanitized = re.sub(r'[^a-zA-Z0-9\-_/]', '-', actor_id)
+    sanitized = re.sub(r'-{2,}', '-', sanitized).strip('-')
+    return sanitized or "anonymous"
 
 
 class ReadOnlyMemoryHook(HookProvider):
@@ -31,11 +39,11 @@ class ReadOnlyMemoryHook(HookProvider):
 
     def __init__(self, memory_id: str, actor_id: str, session_id: str, k: int = 10):
         self.memory_id = memory_id
-        self.actor_id = actor_id
+        self.actor_id = _sanitize_actor_id(actor_id)
         self.session_id = session_id
         self.k = k
         self._memory_client = MemoryClient()
-        logger.info(f"Read-only memory hook: actor={actor_id}, session={session_id}")
+        logger.info(f"Read-only memory hook: actor={self.actor_id}, session={session_id}")
 
     def on_agent_initialized(self, event: AgentInitializedEvent):
         """Load recent conversation turns from the supervisor's session."""

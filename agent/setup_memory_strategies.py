@@ -46,17 +46,22 @@ def main():
 
     added = []
 
+    # Namespace pattern — must use {memoryStrategyId} (not {strategyId})
+    # API pattern: [a-zA-Z0-9\-_\/]*(\{(actorId|sessionId|memoryStrategyId)\}...)*
+    NS = "/actor/{actorId}/strategy/{memoryStrategyId}/{sessionId}"
+
     # Add semantic strategy — extracts facts/knowledge from conversations
     # e.g., "CVE-2024-6387 required rollback on 2 prod instances"
     if 'SEMANTIC' not in existing_types:
         logger.info("Adding SEMANTIC strategy...")
-        client.add_semantic_strategy_and_wait(
+        client.add_semantic_strategy(
             memory_id=memory_id,
             name="patch_knowledge",
-            description="Extracts patching facts: CVE outcomes, instance behaviors, rollback history, environment quirks"
+            description="Extracts patching facts: CVE outcomes, instance behaviors, rollback history, environment quirks",
+            namespaces=[NS]
         )
         added.append('SEMANTIC')
-        logger.info("✓ SEMANTIC strategy added and active")
+        logger.info("✓ SEMANTIC strategy added")
     else:
         logger.info("SEMANTIC strategy already exists, skipping")
 
@@ -64,13 +69,14 @@ def main():
     # Gives agents a compressed view of what happened in previous sessions
     if 'SUMMARIZATION' not in existing_types:
         logger.info("Adding SUMMARY strategy...")
-        client.add_summary_strategy_and_wait(
+        client.add_summary_strategy(
             memory_id=memory_id,
             name="session_summary",
-            description="Summarizes patching sessions: what was scanned, patched, rolled back, and outcomes"
+            description="Summarizes patching sessions: what was scanned, patched, rolled back, and outcomes",
+            namespaces=[NS]
         )
         added.append('SUMMARY')
-        logger.info("✓ SUMMARY strategy added and active")
+        logger.info("✓ SUMMARY strategy added")
     else:
         logger.info("SUMMARY strategy already exists, skipping")
 

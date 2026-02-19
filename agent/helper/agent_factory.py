@@ -1,6 +1,8 @@
 """Common agent factory to eliminate duplication"""
 
 import os
+import re
+import sys
 import logging
 from botocore.config import Config as BotocoreConfig
 from strands import Agent
@@ -24,8 +26,17 @@ _RETRY_CONFIG = BotocoreConfig(
 
 
 def _build_actor_id(operator_id: str | None) -> str:
-    """Build operator-scoped actor_id for memory isolation (GAP-2)."""
-    return f"patch-automation/{operator_id}" if operator_id else "patch-automation/anonymous"
+    """Build operator-scoped actor_id for memory isolation (GAP-2).
+
+    actor_id must match: [a-zA-Z0-9][a-zA-Z0-9-_/]*
+    Strip any chars not in that set (e.g. '@' from 'operator@session').
+    """
+    import re
+    base = operator_id or "anonymous"
+    # Replace invalid chars with '-', collapse multiple dashes
+    sanitized = re.sub(r'[^a-zA-Z0-9\-_/]', '-', base)
+    sanitized = re.sub(r'-{2,}', '-', sanitized).strip('-')
+    return f"patch-automation/{sanitized}" if sanitized else "patch-automation/anonymous"
 
 
 def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens: int = 6000) -> Agent:
@@ -74,22 +85,25 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             actor_id=actor_id,
             retrieval_config=retrieval_config,
         )
-        session_manager = AgentCoreMemorySessionManager(
-            boto_client_config=_RETRY_CONFIG,
-            agentcore_memory_config=config,
-        )
-        logger.info(f"Session manager initialized for {name} (actor={actor_id}, session={session_id})")
+        print(f"[MEMORY] Creating session manager: actor={actor_id} session={session_id} retrieval={retrieval_config}", file=sys.stderr, flush=True)
+        try:
+            session_manager = AgentCoreMemorySessionManager(
+                boto_client_config=_RETRY_CONFIG,
+                agentcore_memory_config=config,
+            )
+            print(f"[MEMORY] Session manager created OK for {name}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[MEMORY] ERROR creating session manager: {e}", file=sys.stderr, flush=True)
+            session_manager = None
 
     elif memory_id and memory_read_only:
         # Specialists: read-only hook loads supervisor's conversation context
-        # without writing to memory. Uses the same actor_id so they see the
-        # operator's conversation history.
         hooks.append(ReadOnlyMemoryHook(
             memory_id=memory_id,
             actor_id=actor_id,
             session_id=session_id,
         ))
-        logger.info(f"Read-only memory hook for {name} (actor={actor_id})")
+        print(f"[MEMORY] Read-only hook for {name} (actor={actor_id})", file=sys.stderr, flush=True)
 
     # Inject response templates for this agent
     full_prompt = system_prompt + get_templates_for_agent(name)
@@ -129,19 +143,23 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
 def _build_retrieval_config(actor_id: str) -> dict[str, RetrievalConfig] | None:
     """Build LTM retrieval config for cross-session context (GAP-3).
 
-    Configures semantic search at the operator's namespace prefix so the agent
-    retrieves relevant facts from ALL previous sessions for this operator.
-    The namespace uses prefix matching at the API level — searching at
-    /actor/{actorId} returns results across all strategies and sessions.
+    The session manager resolves namespace templates using:
+      namespace.format(actorId=actor_id, sessionId=session_id, memoryStrategyId=strategy_id)
 
-    Returns None if no retrieval is desired (disables LTM).
+    We use the actor-level prefix namespace so the API does a prefix match across
+    all strategies and sessions for this operator. The {sessionId} is left as a
+    literal placeholder — the API treats it as a prefix match up to that point.
+
+    Namespace pattern: /actor/{actorId}/strategy/{memoryStrategyId}/{sessionId}
+    For cross-session retrieval we omit {sessionId} to search across all sessions.
     """
-    # Namespace prefix for this operator — matches all strategies and sessions
-    namespace = f"/actor/{actor_id}"
+    # Namespace resolves to /actor/<actor_id>/strategy/<strategy_id>
+    # This is a prefix that covers all sessions for this operator+strategy.
+    namespace_template = "/actor/{actorId}/strategy/{memoryStrategyId}"
 
     return {
-        namespace: RetrievalConfig(
+        namespace_template: RetrievalConfig(
             top_k=5,
-            relevance_score=0.3,  # Filter out low-relevance noise
+            relevance_score=0.3,
         )
     }

@@ -1,6 +1,7 @@
 """Supervisor Agent with orchestration capabilities"""
 
 import os
+import sys
 import time
 import logging
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -10,9 +11,20 @@ from vulnerability_agent import gather_vulnerabilities
 from patch_manager import patching_operations
 from compliance_analyst import analyze_compliance
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging — explicit StreamHandler ensures logs reach CloudWatch
+# AgentCore captures stderr from the container process
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s | %(name)s | %(message)s",
+    handlers=[logging.StreamHandler(sys.stderr)],
+    force=True,  # Override any existing root logger config
+)
 logger = logging.getLogger(__name__)
+
+# Enable Strands debug logging for full session manager visibility
+logging.getLogger("strands").setLevel(logging.DEBUG)
+# Enable AgentCore memory debug logging
+logging.getLogger("bedrock_agentcore.memory").setLevel(logging.DEBUG)
 
 # Configure environment
 os.environ["BYPASS_TOOL_CONSENT"] = os.environ.get("BYPASS_TOOL_CONSENT", "true")
@@ -166,7 +178,8 @@ async def agent_invocation(payload, context):
     from helper.tools import set_operator
     set_operator(operator_identity)
     
-    logger.info(f"New request: operator={operator_identity} message={user_message[:100]}")
+    print(f"[SUPERVISOR] New request: operator={operator_identity} session={context.session_id}", file=sys.stderr, flush=True)
+    print(f"[SUPERVISOR] Message: {user_message[:100]}", file=sys.stderr, flush=True)
     
     # Load memory_id from AgentCore config (set during agentcore launch)
     memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
@@ -179,13 +192,12 @@ async def agent_invocation(payload, context):
             default_agent = ac_config.get("default_agent", "")
             memory_id = ac_config.get("agents", {}).get(default_agent, {}).get("memory", {}).get("memory_id")
         except Exception as e:
-            logger.warning(f"Failed to load memory_id from config: {e}")
+            print(f"[SUPERVISOR] Failed to load memory_id from config: {e}", file=sys.stderr, flush=True)
     
     if not memory_id:
-        logger.warning("No memory_id found — memory will not persist across sessions")
-    
-    logger.info(f"✓ Memory enabled: {memory_id}")
-    logger.info(f"Session ID: {context.session_id}")
+        print("[SUPERVISOR] WARNING: No memory_id found — memory will not persist", file=sys.stderr, flush=True)
+    else:
+        print(f"[SUPERVISOR] Memory enabled: {memory_id}", file=sys.stderr, flush=True)
     
     # Create context with memory_id and operator identity
     from types import SimpleNamespace
@@ -206,6 +218,8 @@ async def agent_invocation(payload, context):
         context=agent_context
     )
     
+    print(f"[SUPERVISOR] Agent created. session_manager={agent.session_manager is not None} hooks={len(agent.hooks) if hasattr(agent, 'hooks') else '?'}", file=sys.stderr, flush=True)
+    
     # Stream response
     stream = agent.stream_async(user_message)
     async for event in stream:
@@ -213,7 +227,7 @@ async def agent_invocation(payload, context):
     
     # Log completion
     total_duration_ms = (time.time() - request_start) * 1000
-    logger.info(f"Request completed in {total_duration_ms:.0f}ms")
+    print(f"[SUPERVISOR] Request completed in {total_duration_ms:.0f}ms", file=sys.stderr, flush=True)
 
 if __name__ == "__main__":
     app.run()
