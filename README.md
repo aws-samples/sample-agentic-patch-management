@@ -264,7 +264,7 @@ This adds SEMANTIC (fact extraction) and SUMMARY (session summaries) strategies 
 - **Long-term (LTM)**: After each conversation, AgentCore asynchronously extracts semantic facts and session summaries. On the next session, the agent retrieves relevant LTM records and injects them as `<user_context>` before the first model call.
 - **Operator isolation**: The `actor_id` is scoped as `patch-automation/{operator_identity}`, ensuring memory isolation between operators. Invalid characters (like `@`) are automatically sanitized.
 
-**Important**: The `AGENTCORE_MEMORY_ID` environment variable in `agent/Dockerfile` must match your memory resource ID. This is set automatically during initial deployment, but if you recreate the memory resource, update the Dockerfile and redeploy.
+**Important**: The AgentCore toolkit automatically injects the memory_id as `BEDROCK_AGENTCORE_MEMORY_ID` into the generated Dockerfile. No custom Dockerfile is needed — the toolkit handles memory_id, OTEL instrumentation, and `PYTHONUNBUFFERED` automatically.
 
 ### Bedrock Guardrails (Optional)
 

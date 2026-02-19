@@ -181,15 +181,14 @@ async def agent_invocation(payload, context):
     print(f"[SUPERVISOR] New request: operator={operator_identity} session={context.session_id}", file=sys.stderr, flush=True)
     print(f"[SUPERVISOR] Message: {user_message[:100]}", file=sys.stderr, flush=True)
     
-    # Load memory_id from AgentCore config (set during agentcore launch)
-    memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
+    # Load memory_id — check env vars first (container), then fall back to yaml (local dev)
+    # BEDROCK_AGENTCORE_MEMORY_ID is set by the toolkit's generated Dockerfile
+    memory_id = os.environ.get("BEDROCK_AGENTCORE_MEMORY_ID") or os.environ.get("AGENTCORE_MEMORY_ID")
     if not memory_id:
         import yaml
-        # Try multiple paths — local dev vs Docker container
         config_candidates = [
             os.path.join(os.path.dirname(__file__), ".bedrock_agentcore.yaml"),
             "/app/.bedrock_agentcore.yaml",
-            "/app/agent/.bedrock_agentcore.yaml",
         ]
         for config_path in config_candidates:
             try:
