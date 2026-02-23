@@ -18,14 +18,31 @@ export default function KpiBar({ data }: Props) {
   const slaBreached = data.compliance?.sla_breached ?? 0;
   const envCount = data.environments.length;
 
+  const scope = data.scopes[0];
+  const scopeDetail = data.scopes.length === 1
+    ? `${scope?.accountId ?? "unknown"} · ${scope?.region ?? "unknown"}`
+    : `${data.scopes.length} accounts`;
+
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-      <KpiCard label="Environments" value={envCount.toString()} detail={`${totalInstances} instances · ${offlineInstances > 0 ? `${offlineInstances} offline` : "all online"}`} icon="🌐" />
-      <KpiCard label="Instances Online" value={`${onlineInstances}/${totalInstances}`} detail={onlineInstances === totalInstances ? "all healthy" : `${offlineInstances} need attention`} color={onlineInstances === totalInstances ? "green" : "red"} icon="🖥️" />
+    <div className="space-y-2">
+      {/* Scope context line */}
+      <div className="flex items-center gap-2 text-[11px] text-gray-400">
+        <span className="inline-flex items-center gap-1">
+          <span>🔒</span>
+          <span>Account: {scopeDetail}</span>
+        </span>
+        <span className="text-gray-300">·</span>
+        <span>{totalInstances} instances across {envCount} environments</span>
+      </div>
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <KpiCard label="Environments" value={envCount.toString()} detail={`${onlineInstances}/${totalInstances} online${offlineInstances > 0 ? ` · ${offlineInstances} offline` : ""}`} color={offlineInstances > 0 ? "red" : "green"} icon="🌐" />
+      <KpiCard label="Environments" value={envCount.toString()} detail={`${onlineInstances}/${totalInstances} online${offlineInstances > 0 ? ` · ${offlineInstances} offline` : ""}`} color={offlineInstances > 0 ? "red" : "green"} icon="🌐" />
       <KpiCard label="Critical Vulns" value={criticalVulns.toString()} detail={criticalVulns === 0 ? "none detected" : "immediate action needed"} color={criticalVulns > 0 ? "red" : "green"} icon="🚨" />
       <KpiCard label="High Vulns" value={highVulns.toString()} detail={`${mediumVulns} medium · ${totalVulns} total`} color={highVulns > 0 ? "amber" : undefined} icon="⚠️" />
       <KpiCard label="SLA Compliance" value={totalReports > 0 ? `${slaRate}%` : "—"} detail={totalReports > 0 ? `${totalReports} reports · 30d` : "no reports yet"} color={totalReports > 0 ? (slaRate >= 95 ? "green" : slaRate >= 80 ? "amber" : "red") : undefined} icon="📊" />
       <KpiCard label="SLA Breaches" value={slaBreached.toString()} detail={slaBreached === 0 ? "none in 30 days" : "review required"} color={slaBreached > 0 ? "red" : "green"} icon="🔔" />
+      </div>
     </div>
   );
 }

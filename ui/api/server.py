@@ -358,7 +358,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-ENVIRONMENTS = ["dev", "test", "staging", "prod"]
+ENVIRONMENTS = None  # Discovered dynamically from EC2 Environment tags
 
 # Cache account ID — never changes during a server session
 _cached_account_id: str | None = None
@@ -383,16 +383,21 @@ def _get_account_id() -> str:
 
 
 def _fetch_environments():
-    """Sync: EC2 instances + SSM health per environment."""
+    """Sync: EC2 instances + SSM health per environment.
+
+    Discovers environments dynamically from EC2 'Environment' tags —
+    no hardcoded list. Works with any customer naming convention.
+    """
     session = _aws_session()
     ec2 = session.client("ec2")
     ssm = session.client("ssm")
 
-    env_instances: dict[str, list[str]] = {e: [] for e in ENVIRONMENTS}
+    # Discover all running instances that have an Environment tag
+    env_instances: dict[str, list[str]] = {}
     paginator = ec2.get_paginator("describe_instances")
     for page in paginator.paginate(
         Filters=[
-            {"Name": "tag:Environment", "Values": ENVIRONMENTS},
+            {"Name": "tag-key", "Values": ["Environment"]},
             {"Name": "instance-state-name", "Values": ["running"]},
         ]
     ):
@@ -400,13 +405,12 @@ def _fetch_environments():
             for inst in res.get("Instances", []):
                 tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
                 env = tags.get("Environment", "")
-                if env in env_instances:
-                    env_instances[env].append(inst["InstanceId"])
+                if env:
+                    env_instances.setdefault(env, []).append(inst["InstanceId"])
 
     all_ids = [i for ids in env_instances.values() for i in ids]
     ssm_online: set[str] = set()
     if all_ids:
-        # Paginate SSM describe_instance_information
         ssm_paginator = ssm.get_paginator("describe_instance_information")
         for page in ssm_paginator.paginate(
             Filters=[{"Key": "InstanceIds", "Values": all_ids}]
@@ -416,7 +420,7 @@ def _fetch_environments():
                     ssm_online.add(info["InstanceId"])
 
     results = []
-    for env in ENVIRONMENTS:
+    for env in sorted(env_instances.keys()):
         ids = env_instances[env]
         online = sum(1 for i in ids if i in ssm_online)
         results.append({
@@ -730,6 +734,7 @@ async def dashboard(force: bool = False):
         errors.append(f"Reports: {results[2]}")
 
     result = {
+        "scopes": [{"account_id": _get_account_id(), "region": _region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")}],
         "environments": envs,
         "findings": vulns["findings"],
         "severity_counts": vulns["severity_counts"],
@@ -747,6 +752,21 @@ async def dashboard(force: bool = False):
 # Server-side dashboard cache (30s TTL)
 _dashboard_cache: dict | None = None
 _dashboard_cache_time: float = 0.0
+_account_id_cache: str | None = None
+
+
+def _get_account_id() -> str:
+    """Get AWS account ID (cached for process lifetime)."""
+    global _account_id_cache
+    if _account_id_cache:
+        return _account_id_cache
+    try:
+        session = _aws_session()
+        sts = session.client("sts")
+        _account_id_cache = sts.get_caller_identity()["Account"]
+    except Exception:
+        _account_id_cache = "unknown"
+    return _account_id_cache
 
 
 # ── Static file serving (production container) ──────────────────────

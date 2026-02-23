@@ -62,7 +62,13 @@ export interface ReportDetail {
   failure_count: number;
 }
 
+export interface AccountScope {
+  accountId: string;
+  region: string;
+}
+
 export interface DashboardData {
+  scopes: AccountScope[];
   environments: EnvironmentStatus[];
   findings: VulnerabilityFinding[];
   severityCounts: Record<string, number>;
@@ -101,6 +107,10 @@ export async function fetchDashboard(force = false): Promise<DashboardData> {
   const raw = await res.json();
 
   return {
+    scopes: (raw.scopes ?? []).map((s: { account_id: string; region: string }) => ({
+      accountId: s.account_id ?? "unknown",
+      region: s.region ?? "unknown",
+    })),
     environments: enrichEnvironments(raw.environments ?? [], raw.findings ?? []),
     findings: raw.findings ?? [],
     severityCounts: raw.severity_counts ?? {},
