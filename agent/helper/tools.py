@@ -115,10 +115,25 @@ cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION, config=aw
 
 @functools.lru_cache(maxsize=1)
 def _load_config() -> dict:
-    """Load and cache config.json from disk. Called once per process."""
-    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'config.json')
-    with open(config_path, 'r') as f:
-        return json.load(f)
+    """Legacy — kept for backward compatibility. Returns empty dict.
+    SLA policies are now read from EC2 tags. Environment aliases are inline."""
+    return {}
+
+
+# Default SLA hours by severity (used when instances don't have SLA tags)
+_DEFAULT_SLA = {
+    'CRITICAL': 24,
+    'HIGH': 72,
+    'MEDIUM': 168,
+    'LOW': 720,
+}
+
+# Well-known framework SLA overrides (stricter than defaults)
+_FRAMEWORK_SLA = {
+    'PCI-DSS': {'CRITICAL': 12, 'HIGH': 48, 'MEDIUM': 168, 'LOW': 720},
+    'SOC2': {'CRITICAL': 24, 'HIGH': 72, 'MEDIUM': 168, 'LOW': 720},
+    'HIPAA': {'CRITICAL': 24, 'HIGH': 72, 'MEDIUM': 168, 'LOW': 720},
+}
 
 def _get_compliance_bucket_name() -> str:
     """Get S3 bucket name for compliance reports (cached)."""
@@ -160,47 +175,51 @@ def _get_baseline_override_url(severity_filter: Optional[str]) -> Optional[str]:
     return f"s3://{bucket}/{key}"
 
 
-def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional[dict]:
-    """
-    Helper function to calculate SLA requirement based on compliance frameworks.
+def _calculate_sla_requirement(frameworks: List[str], severity: str,
+                               instance_tags: Optional[Dict[str, str]] = None) -> Optional[dict]:
+    """Calculate SLA requirement from EC2 tags, framework defaults, or global defaults.
+    
+    Priority order:
+    1. Instance tags: SLA-CRITICAL, SLA-HIGH, SLA-MEDIUM, SLA-LOW (per-instance override)
+    2. ComplianceFrameworks tag → well-known framework SLA (PCI-DSS, SOC2, HIPAA)
+    3. Global defaults (24h critical, 72h high, 168h medium, 720h low)
+    
     Returns strictest (minimum) SLA if multiple frameworks apply.
-    
-    Args:
-        frameworks: List of compliance framework names (e.g., ['PCI-DSS', 'SOC2'])
-        severity: Vulnerability severity (CRITICAL, HIGH, MEDIUM, LOW)
-    
-    Returns:
-        dict with {sla_hours, source, frameworks, severity} or None if calculation fails
     """
     try:
-        logger.info(f"Calculating SLA for frameworks={frameworks}, severity={severity}")
-        sla_policy = _load_config()
+        sev = severity.upper()
+        logger.info(f"Calculating SLA for frameworks={frameworks}, severity={sev}")
         
+        # 1. Check instance-level SLA tags first (highest priority)
+        if instance_tags:
+            tag_key = f"SLA-{sev}"
+            tag_val = instance_tags.get(tag_key)
+            if tag_val:
+                try:
+                    sla_hours = int(tag_val)
+                    logger.info(f"Using instance tag {tag_key}={sla_hours}")
+                    return {"sla_hours": sla_hours, "frameworks": frameworks,
+                            "source": f"tag:{tag_key}", "severity": sev}
+                except ValueError:
+                    logger.warning(f"Invalid SLA tag value: {tag_key}={tag_val}")
+        
+        # 2. Check framework-specific SLA (strictest wins)
         sla_hours = None
         source_framework = None
-        
-        # Check each framework for SLA, use strictest (minimum)
         if frameworks:
             for framework in frameworks:
-                if framework in sla_policy.get('frameworks', {}):
-                    framework_sla = sla_policy['frameworks'][framework].get(severity.upper())
-                    logger.info(f"Framework {framework} has SLA: {framework_sla} hours for {severity}")
-                    if framework_sla and (sla_hours is None or framework_sla < sla_hours):
-                        sla_hours = framework_sla
-                        source_framework = framework
+                fw_sla = _FRAMEWORK_SLA.get(framework, {}).get(sev)
+                if fw_sla and (sla_hours is None or fw_sla < sla_hours):
+                    sla_hours = fw_sla
+                    source_framework = framework
         
-        # Fall back to default if no framework SLA found
+        # 3. Fall back to global defaults
         if sla_hours is None:
-            sla_hours = sla_policy.get('default', {}).get(severity.upper(), 24)
+            sla_hours = _DEFAULT_SLA.get(sev, 24)
             source_framework = "default"
-            logger.info(f"Using default SLA: {sla_hours} hours for {severity}")
         
-        result = {
-            "sla_hours": sla_hours,
-            "frameworks": frameworks,
-            "source": source_framework,
-            "severity": severity.upper()
-        }
+        result = {"sla_hours": sla_hours, "frameworks": frameworks,
+                  "source": source_framework, "severity": sev}
         logger.info(f"SLA calculation result: {result}")
         return result
     except Exception as e:
@@ -208,16 +227,20 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional
         return None
 
 def _normalize_environment(user_input: str) -> str:
-    """Map user input to canonical environment tag value."""
-    config = _load_config()
+    """Map user input to canonical environment tag value.
     
-    aliases = config.get('environment_aliases', {})
-    user_lower = user_input.lower()
-    
+    Handles common aliases so users can say 'production' and it maps to 'prod'.
+    """
+    aliases = {
+        'dev': ['dev', 'development', 'non prod', 'non production'],
+        'test': ['test', 'testing', 'qa'],
+        'staging': ['staging', 'stage', 'uat'],
+        'prod': ['prod', 'production'],
+    }
+    user_lower = user_input.lower().strip()
     for canonical, alias_list in aliases.items():
         if user_lower in alias_list:
             return canonical
-    
     return user_input
 
 

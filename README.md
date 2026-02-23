@@ -196,7 +196,8 @@ For the agent to manage EC2 instances, they need:
 - IAM instance profile with `AmazonSSMManagedInstanceCore` managed policy
 - Tag: `Environment` (e.g., `dev`, `staging`, `prod`) — used for environment-based routing
 - Tag: `PatchGroup` (e.g., `dev-patch-group`) — used by SSM Patch Manager for baseline mapping
-- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) — drives SLA enforcement
+- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) — drives SLA enforcement via well-known framework defaults
+- Tags: `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` (optional, hours) — per-instance SLA override, takes priority over framework defaults
 
 ### Patch Policy Setup (Recommended)
 
@@ -360,30 +361,27 @@ Extend it in the Bedrock console or via API with additional policies for your co
 
 ### SLA Policies
 
-Defined in `agent/config/config.json`. SLA hours by compliance framework and severity:
+SLA thresholds are determined from EC2 instance tags, with well-known framework defaults as fallback. No configuration file needed.
+
+**Priority order** (first match wins):
+1. **Instance tags** — `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` (hours, per-instance override)
+2. **ComplianceFrameworks tag** → well-known framework defaults (see table below)
+3. **Global defaults** — 24h critical, 72h high, 168h medium, 720h low
+
+**Well-known framework defaults:**
 
 | Framework | CRITICAL | HIGH | MEDIUM | LOW |
 |-----------|----------|------|--------|-----|
 | PCI-DSS | 12h | 48h | 168h | 720h |
 | SOC2 | 24h | 72h | 168h | 720h |
 | HIPAA | 24h | 72h | 168h | 720h |
-| Default | 24h | 72h | 168h | 720h |
+| Default (no framework) | 24h | 72h | 168h | 720h |
 
-When multiple frameworks apply to an instance, the strictest SLA wins.
+When multiple frameworks apply to an instance (e.g., `ComplianceFrameworks=PCI-DSS,SOC2`), the strictest SLA wins.
 
-### Integrating with Your Existing Policy Sources
+**Per-instance override example:** Tag an instance with `SLA-CRITICAL=6` to enforce a 6-hour SLA for critical vulnerabilities on that specific instance, regardless of its compliance framework.
 
-The `agent/config/config.json` file is a starting point, not a constraint. The `_load_config()` function in `agent/helper/tools.py` is a single integration point — swap it for any of these patterns to use your organisation's existing policy data:
-
-| Source | Integration approach |
-|--------|---------------------|
-| **CMDB** (ServiceNow, Device42, Jira Assets) | Replace `_load_config()` with an API call to your CMDB. Most CMDBs already map compliance frameworks to asset groups — query "given this instance, what frameworks apply and what are the SLA thresholds?" |
-| **EC2 tags** | Skip the config file entirely. Put SLA hours directly on instance tags (`SLA-CRITICAL=12`, `SLA-HIGH=48`). The agent already reads tags for framework names — extend `_calculate_sla_requirement()` to read SLA hours from tags. Your CMDB team manages policy through their existing tag governance pipeline. |
-| **SSM Parameter Store** | Store the SLA config as a JSON parameter in Parameter Store. Operations teams update thresholds without redeploying the agent. CloudTrail audits who changed the policy and when. |
-| **S3 with versioning** | Put config.json in an S3 bucket with versioning. The agent fetches it at startup. You get version history, rollback, and cross-account sharing. Add S3 event notifications to trigger agent restarts on config change. |
-| **GRC platforms** (Archer, Drata, ServiceNow GRC) | These tools are often the actual source of truth for compliance SLA requirements. An API integration that pulls "for PCI-DSS, critical vulns must be patched within X hours" directly from the GRC platform means the agent always reflects the latest policy without manual sync. |
-
-The agent's decision logic doesn't care where the SLA thresholds come from — it just needs a framework name, a severity, and an SLA hours value.
+> **Enterprise integration**: Most organisations manage compliance metadata in their CMDB (ServiceNow, Device42, Jira Assets). If your CMDB drives EC2 tagging through AWS Organizations tag policies, Service Catalog, or a CI/CD pipeline, the agent picks up your SLA thresholds automatically. For custom frameworks not in the well-known list, use the `SLA-{severity}` tags directly.
 
 ### Maintenance Windows
 
