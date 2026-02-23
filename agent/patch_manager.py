@@ -6,6 +6,7 @@ from helper.tools import (
     execute_patch_operation,
     get_command_status,
     get_maintenance_windows,
+    get_patch_policy,
     create_maintenance_window,
     check_instance_health,
     check_cloudwatch_alarms,
@@ -40,10 +41,16 @@ STEP 1: DISCOVER
   NEVER ask the user for instance IDs that are already available in tool responses
   or conversation context.
 
-STEP 2: MAINTENANCE WINDOW
+STEP 2: MAINTENANCE WINDOW + PATCH POLICY
   get_maintenance_windows(environment)
+  get_patch_policy(instance_ids)
   → Extract: window_id, next_execution, hours_until_window
   → No window found: hours_until_window = ∞
+  → Check patch policy results:
+    - If instances have an Install association → can use it for SCHEDULED patching
+    - If instances have Scan-only → warn user: "Scan policy exists but no Install policy"
+    - If instances have NO patch policy → warn user: "No patch policy found. Consider
+      creating one for consistent scheduled patching. Proceeding with ad-hoc command."
 
 STEP 3: SLA DECISION (mandatory calculation)
   hours_until_window ≤ sla_hours → SCHEDULED (use maintenance window)
@@ -166,6 +173,7 @@ def patching_operations(context):
             execute_patch_operation,
             get_command_status,
             get_maintenance_windows,
+            get_patch_policy,
             create_maintenance_window,
             check_instance_health,
             check_cloudwatch_alarms,

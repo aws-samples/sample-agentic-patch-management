@@ -1764,6 +1764,211 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
         return result
 
 
+# ── Patch policy association cache (session-scoped) ─────────────────
+# list-associations is 1 API call regardless of fleet size.
+# We cache it to avoid repeated calls within the same agent session.
+_patch_assoc_cache: Optional[List[dict]] = None
+_patch_assoc_cache_time: float = 0
+_PATCH_ASSOC_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_cached_patch_associations() -> List[dict]:
+    """Get all patch-related SSM associations (cached for 5 min).
+
+    Uses list-associations (1 paginated API call) instead of per-instance
+    describe-instance-associations-status (N calls). This scales to any
+    fleet size — the only variable is the number of associations in the
+    account (typically 10-50, not thousands).
+    """
+    global _patch_assoc_cache, _patch_assoc_cache_time
+    now = time.time()
+    if _patch_assoc_cache is not None and (now - _patch_assoc_cache_time) < _PATCH_ASSOC_CACHE_TTL:
+        return _patch_assoc_cache
+
+    all_assocs = []
+    paginator = ssm_client.get_paginator('list_associations')
+    for page in paginator.paginate():
+        all_assocs.extend(page['Associations'])
+
+    # Filter to patch-related associations only
+    patch_docs = {'AWS-RunPatchBaseline', 'AWS-RunPatchBaselineAssociation'}
+    patch_assocs = [a for a in all_assocs if a.get('Name') in patch_docs]
+
+    _patch_assoc_cache = patch_assocs
+    _patch_assoc_cache_time = now
+    logger.info(f"Cached {len(patch_assocs)} patch associations (of {len(all_assocs)} total)")
+    return patch_assocs
+
+
+def _match_association_to_instance(assoc_targets: List[dict], instance_id: str,
+                                   instance_tags: Dict[str, str]) -> bool:
+    """Check if an association's targets match a specific instance.
+
+    Handles all SSM target types:
+    - InstanceIds: ['*'] → matches all
+    - InstanceIds: ['i-abc', 'i-def'] → explicit list
+    - tag:Key: ['Value1', 'Value2'] → tag-based targeting
+    - tag-key: ['KeyName'] → instances that have the tag (any value)
+    """
+    if not assoc_targets:
+        return False
+
+    for target in assoc_targets:
+        key = target.get('Key', '')
+        values = target.get('Values', [])
+
+        if key == 'InstanceIds':
+            if values == ['*']:
+                return True
+            if instance_id in values:
+                return True
+            return False
+
+        if key.startswith('tag:'):
+            tag_name = key[4:]  # strip 'tag:' prefix
+            tag_value = instance_tags.get(tag_name)
+            if tag_value not in values:
+                return False
+            # Continue checking other targets (AND logic)
+
+        elif key == 'tag-key':
+            if not any(v in instance_tags for v in values):
+                return False
+
+        else:
+            # Unknown target type — don't match
+            return False
+
+    return True
+
+
+@tool
+def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None) -> dict:
+    """Check which SSM Patch Policy associations apply to the given instances.
+
+    Uses list-associations (1 API call, cached) + client-side tag matching.
+    Scales to any fleet size without per-instance API calls.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to check
+        environment: Optional environment filter for context
+
+    Returns:
+        dict with per-instance patch policy info:
+        {
+            'instance_policies': {
+                'i-abc': [{'association_id': ..., 'name': ..., 'operation': ..., 'schedule': ...}],
+                'i-def': []  # no patch policy
+            },
+            'instances_without_policy': ['i-def'],
+            'instances_with_install_policy': ['i-abc'],
+            'summary': '4 of 5 instances have a patch install policy'
+        }
+    """
+    try:
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
+        # Get instance tags (we need these for target matching)
+        instance_tags_map: Dict[str, Dict[str, str]] = {}
+        try:
+            resp = ec2_client.describe_instances(InstanceIds=instance_ids)
+            for reservation in resp['Reservations']:
+                for inst in reservation['Instances']:
+                    iid = inst['InstanceId']
+                    tags = {t['Key']: t['Value'] for t in inst.get('Tags', [])}
+                    instance_tags_map[iid] = tags
+        except ClientError as e:
+            logger.warning(f"Could not get instance tags: {e}")
+
+        # Get cached patch associations (1 API call, cached 5 min)
+        patch_assocs = _get_cached_patch_associations()
+
+        # Enrich associations with details (schedule, operation, etc.)
+        enriched_assocs = []
+        for pa in patch_assocs:
+            assoc_id = pa['AssociationId']
+            try:
+                detail = ssm_client.describe_association(AssociationId=assoc_id)
+                desc = detail['AssociationDescription']
+                params = desc.get('Parameters', {})
+                operation = 'Scan'
+                for op_val in params.get('Operation', []):
+                    operation = op_val
+
+                enriched_assocs.append({
+                    'association_id': assoc_id,
+                    'name': desc.get('AssociationName', pa.get('AssociationName', pa['Name'])),
+                    'document': pa['Name'],
+                    'operation': operation,
+                    'schedule': desc.get('ScheduleExpression', 'none'),
+                    'targets': pa.get('Targets', []),
+                    'status': pa.get('Overview', {}).get('Status', 'unknown'),
+                    'baseline_override': params.get('BaselineOverride', [None])[0],
+                })
+            except Exception as e:
+                logger.warning(f"Could not describe association {assoc_id}: {e}")
+                enriched_assocs.append({
+                    'association_id': assoc_id,
+                    'name': pa.get('AssociationName', pa['Name']),
+                    'document': pa['Name'],
+                    'operation': 'unknown',
+                    'schedule': 'unknown',
+                    'targets': pa.get('Targets', []),
+                    'status': 'unknown',
+                })
+
+        # Match associations to instances
+        instance_policies: Dict[str, List[dict]] = {iid: [] for iid in instance_ids}
+        for assoc in enriched_assocs:
+            for iid in instance_ids:
+                tags = instance_tags_map.get(iid, {})
+                if _match_association_to_instance(assoc['targets'], iid, tags):
+                    instance_policies[iid].append(assoc)
+
+        # Classify instances
+        without_policy = []
+        with_install = []
+        with_scan_only = []
+        for iid, policies in instance_policies.items():
+            install_policies = [p for p in policies if p['operation'] == 'Install']
+            scan_policies = [p for p in policies if p['operation'] == 'Scan']
+            if install_policies:
+                with_install.append(iid)
+            elif scan_policies:
+                with_scan_only.append(iid)
+            else:
+                without_policy.append(iid)
+
+        total = len(instance_ids)
+        summary_parts = []
+        if with_install:
+            summary_parts.append(f"{len(with_install)} have Install policy")
+        if with_scan_only:
+            summary_parts.append(f"{len(with_scan_only)} have Scan-only policy")
+        if without_policy:
+            summary_parts.append(f"{len(without_policy)} have NO patch policy")
+        summary = f"{total} instances: {', '.join(summary_parts)}"
+
+        return {
+            'instance_policies': instance_policies,
+            'instances_without_policy': without_policy,
+            'instances_with_install_policy': with_install,
+            'instances_with_scan_only': with_scan_only,
+            'total_associations_checked': len(enriched_assocs),
+            'summary': summary,
+        }
+
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"Error checking patch policies: {error_info}")
+        return error_info
+    except Exception as e:
+        logger.error(f"Error checking patch policies: {e}")
+        return classify_error(e)
+
+
 @tool
 def capture_patch_state(instance_ids: List[str]) -> dict:
     """Capture current patch compliance state for instances (snapshot).
