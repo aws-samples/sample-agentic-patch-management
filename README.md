@@ -40,7 +40,7 @@ The agent queries Amazon Inspector for active vulnerability findings across your
 
 Every patching operation follows a mandatory safety workflow — the agent enforces this sequence and will not skip steps:
 
-1. **Discover** affected instances and calculate SLA requirement based on compliance frameworks (PCI-DSS, SOC2, HIPAA) and vulnerability severity
+1. **Discover** affected instances and calculate SLA requirement based on per-instance SLA tags and vulnerability severity
 2. **Maintenance window + patch policy check** — find the next available SSM maintenance window for the target environment AND check whether SSM Patch Policy associations (State Manager) exist for the target instances
 3. **SLA decision**: if the next window is within the SLA deadline → SCHEDULED (register with window). If the window would exceed the SLA → EMERGENCY (patch immediately)
 4. **Dry-run scan** — runs `AWS-RunPatchBaseline` with `Operation: Scan` to show exactly which patches are missing, their severity, and classification. When a severity filter is specified (e.g., "patch HIGH CVEs"), the scan uses a `BaselineOverride` scoped to that severity level. The operator reviews before proceeding. This is programmatically enforced — the agent cannot execute a patch Install without a recent Scan (within 2 hours) on every target instance
@@ -302,7 +302,7 @@ When set, the `Patchy-Network` stack is not created. CDK looks up the VPC at syn
 
 The agent reads EC2 tags to determine environment, compliance frameworks, and patch group membership. See [Prerequisites → Instance Requirements](#instance-requirements) for the full list.
 
-> **Enterprise integration**: Most organisations already maintain environment and compliance metadata in their CMDB (ServiceNow, Device42, Jira Assets). If your CMDB drives EC2 tagging through AWS Organizations tag policies, Service Catalog, or a CI/CD pipeline, the agent picks up your existing taxonomy automatically — no manual tag mapping needed. The `Environment` and `ComplianceFrameworks` tags are configurable in `agent/config/config.json` if your naming convention differs (e.g., `env` instead of `Environment`, or `Tier` instead of `ComplianceFrameworks`).
+> **Enterprise integration**: Most organisations already maintain environment and compliance metadata in their CMDB (ServiceNow, Device42, Jira Assets). If your CMDB drives EC2 tagging through AWS Organizations tag policies, Service Catalog, or a CI/CD pipeline, the agent picks up your existing taxonomy automatically — no manual tag mapping needed.
 
 ---
 
@@ -367,7 +367,7 @@ Extend it in the Bedrock console or via API with additional policies for your co
 
 SLA thresholds are read directly from EC2 instance tags. The solution has no built-in knowledge of compliance frameworks — customers define their own SLA hours per instance via tags.
 
-**Required tags** (hours):
+**Recommended tags** (hours) — falls back to defaults if missing:
 - `SLA-CRITICAL` — e.g., `12` (patch within 12 hours)
 - `SLA-HIGH` — e.g., `48`
 - `SLA-MEDIUM` — e.g., `168`
@@ -587,7 +587,6 @@ Before building custom audit infrastructure, consider what AWS already provides:
 - **CloudTrail**: Every SSM `SendCommand`, S3 `PutObject`, and EC2 API call is already logged with the IAM principal, source IP, timestamp, and full request parameters. With session tags (see above), CloudTrail attributes actions to the human operator, not just the service role.
 - **SSM Command History**: `ssm:ListCommands` and `ssm:ListCommandInvocations` return the full execution history including the `Comment` field (which this solution populates with operator identity), status, timing, and target instances.
 - **S3 Object Metadata**: Compliance reports are stored with S3 object metadata (`operator`, `cve-id`, `environment`, `severity`, `decision-type`, `sla-met`, `team`, `product`). Queryable via S3 Inventory + Athena without reading the JSON body.
-- **AWS Config**: Tracks configuration changes over time. If enabled, you get a timeline of patch compliance state changes per instance.
 - **CloudWatch Logs Insights**: Agent logs include structured `PATCH_SCHEDULED:` and `PATCH_EXECUTED:` entries with operator identity, environment, mode, and instance count — queryable in real time.
 
 For production, the recommended approach is: Cognito for authentication → IAM session tags for attribution → CloudTrail as the single source of truth for audit. The custom S3 compliance reports complement this with business-level context (SLA assessment, compliance delta) that CloudTrail doesn't capture.
@@ -611,7 +610,7 @@ The solution exposes an HTTP API with SSE streaming, making it embeddable in exi
 
 - **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `core-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean teardown.
 - **S3 Object Lock**: Enable Object Lock (compliance mode) on the compliance reports bucket to make audit data immutable. Prevents accidental or malicious deletion of compliance evidence.
-- **KMS encryption**: Replace S3-managed encryption with a customer-managed KMS key for compliance reports and Config snapshots. Enables key rotation policies and CloudTrail key usage auditing.
+- **KMS encryption**: Replace S3-managed encryption with a customer-managed KMS key for compliance reports. Enables key rotation policies and CloudTrail key usage auditing.
 - **Cross-account backup**: Replicate the compliance reports bucket to a separate audit account using S3 Cross-Region Replication. Ensures reports survive even if the primary account is compromised.
 
 ### Availability and Scaling
@@ -689,6 +688,42 @@ The deploy script auto-detects stale configs (wrong account), upgrades memory mo
 - Single region deployment
 - Severity-scoped patching applies all patches at the requested severity level, not individual CVEs. SSM Patch Manager does not support per-CVE installation. A future enhancement using `InstallOverrideList` with CVE → package mapping from Inspector could enable surgical per-CVE patching.
 - Baseline override files are pre-generated for Amazon Linux 2. Other OS types require creating equivalent override JSON files.
+
+---
+
+## Extending the Solution
+
+The multi-agent architecture is designed for extensibility. Each specialist agent has its own tool set — adding a new capability is a single tool function with no changes to routing or decision logic.
+
+### What the Solution Covers Today
+
+The solution handles the core enterprise patching workflow end-to-end:
+
+- **Vulnerability discovery** — scan your fleet for CVEs, assess severity, and identify which environments and instances are affected
+- **Fleet-wide impact assessment** — understand how widespread a vulnerability is across dev, staging, and prod before deciding how to respond
+- **Patch impact preview** — see exactly which packages will be updated before committing, including packages beyond the target CVE (the "blast radius" of the patch operation)
+- **SLA-driven decision making** — automatically determine whether to patch immediately (emergency) or wait for the next maintenance window (scheduled), based on per-instance SLA tags
+- **Patch policy awareness** — detect existing SSM Patch Policies and respect them for scheduled operations instead of creating duplicate patching tasks
+- **Severity-scoped execution** — apply patches at a specific severity level rather than applying everything, with operator confirmation before execution
+- **Application health verification** — check SSM connectivity and CloudWatch alarms after patching to confirm instances are healthy
+- **Automated rollback** — reverse patches if health checks fail, with verification that the rollback succeeded
+- **Compliance reporting** — generate structured audit reports with before/after compliance delta, SLA assessment, and operator identity
+- **Cross-session memory** — the agent remembers previous patching outcomes, CVE history, and operator preferences across conversations
+- **Real-time operations console** — dashboard with fleet status, vulnerability counts, compliance metrics, and decision audit trail
+
+### What Customers Can Extend
+
+| Capability | What it adds | How to integrate |
+|-----------|-------------|-----------------|
+| **CMDB-driven blast radius** | Show application dependencies affected by patching ("patching this instance impacts 3 upstream services") | Add a tool that queries your CMDB (ServiceNow, Device42) for instance dependencies. The agent presents the dependency map before the operator confirms. |
+| **Change management integration** | Check your change calendar before patching, not just SSM maintenance windows | Add a tool that queries your change management system (ServiceNow, Jira). The agent checks both SSM windows and your change calendar for the next available slot. |
+| **Third-party vulnerability scanners** | Use Qualys, Tenable, or Rapid7 instead of (or alongside) Amazon Inspector | Add a tool that queries your scanner's API. The vulnerability analyst uses it alongside or instead of Inspector findings. |
+| **Multi-OS patching** | Support Ubuntu, RHEL, Windows alongside Amazon Linux 2 | Create baseline override JSON files per OS. Adapt rollback commands for apt/zypper/Windows Update. SSM Patch Manager and Inspector already support all OS types. |
+| **Slack/Teams notifications** | Get notified when patching completes or fails | POST to `/api/chat` from a Lambda triggered by SNS. The agent's structured output maps to Slack message blocks. |
+| **Per-CVE surgical patching** | Install only the specific package that fixes a CVE, not all packages at that severity | Use SSM's `InstallOverrideList` parameter with CVE → package name mapping from Inspector's `vulnerablePackages` field. |
+| **Cross-account patching** | Manage instances across multiple AWS accounts from a single agent | Add assume-role logic to operate in spoke accounts. The dashboard API's `scopes` array already supports multiple accounts. |
+
+Each extension is a single tool function added to the relevant specialist agent — no changes to the supervisor routing, memory, or UI.
 
 ---
 
