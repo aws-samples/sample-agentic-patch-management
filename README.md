@@ -41,14 +41,48 @@ The agent queries Amazon Inspector for active vulnerability findings across your
 Every patching operation follows a mandatory safety workflow — the agent enforces this sequence and will not skip steps:
 
 1. **Discover** affected instances and calculate SLA requirement based on compliance frameworks (PCI-DSS, SOC2, HIPAA) and vulnerability severity
-2. **Maintenance window check** — find the next available SSM maintenance window for the target environment
+2. **Maintenance window + patch policy check** — find the next available SSM maintenance window for the target environment AND check whether SSM Patch Policy associations (State Manager) exist for the target instances
 3. **SLA decision**: if the next window is within the SLA deadline → SCHEDULED (register with window). If the window would exceed the SLA → EMERGENCY (patch immediately)
-4. **Dry-run scan** — runs `AWS-RunPatchBaseline` with `Operation: Scan` (the same mechanism patching uses for Install) to show exactly which patches are missing, their severity, and classification. The operator reviews before proceeding. This is programmatically enforced — the agent cannot execute a patch Install without a recent Scan (within 2 hours) on every target instance
+4. **Dry-run scan** — runs `AWS-RunPatchBaseline` with `Operation: Scan` to show exactly which patches are missing, their severity, and classification. When a severity filter is specified (e.g., "patch HIGH CVEs"), the scan uses a `BaselineOverride` scoped to that severity level. The operator reviews before proceeding. This is programmatically enforced — the agent cannot execute a patch Install without a recent Scan (within 2 hours) on every target instance
 5. **Capture pre-patch state** — snapshot compliance metrics (missing/installed counts per instance) for before/after comparison
 6. **Execute** patching via SSM (`AWS-RunPatchBaseline` with `Operation: Install`)
 7. **Verify** instance health (SSM connectivity) and application health (CloudWatch alarms)
 8. **Capture post-patch state** — snapshot compliance metrics after patching
 9. **Generate compliance report** with before/after delta, SLA assessment, and operator identity (saved to S3)
+
+### Patch Policy Integration
+
+The agent checks for existing SSM Patch Policy associations (created via Quick Setup or State Manager) on target instances. This determines the execution path:
+
+| Scenario | Agent behavior |
+|----------|---------------|
+| Scheduled + no severity filter + Install policy exists | Reports: "Your patch policy will handle this during the next window. No action needed." |
+| Scheduled + no severity filter + no Install policy | Registers a task with the maintenance window |
+| Scheduled + severity filter | Registers a task with `BaselineOverride` (policy baseline may not match requested severity) |
+| Emergency + any | Direct `send_command` with `BaselineOverride` |
+
+If no patch policy exists for an instance, the agent warns the operator: "No patch policy found. Consider creating one for consistent scheduled patching."
+
+### Severity-Scoped Patching
+
+SSM Patch Manager applies patches based on patch baseline approval rules, not individual CVE IDs. When a user requests patching for a specific CVE or severity level, the agent uses `BaselineOverride` — an S3-hosted JSON file that overrides the default baseline rules at runtime — to scope the operation to the requested severity.
+
+Pre-generated baseline override files are stored in the compliance reports S3 bucket:
+- `baseline-overrides/critical-only.json` — Critical severity only
+- `baseline-overrides/high-and-above.json` — Critical + Important (High)
+- `baseline-overrides/medium-and-above.json` — Critical + Important + Medium
+- `baseline-overrides/all-severities.json` — All severity levels
+
+When a user says "Patch CVE-2025-1234 in prod" (a HIGH severity CVE), the agent:
+1. Identifies the CVE's severity (HIGH)
+2. Selects the `high-and-above` baseline override
+3. Runs a dry-run scan with that override — shows only HIGH+ patches
+4. Tells the user: "To remediate CVE-2025-1234, I'll apply the HIGH+ severity baseline. This will install 12 patches including your target CVE. Here's the full list."
+5. User confirms → execute with the same override
+
+> **Limitation**: SSM cannot install a single CVE's patch in isolation. The `BaselineOverride` approach scopes to severity level, not individual packages. For surgical per-CVE patching, a future enhancement could use the `InstallOverrideList` parameter with CVE → package name mapping from Inspector findings.
+
+> **OS support**: The pre-generated baseline overrides target Amazon Linux 2. For other operating systems (Ubuntu, RHEL, Windows), create equivalent override files with the appropriate `OperatingSystem` field. The override JSON schema is documented in the [AWS Systems Manager User Guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/patch-manager-about-baselineoverride.html).
 
 ### Rollback and Verification
 
@@ -143,6 +177,36 @@ The supervisor routes queries to the right specialist automatically. If a specia
 - [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for UI access)
 - AWS account with Bedrock model access enabled (Claude Sonnet)
 
+### AWS Service Requirements
+
+The following AWS services must be enabled and configured in your account for the solution to work:
+
+| Service | Required | Purpose | How to verify |
+|---------|----------|---------|---------------|
+| Amazon Bedrock | Yes | LLM for agent reasoning | Console → Bedrock → Model access → Claude Sonnet enabled |
+| AWS Systems Manager | Yes | Patch management, command execution, maintenance windows | `aws ssm describe-instance-information` returns your instances |
+| Amazon Inspector | Yes | Vulnerability scanning (CVE discovery) | Console → Inspector → enabled for EC2 scanning |
+| Amazon S3 | Yes | Compliance reports storage | Auto-created by `Patchy-Core` stack |
+| AWS Config | Recommended | Configuration change tracking | Auto-created by `Patchy-Core` stack (skip with `-c skipConfigRecorder=true`) |
+
+### Instance Requirements
+
+For the agent to manage EC2 instances, they need:
+- SSM Agent installed and running (`aws ssm describe-instance-information` shows the instance as `Online`)
+- IAM instance profile with `AmazonSSMManagedInstanceCore` managed policy
+- Tag: `Environment` (e.g., `dev`, `staging`, `prod`) — used for environment-based routing
+- Tag: `PatchGroup` (e.g., `dev-patch-group`) — used by SSM Patch Manager for baseline mapping
+- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) — drives SLA enforcement
+
+### Patch Policy Setup (Recommended)
+
+For scheduled patching, the agent checks for existing SSM Patch Policy associations (State Manager). If your instances don't have patch policies configured:
+- The agent will warn: "No patch policy found for these instances"
+- On-demand patching still works via direct `send_command`
+- To set up patch policies: Console → Systems Manager → Quick Setup → Patch Policy, or create State Manager associations targeting your instances with `AWS-RunPatchBaseline`
+
+The sample environment (`--with-sample-env`) creates maintenance windows but not patch policy associations. In production, configure patch policies via [Quick Setup](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-patch-manager.html) for consistent scheduled patching.
+
 ---
 
 ## Quick Start
@@ -229,15 +293,9 @@ If your account already has an AWS Config recorder:
 cd infra && npx cdk deploy Patchy-Core -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
 ```
 
-### Instance Requirements
+### Tagging Convention
 
-For the agent to manage EC2 instances, they need:
-- SSM Agent installed and running
-- IAM instance profile with `AmazonSSMManagedInstanceCore`
-- Tag: `Environment` (e.g., `dev`, `staging`, `prod`)
-- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) for SLA enforcement
-
-The sample environment creates instances with all of these pre-configured.
+The agent reads EC2 tags to determine environment, compliance frameworks, and patch group membership. See [Prerequisites → Instance Requirements](#instance-requirements) for the full list.
 
 > **Enterprise integration**: Most organisations already maintain environment and compliance metadata in their CMDB (ServiceNow, Device42, Jira Assets). If your CMDB drives EC2 tagging through AWS Organizations tag policies, Service Catalog, or a CI/CD pipeline, the agent picks up your existing taxonomy automatically — no manual tag mapping needed. The `Environment` and `ComplianceFrameworks` tags are configurable in `agent/config/config.json` if your naming convention differs (e.g., `env` instead of `Environment`, or `Tier` instead of `ComplianceFrameworks`).
 
@@ -626,6 +684,8 @@ The deploy script auto-detects stale configs (wrong account), upgrades memory mo
 - CloudWatch alarms must be pre-configured for application-layer health checks
 - Linux-only patching and rollback (Amazon Linux 2 / yum-based). See note at top for adapting to other OS types.
 - Single region deployment
+- Severity-scoped patching applies all patches at the requested severity level, not individual CVEs. SSM Patch Manager does not support per-CVE installation. A future enhancement using `InstallOverrideList` with CVE → package mapping from Inspector could enable surgical per-CVE patching.
+- Baseline override files are pre-generated for Amazon Linux 2. Other OS types require creating equivalent override JSON files.
 
 ---
 
