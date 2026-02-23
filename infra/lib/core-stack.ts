@@ -1,7 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as config from 'aws-cdk-lib/aws-config';
 import { Construct } from 'constructs';
 
 export interface CoreStackProps extends cdk.StackProps {
@@ -9,7 +8,7 @@ export interface CoreStackProps extends cdk.StackProps {
 }
 
 /**
- * Patchy-Core: S3 compliance bucket, AWS Config recorder, and AgentCore IAM policy.
+ * Patchy-Core: S3 compliance bucket and AgentCore IAM policy.
  * Always deployed. No VPC dependency.
  */
 export class CoreStack extends cdk.Stack {
@@ -33,56 +32,6 @@ export class CoreStack extends cdk.Stack {
       value: complianceReportsBucket.bucketName,
       description: 'S3 bucket for patch compliance reports',
     });
-
-    // ── AWS Config recorder ────────────────────────────────────────
-    // Many accounts already have one. Skip with: -c skipConfigRecorder=true
-    const skipConfig = this.node.tryGetContext('skipConfigRecorder') === 'true' ||
-                       this.node.tryGetContext('skipConfigRecorder') === true;
-
-    if (!skipConfig) {
-      const configBucket = new s3.Bucket(this, 'ConfigBucket', {
-        bucketName: `patch-automation-config-${this.account}`,
-        versioned: true,
-        encryption: s3.BucketEncryption.S3_MANAGED,
-        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-        autoDeleteObjects: true,
-        lifecycleRules: [{
-          expiration: cdk.Duration.days(90),
-          noncurrentVersionExpiration: cdk.Duration.days(30),
-        }],
-      });
-
-      const configRole = new iam.Role(this, 'ConfigRole', {
-        assumedBy: new iam.ServicePrincipal('config.amazonaws.com'),
-        managedPolicies: [
-          iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWS_ConfigRole'),
-        ],
-      });
-      configBucket.grantWrite(configRole);
-
-      new config.CfnDeliveryChannel(this, 'ConfigDeliveryChannel', {
-        s3BucketName: configBucket.bucketName,
-      });
-      new config.CfnConfigurationRecorder(this, 'ConfigRecorder', {
-        roleArn: configRole.roleArn,
-        recordingGroup: {
-          allSupported: false,
-          includeGlobalResourceTypes: false,
-          resourceTypes: [
-            'AWS::EC2::Instance', 'AWS::EC2::SecurityGroup', 'AWS::EC2::VPC',
-            'AWS::EC2::Subnet', 'AWS::IAM::Role',
-            'AWS::ElasticLoadBalancingV2::LoadBalancer',
-            'AWS::ElasticLoadBalancingV2::TargetGroup',
-          ],
-        },
-      });
-
-      new cdk.CfnOutput(this, 'ConfigBucketName', {
-        value: configBucket.bucketName,
-        description: 'S3 bucket for AWS Config snapshots',
-      });
-    }
 
     // ── AgentCore IAM policy ───────────────────────────────────────
     const agentCorePolicy = new iam.ManagedPolicy(this, 'AgentCorePolicy', {
@@ -125,15 +74,6 @@ export class CoreStack extends cdk.Stack {
           actions: [
             'inspector2:ListFindings', 'inspector2:BatchGetFreeTrialInfo',
             'inspector2:DescribeOrganizationConfiguration', 'inspector2:GetConfiguration',
-          ],
-          resources: ['*'],
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'config:GetComplianceDetailsByConfigRule', 'config:GetComplianceDetailsByResource',
-            'config:DescribeConfigRules', 'config:DescribeComplianceByConfigRule',
-            'config:DescribeComplianceByResource',
           ],
           resources: ['*'],
         }),

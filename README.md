@@ -84,6 +84,16 @@ When a user says "Patch CVE-2025-1234 in prod" (a HIGH severity CVE), the agent:
 
 > **OS support**: The pre-generated baseline overrides target Amazon Linux 2. For other operating systems (Ubuntu, RHEL, Windows), create equivalent override files with the appropriate `OperatingSystem` field. The override JSON schema is documented in the [AWS Systems Manager User Guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/patch-manager-about-baselineoverride.html).
 
+### Patch Impact Preview
+
+Before any patch operation, the agent runs a dry-run scan that shows the full impact of the operation — not just the target CVE, but every package that will be updated. This is the "blast radius" of the patch:
+
+- **Per-CVE patching**: "You asked to patch CVE-2025-1234 (HIGH). The HIGH+ severity baseline will install 12 patches total — here's the full list with package names, severity, and CVE IDs for each."
+- **Per-severity patching**: "Applying all CRITICAL patches will update 3 packages across 5 instances."
+- **Full patching**: "The default baseline will install 47 patches. 5 are security-critical, 12 are important, 30 are medium."
+
+The dry-run results include `cve_ids` for each patch, so the agent can confirm whether the target CVE is included in the patch set. If the target CVE's fix isn't available in the OS repos (common for kernel-level CVEs on Amazon Linux 2), the agent explains this.
+
 ### Rollback and Verification
 
 If a patch causes issues, the agent runs `yum history undo` to reverse the last transaction, then verifies the rollback succeeded by:
@@ -187,7 +197,6 @@ The following AWS services must be enabled and configured in your account for th
 | AWS Systems Manager | Yes | Patch management, command execution, maintenance windows | `aws ssm describe-instance-information` returns your instances |
 | Amazon Inspector | Yes | Vulnerability scanning (CVE discovery) | Console → Inspector → enabled for EC2 scanning |
 | Amazon S3 | Yes | Compliance reports storage | Auto-created by `Patchy-Core` stack |
-| AWS Config | Recommended | Configuration change tracking | Auto-created by `Patchy-Core` stack (skip with `-c skipConfigRecorder=true`) |
 
 ### Instance Requirements
 
@@ -196,8 +205,8 @@ For the agent to manage EC2 instances, they need:
 - IAM instance profile with `AmazonSSMManagedInstanceCore` managed policy
 - Tag: `Environment` (e.g., `dev`, `staging`, `prod`) — used for environment-based routing
 - Tag: `PatchGroup` (e.g., `dev-patch-group`) — used by SSM Patch Manager for baseline mapping
-- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) — drives SLA enforcement via well-known framework defaults
-- Tags: `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` (optional, hours) — per-instance SLA override, takes priority over framework defaults
+- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) — included in compliance reports for audit context
+- Tags: `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` (recommended, hours) — drives SLA enforcement. Falls back to defaults (24/72/168/720h) if missing.
 
 ### Patch Policy Setup (Recommended)
 
@@ -267,7 +276,7 @@ All scripts auto-source `.env` from the project root.
 | Stack | Purpose |
 |-------|---------|
 | `Patchy-Network` | VPC, subnets, NAT gateways (skipped when `EXISTING_VPC_ID` is set) |
-| `Patchy-Core` | S3 compliance reports bucket, AWS Config recorder, AgentCore IAM policy |
+| `Patchy-Core` | S3 compliance reports bucket, AgentCore IAM policy |
 | `Patchy-UI` | ECS Fargate, internal ALB, CloudWatch logs |
 | `Patchy-SampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-sample-env`) |
 
@@ -288,11 +297,6 @@ Requirements for the existing VPC:
 - DNS hostnames and DNS support enabled
 
 When set, the `Patchy-Network` stack is not created. CDK looks up the VPC at synth time using your AWS credentials.
-
-If your account already has an AWS Config recorder:
-```bash
-cd infra && npx cdk deploy Patchy-Core -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN" -c skipConfigRecorder=true
-```
 
 ### Tagging Convention
 
@@ -361,27 +365,29 @@ Extend it in the Bedrock console or via API with additional policies for your co
 
 ### SLA Policies
 
-SLA thresholds are determined from EC2 instance tags, with well-known framework defaults as fallback. No configuration file needed.
+SLA thresholds are read directly from EC2 instance tags. The solution has no built-in knowledge of compliance frameworks — customers define their own SLA hours per instance via tags.
 
-**Priority order** (first match wins):
-1. **Instance tags** — `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` (hours, per-instance override)
-2. **ComplianceFrameworks tag** → well-known framework defaults (see table below)
-3. **Global defaults** — 24h critical, 72h high, 168h medium, 720h low
+**Required tags** (hours):
+- `SLA-CRITICAL` — e.g., `12` (patch within 12 hours)
+- `SLA-HIGH` — e.g., `48`
+- `SLA-MEDIUM` — e.g., `168`
+- `SLA-LOW` — e.g., `720`
 
-**Well-known framework defaults:**
+If an instance is missing SLA tags, the solution falls back to global defaults: 24h critical, 72h high, 168h medium, 720h low.
 
-| Framework | CRITICAL | HIGH | MEDIUM | LOW |
-|-----------|----------|------|--------|-----|
-| PCI-DSS | 12h | 48h | 168h | 720h |
-| SOC2 | 24h | 72h | 168h | 720h |
-| HIPAA | 24h | 72h | 168h | 720h |
-| Default (no framework) | 24h | 72h | 168h | 720h |
+The `ComplianceFrameworks` tag (e.g., `PCI-DSS,SOC2`) is optional — it's included in compliance reports for audit context (tells auditors *why* the SLA was set) but does not drive SLA calculation.
 
-When multiple frameworks apply to an instance (e.g., `ComplianceFrameworks=PCI-DSS,SOC2`), the strictest SLA wins.
+**Sample environment SLA tags:**
 
-**Per-instance override example:** Tag an instance with `SLA-CRITICAL=6` to enforce a 6-hour SLA for critical vulnerabilities on that specific instance, regardless of its compliance framework.
+| Environment | Framework | SLA-CRITICAL | SLA-HIGH | SLA-MEDIUM | SLA-LOW |
+|-------------|-----------|-------------|----------|------------|---------|
+| dev (all) | SOC2 | 24h | 72h | 168h | 720h |
+| staging (PCI-DSS) | PCI-DSS | 12h | 48h | 168h | 720h |
+| staging (others) | SOC2 | 24h | 72h | 168h | 720h |
+| prod (PCI-DSS) | PCI-DSS | 6h | 24h | 168h | 720h |
+| prod (others) | SOC2/HIPAA | 24h | 72h | 168h | 720h |
 
-> **Enterprise integration**: Most organisations manage compliance metadata in their CMDB (ServiceNow, Device42, Jira Assets). If your CMDB drives EC2 tagging through AWS Organizations tag policies, Service Catalog, or a CI/CD pipeline, the agent picks up your SLA thresholds automatically. For custom frameworks not in the well-known list, use the `SLA-{severity}` tags directly.
+> **Enterprise integration**: Most organisations manage SLA thresholds in their CMDB or GRC platform. Push SLA hours to EC2 tags via AWS Organizations tag policies, Service Catalog, or your CI/CD pipeline. The agent reads them at runtime — no redeployment needed when thresholds change.
 
 ### Maintenance Windows
 
@@ -658,7 +664,6 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 | Agent not responding | `agentcore status` then `agentcore launch --auto-update-on-conflict` |
 | Permission errors | Check `Patchy-Core` stack outputs |
 | No instances found | Instances need SSM Agent + `Environment` tag. Check: `aws ssm describe-instance-information` |
-| Config recorder conflict | Deploy with `-c skipConfigRecorder=true` |
 | UI container unhealthy | Check logs: `aws logs tail /patch-automation/ui --follow` |
 | SSM tunnel fails | Ensure Session Manager plugin is installed and at least one instance is online |
 | Agent logs missing from CloudWatch | Ensure all agent code uses Python `logging` module, not `print()` to stderr. See [Observability → Logging Configuration](#important-logging-configuration) |

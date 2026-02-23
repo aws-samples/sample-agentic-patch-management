@@ -128,13 +128,6 @@ _DEFAULT_SLA = {
     'LOW': 720,
 }
 
-# Well-known framework SLA overrides (stricter than defaults)
-_FRAMEWORK_SLA = {
-    'PCI-DSS': {'CRITICAL': 12, 'HIGH': 48, 'MEDIUM': 168, 'LOW': 720},
-    'SOC2': {'CRITICAL': 24, 'HIGH': 72, 'MEDIUM': 168, 'LOW': 720},
-    'HIPAA': {'CRITICAL': 24, 'HIGH': 72, 'MEDIUM': 168, 'LOW': 720},
-}
-
 def _get_compliance_bucket_name() -> str:
     """Get S3 bucket name for compliance reports (cached)."""
     if not hasattr(_get_compliance_bucket_name, '_cached'):
@@ -177,51 +170,37 @@ def _get_baseline_override_url(severity_filter: Optional[str]) -> Optional[str]:
 
 def _calculate_sla_requirement(frameworks: List[str], severity: str,
                                instance_tags: Optional[Dict[str, str]] = None) -> Optional[dict]:
-    """Calculate SLA requirement from EC2 tags, framework defaults, or global defaults.
-    
-    Priority order:
-    1. Instance tags: SLA-CRITICAL, SLA-HIGH, SLA-MEDIUM, SLA-LOW (per-instance override)
-    2. ComplianceFrameworks tag → well-known framework SLA (PCI-DSS, SOC2, HIPAA)
-    3. Global defaults (24h critical, 72h high, 168h medium, 720h low)
-    
-    Returns strictest (minimum) SLA if multiple frameworks apply.
+    """Calculate SLA requirement from EC2 instance tags.
+
+    Reads SLA-CRITICAL, SLA-HIGH, SLA-MEDIUM, SLA-LOW tags from the instance.
+    Falls back to global defaults if tags are missing.
+
+    This is fully tag-driven — the solution has no built-in knowledge of
+    compliance frameworks. Customers set SLA hours on their instances via
+    tags, driven by their CMDB, tag policies, or manual configuration.
     """
     try:
         sev = severity.upper()
-        logger.info(f"Calculating SLA for frameworks={frameworks}, severity={sev}")
-        
-        # 1. Check instance-level SLA tags first (highest priority)
+        tag_key = f"SLA-{sev}"
+
+        # Read SLA from instance tag
         if instance_tags:
-            tag_key = f"SLA-{sev}"
             tag_val = instance_tags.get(tag_key)
             if tag_val:
                 try:
                     sla_hours = int(tag_val)
-                    logger.info(f"Using instance tag {tag_key}={sla_hours}")
+                    source = f"tag:{tag_key}"
+                    logger.info(f"SLA from tag: {tag_key}={sla_hours} frameworks={frameworks}")
                     return {"sla_hours": sla_hours, "frameworks": frameworks,
-                            "source": f"tag:{tag_key}", "severity": sev}
+                            "source": source, "severity": sev}
                 except ValueError:
                     logger.warning(f"Invalid SLA tag value: {tag_key}={tag_val}")
-        
-        # 2. Check framework-specific SLA (strictest wins)
-        sla_hours = None
-        source_framework = None
-        if frameworks:
-            for framework in frameworks:
-                fw_sla = _FRAMEWORK_SLA.get(framework, {}).get(sev)
-                if fw_sla and (sla_hours is None or fw_sla < sla_hours):
-                    sla_hours = fw_sla
-                    source_framework = framework
-        
-        # 3. Fall back to global defaults
-        if sla_hours is None:
-            sla_hours = _DEFAULT_SLA.get(sev, 24)
-            source_framework = "default"
-        
-        result = {"sla_hours": sla_hours, "frameworks": frameworks,
-                  "source": source_framework, "severity": sev}
-        logger.info(f"SLA calculation result: {result}")
-        return result
+
+        # Fall back to global defaults
+        sla_hours = _DEFAULT_SLA.get(sev, 24)
+        logger.info(f"SLA from default: {sev}={sla_hours} (no {tag_key} tag found)")
+        return {"sla_hours": sla_hours, "frameworks": frameworks,
+                "source": "default", "severity": sev}
     except Exception as e:
         logger.error(f"Could not calculate SLA: {e}", exc_info=True)
         return None
