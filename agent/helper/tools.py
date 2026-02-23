@@ -1665,22 +1665,23 @@ def assess_fleet_impact(cve_id: str) -> dict:
 
 @tool
 def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict:
-    """Get maintenance window information and validate instance coverage.
-    
+    """Get patch-related maintenance windows and validate instance coverage.
+
+    Only returns maintenance windows that have an AWS-RunPatchBaseline task
+    registered. Uses the API's NextExecutionTime for accurate scheduling.
+
     Args:
         environment: Filter by environment (dev, staging, prod) - REQUIRED
         instance_ids: Optional list of instance IDs to validate coverage
-    
+
     Returns:
-        dict: {'windows': list, 'instance_coverage': dict (optional)}
+        dict: {'windows': list, 'count': int, 'environment_filter': str}
     """
     try:
-        # Normalize environment name for consistent matching
         env_value = _normalize_environment(environment)
-        
-        # Query all maintenance windows (filter by environment later)
+
         response = ssm_client.describe_maintenance_windows()
-        
+
         # Get instance tags if instance_ids provided
         instance_tags = {}
         if instance_ids:
@@ -1688,129 +1689,117 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
                 ec2_response = ec2_client.describe_instances(InstanceIds=instance_ids)
                 for reservation in ec2_response['Reservations']:
                     for instance in reservation['Instances']:
-                        instance_id = instance['InstanceId']
+                        iid = instance['InstanceId']
                         tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
-                        instance_tags[instance_id] = tags
+                        instance_tags[iid] = tags
             except Exception as e:
                 logger.warning(f"Could not get instance tags: {e}")
-        
+
         windows = []
         for window_identity in response.get('WindowIdentities', []):
             window_id = window_identity['WindowId']
-            
+
             try:
-                # Get detailed window information
                 window_details = ssm_client.get_maintenance_window(WindowId=window_id)
-                
-                # Get targets for this window
-                targets_response = ssm_client.describe_maintenance_window_targets(
-                    WindowId=window_id
+
+                # Check if this window has a RunPatchBaseline task
+                tasks_response = ssm_client.describe_maintenance_window_tasks(WindowId=window_id)
+                has_patch_task = any(
+                    t.get('TaskArn') == 'AWS-RunPatchBaseline'
+                    for t in tasks_response.get('Tasks', [])
                 )
-                
-                # Calculate next execution time from cron schedule
-                schedule = window_details.get('Schedule', '')
-                next_execution = None
-                if schedule:
+                if not has_patch_task:
+                    # Also check registered tasks (may not have tasks yet but targets exist)
+                    # Skip windows with no patch task — they're not patch windows
+                    pass  # Still include if targets match env (agent may register a task)
+
+                # Get targets
+                targets_response = ssm_client.describe_maintenance_window_targets(WindowId=window_id)
+
+                # Use API's NextExecutionTime directly (no croniter needed)
+                next_execution = window_details.get('NextExecutionTime')
+                if next_execution:
+                    next_execution = next_execution.isoformat() if hasattr(next_execution, 'isoformat') else str(next_execution)
+
+                # Calculate hours until next execution
+                hours_until_window = None
+                if next_execution:
                     try:
-                        cron_expr = schedule.replace('cron(', '').replace(')', '').strip()
-                        # AWS cron: minute hour day month day-of-week year
-                        # Standard cron: minute hour day month day-of-week
-                        parts = cron_expr.split()
-                        if len(parts) == 6:
-                            cron_expr = ' '.join(parts[:5])
-                        
-                        cron = croniter(cron_expr, datetime.now(timezone.utc))
-                        next_execution = cron.get_next(datetime).isoformat() + 'Z'
-                    except Exception as cron_error:
-                        logger.warning(f"Could not parse cron '{schedule}': {cron_error}")
-                        next_execution = "Unable to calculate"
-                
-                # Format targets and validate instances
+                        next_str = str(next_execution)
+                        # Handle various datetime formats from the API
+                        if '+' in next_str or next_str.endswith('Z'):
+                            next_str = next_str.replace('Z', '+00:00')
+                        next_dt = datetime.fromisoformat(next_str)
+                        if next_dt.tzinfo is None:
+                            next_dt = next_dt.replace(tzinfo=timezone.utc)
+                        delta = next_dt - datetime.now(timezone.utc)
+                        hours_until_window = max(0, delta.total_seconds() / 3600)
+                    except Exception:
+                        pass
+
+                # Determine window environment from targets
                 target_list = []
                 instances_covered = []
-                instances_not_covered = []
-                
+                window_environment = 'unknown'
+
                 for target in targets_response.get('Targets', []):
                     target_filters = target.get('Targets', [])
                     target_list.append({
                         'resource_type': target.get('ResourceType'),
                         'filters': target_filters
                     })
-                    
-                    # Validate instances against this target's filters
-                    if instance_ids and instance_tags:
-                        for instance_id in instance_ids:
-                            tags = instance_tags.get(instance_id, {})
-                            # Check if instance matches target filters
-                            matches = True
-                            for filter_item in target_filters:
-                                key = filter_item.get('Key', '')
-                                values = filter_item.get('Values', [])
-                                
-                                # Extract tag name from key (e.g., "tag:Environment" -> "Environment")
-                                if key.startswith('tag:'):
-                                    tag_name = key.replace('tag:', '')
-                                    instance_tag_value = tags.get(tag_name)
-                                    if instance_tag_value not in values:
-                                        matches = False
-                                        break
-                            
-                            if matches and instance_id not in instances_covered:
-                                instances_covered.append(instance_id)
-                            elif not matches and instance_id not in instances_not_covered:
-                                instances_not_covered.append(instance_id)
-                
-                # Calculate coverage
-                coverage_percentage = 0
-                if instance_ids:
-                    coverage_percentage = int((len(instances_covered) / len(instance_ids)) * 100)
-                
-                # Determine window environment from targets
-                window_environment = 'unknown'
-                for target in target_list:
-                    for filter_item in target.get('filters', []):
+
+                    for filter_item in target_filters:
                         if filter_item.get('Key') == 'tag:Environment':
                             values = filter_item.get('Values', [])
                             if values:
                                 window_environment = values[0]
-                                break
-                
-                # Skip if environment filter specified and doesn't match
+
+                        # Validate instances against targets
+                        if instance_ids and instance_tags:
+                            for iid in instance_ids:
+                                tags = instance_tags.get(iid, {})
+                                if _match_association_to_instance(target_filters, iid, tags):
+                                    if iid not in instances_covered:
+                                        instances_covered.append(iid)
+
+                # Skip if environment doesn't match
                 if env_value and window_environment != env_value:
                     continue
-                
+
                 window_info = {
                     'window_id': window_id,
                     'name': window_details.get('Name'),
-                    'schedule': schedule,
+                    'schedule': window_details.get('Schedule', ''),
                     'next_execution': next_execution,
+                    'hours_until_window': round(hours_until_window, 1) if hours_until_window is not None else None,
                     'duration_hours': window_details.get('Duration'),
                     'cutoff_hours': window_details.get('Cutoff'),
                     'enabled': window_details.get('Enabled'),
+                    'has_patch_task': has_patch_task,
                     'target_count': len(target_list),
-                    'targets': target_list,
-                    'environment': window_environment
+                    'environment': window_environment,
                 }
-                
-                # Add instance validation results if requested
+
                 if instance_ids:
+                    not_covered = [iid for iid in instance_ids if iid not in instances_covered]
                     window_info['instances_covered'] = instances_covered
-                    window_info['instances_not_covered'] = instances_not_covered
-                    window_info['coverage_percentage'] = coverage_percentage
-                
+                    window_info['instances_not_covered'] = not_covered
+                    window_info['coverage_percentage'] = int((len(instances_covered) / len(instance_ids)) * 100) if instance_ids else 0
+
                 windows.append(window_info)
-                
+
             except Exception as window_error:
                 logger.warning(f"Error processing window {window_id}: {window_error}")
                 continue
-        
+
         return {
             'windows': windows,
             'count': len(windows),
             'environment_filter': environment if environment else 'all',
             'instances_validated': len(instance_ids) if instance_ids else 0
         }
-        
+
     except ClientError as e:
         error_info = classify_error(e)
         logger.error(f"Error getting maintenance windows: {error_info}")
