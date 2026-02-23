@@ -182,6 +182,85 @@ resolve_agentcore_role() {
     print_status "Auto-detected AgentCore role: $AGENTCORE_ROLE_ARN"
 }
 
+# ── Validate and fix memory IAM permissions ────────────────────────
+
+_fix_memory_iam_if_needed() {
+    local account_id="$1"
+
+    # Extract memory_id from the yaml
+    local memory_id
+    memory_id=$(grep "memory_id:" .bedrock_agentcore.yaml 2>/dev/null | head -1 | awk '{print $2}' | tr -d "'\"")
+    if [ -z "$memory_id" ] || [ "$memory_id" = "null" ]; then
+        print_warning "No memory_id in yaml — skipping IAM validation"
+        return 0
+    fi
+
+    # Find the runtime role name
+    local role_name
+    role_name=$(aws iam list-roles \
+        --query 'Roles[?starts_with(RoleName,`AmazonBedrockAgentCoreSDKRuntime`)].RoleName' \
+        --output text 2>/dev/null | head -1)
+    if [ -z "$role_name" ]; then
+        print_warning "Could not find AgentCore runtime role — skipping IAM validation"
+        return 0
+    fi
+
+    # Check if the IAM policy references the correct memory_id
+    local policy_name="BedrockAgentCoreRuntimeExecutionPolicy-intelligent_patch_automation"
+    local policy_doc
+    policy_doc=$(aws iam get-role-policy --role-name "$role_name" --policy-name "$policy_name" \
+        --query 'PolicyDocument' --output json 2>/dev/null)
+
+    if [ -z "$policy_doc" ]; then
+        print_warning "Could not read IAM policy $policy_name — skipping validation"
+        return 0
+    fi
+
+    local memory_arn="arn:aws:bedrock-agentcore:${AWS_REGION}:${account_id}:memory/${memory_id}"
+
+    if echo "$policy_doc" | grep -q "$memory_id"; then
+        print_status "IAM policy references correct memory: $memory_id"
+        return 0
+    fi
+
+    # Policy references a different (stale) memory — fix it
+    print_warning "IAM policy references stale memory — updating to $memory_id"
+
+    # Replace any memory ARN in the policy with the correct one
+    local fixed_doc
+    fixed_doc=$(echo "$policy_doc" | python3 -c "
+import json, sys, re
+doc = json.load(sys.stdin)
+doc_str = json.dumps(doc)
+# Replace any memory ARN with the correct one
+doc_str = re.sub(
+    r'arn:aws:bedrock-agentcore:[^:]+:[^:]+:memory/[a-zA-Z0-9_-]+',
+    '${memory_arn}',
+    doc_str
+)
+print(doc_str)
+")
+
+    if [ -z "$fixed_doc" ]; then
+        print_warning "Could not fix IAM policy — update manually"
+        return 0
+    fi
+
+    echo "$fixed_doc" > /tmp/patchy_fixed_policy.json
+    aws iam put-role-policy \
+        --role-name "$role_name" \
+        --policy-name "$policy_name" \
+        --policy-document "file:///tmp/patchy_fixed_policy.json" 2>/dev/null
+
+    if [ $? -eq 0 ]; then
+        print_status "IAM policy updated with correct memory ARN"
+        rm -f /tmp/patchy_fixed_policy.json
+    else
+        print_warning "Failed to update IAM policy — update manually"
+        rm -f /tmp/patchy_fixed_policy.json
+    fi
+}
+
 # ── Deploy functions ────────────────────────────────────────────────
 
 deploy_agent() {
@@ -227,11 +306,27 @@ deploy_agent() {
     agentcore launch --auto-update-on-conflict
     print_status "Agent deployed"
 
-    # On first deploy, set up LTM strategies after launch (launch populates memory_id)
+    # ── Post-deploy: ensure memory is fully configured ──────────────
+    # agentcore configure defaults to STM_ONLY. We need STM_AND_LTM for
+    # cross-session recall. This block handles it automatically so the
+    # customer doesn't need to manually edit yaml or run extra scripts.
+
+    # 1. Upgrade memory mode in yaml if it's STM_ONLY
+    if grep -q "mode: STM_ONLY" .bedrock_agentcore.yaml 2>/dev/null; then
+        print_warning "Memory mode is STM_ONLY — upgrading to STM_AND_LTM"
+        sed -i.bak 's/mode: STM_ONLY/mode: STM_AND_LTM/' .bedrock_agentcore.yaml
+        rm -f .bedrock_agentcore.yaml.bak
+        print_status "Memory mode upgraded to STM_AND_LTM"
+    fi
+
+    # 2. Set up LTM strategies (idempotent — skips if already configured)
     if [ "$FIRST_DEPLOY" = true ]; then
         echo -e "${BLUE}Setting up long-term memory strategies...${NC}"
         python setup_memory_strategies.py || print_warning "Memory strategies setup failed — run manually later: python agent/setup_memory_strategies.py"
     fi
+
+    # 3. Validate IAM policy grants memory access for the correct memory_id
+    _fix_memory_iam_if_needed "$current_account"
 
     cd ..
 }

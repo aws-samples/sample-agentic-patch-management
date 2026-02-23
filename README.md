@@ -245,12 +245,16 @@ The sample environment creates instances with all of these pre-configured.
 
 ## Post-Deployment Setup
 
-After deploying the agent (`./deploy.sh agent`), run these one-time setup scripts to enable advanced features:
+The deploy script handles most setup automatically. These sections describe what happens behind the scenes and optional advanced configuration.
 
-### Long-Term Memory (Recommended)
+### Long-Term Memory (Automatic)
 
-Enables cross-session recall — the agent remembers patching outcomes, CVE history, and operator preferences across conversations.
+Long-term memory is configured automatically during `./deploy.sh`. The script:
+1. Upgrades memory mode from `STM_ONLY` to `STM_AND_LTM`
+2. Adds SEMANTIC and SUMMARY extraction strategies
+3. Validates the runtime role's IAM policy references the correct memory resource
 
+If you need to re-run memory setup manually (e.g., after recreating the memory resource):
 ```bash
 source venv/bin/activate
 python agent/setup_memory_strategies.py
@@ -587,6 +591,8 @@ agentcore destroy                  # Remove the AgentCore agent runtime separate
 
 S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed.
 
+> **Note:** `agentcore destroy` removes the agent runtime but leaves the memory resource intact (it may contain audit-relevant conversation history). To delete memory: `aws bedrock-agentcore-control delete-memory --memory-id <memory-id>`.
+
 ---
 
 ## Troubleshooting
@@ -610,10 +616,9 @@ When moving the solution to a different AWS account:
 
 1. Update `.env` with the new `AWS_PROFILE` (and optionally `AWS_REGION`)
 2. Delete `agent/.bedrock_agentcore.yaml` (it contains the old account's agent ARN, memory ID, and ECR repo)
-3. Run `./deploy.sh --with-sample-env` — the script will run `agentcore configure` to create fresh resources in the new account
-4. Run `python agent/setup_memory_strategies.py` to configure LTM strategies for the new memory resource
+3. Run `./deploy.sh --with-sample-env` — the script handles everything: fresh `agentcore configure`, memory mode upgrade to `STM_AND_LTM`, LTM strategy setup, and IAM policy validation
 
-The deploy script now auto-detects stale configs: if `.bedrock_agentcore.yaml` references a different account than your current AWS credentials, it removes the file and triggers a fresh `agentcore configure`.
+The deploy script auto-detects stale configs (wrong account), upgrades memory mode, configures LTM strategies, and fixes IAM permissions — no manual steps needed.
 
 ### Known Limitations
 

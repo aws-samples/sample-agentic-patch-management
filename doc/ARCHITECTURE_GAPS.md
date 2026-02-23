@@ -60,13 +60,14 @@ Cross-referenced against:
 
 ## OBSERVABILITY GAPS
 
-### GAP-6: No OpenTelemetry auto-instrumentation for deep tracing
+### GAP-6: No OpenTelemetry auto-instrumentation for deep tracing ✅ RESOLVED
 **Severity:** MEDIUM — nice-to-have for deep debugging  
-**Current state:** AgentCore Observability is already enabled (`observability: enabled: true`) and provides session-level visibility in CloudWatch GenAI Observability. However, we don't have OTEL auto-instrumentation for Strands-level detail (per-tool latency, token counts per LLM call, trace propagation across specialist handoffs).  
+**Status:** DONE — OTEL auto-instrumentation is active via AgentCore toolkit. Agent code uses Python `logging` module (not `print(stderr)`) to ensure logs are captured by the OTEL log pipeline.  
+**Current state:** AgentCore Observability is enabled (`observability: enabled: true`). The toolkit's generated Dockerfile uses `opentelemetry-instrument` as the CMD entrypoint. All agent code uses `logging.getLogger()` for OTEL compatibility.  
 **What the sources say:** The Accelerator uses `aws-opentelemetry-distro` with `opentelemetry-instrument` as the CMD entrypoint. This adds fine-grained traces on top of AgentCore's native observability.  
-**Impact:** AgentCore Observability covers the pilot's needs. The OTEL layer adds deeper debugging capability (which LLM call is slow, how many tokens each specialist burns) that becomes valuable at production scale.  
-**Fix:** Add `aws-opentelemetry-distro` to agent requirements. Change Dockerfile CMD to `opentelemetry-instrument python -u supervisor.py`.  
-**Phase:** 2 (Production hardening) — AgentCore Observability is sufficient for pilot
+**Impact:** Resolved. Agent logs (`[SUPERVISOR]`, `[MEMORY]`, routing decisions) are visible in CloudWatch via OTEL structured logs.  
+**Key learning:** OTEL auto-instrumentation captures Python `logging` module output but NOT raw `print()` to stderr. All agent code must use `logging.getLogger()`.  
+**Phase:** 1 (Pilot) — DONE
 
 ### GAP-7: No AgentCore Evaluations integration
 **Severity:** LOW — important for production, not blocking pilot  
@@ -160,7 +161,7 @@ Cross-referenced against:
 | 3 | No cross-session context retrieval | MEDIUM | 1 | Medium |
 | 4 | Specialists load full history | MEDIUM | 2 | Medium |
 | 5 | No workflow checkpointing | MEDIUM | 2 | Medium |
-| 6 | No OTEL auto-instrumentation | MEDIUM | 2 | Small |
+| 6 | No OTEL auto-instrumentation | MEDIUM | 1 ✅ | Small |
 | 7 | No AgentCore Evaluations | LOW | 2 | Medium |
 | 8 | Bedrock Guardrails (sample) | LOW | 1 | Small |
 | 9 | No Cognito/JWT auth | MEDIUM | 2 | Large |
