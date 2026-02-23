@@ -323,6 +323,9 @@ deploy_agent() {
     if [ "$FIRST_DEPLOY" = true ]; then
         echo -e "${BLUE}Setting up long-term memory strategies...${NC}"
         python setup_memory_strategies.py || print_warning "Memory strategies setup failed — run manually later: python agent/setup_memory_strategies.py"
+
+        echo -e "${BLUE}Uploading severity-scoped baseline overrides to S3...${NC}"
+        python setup_baseline_overrides.py || print_warning "Baseline overrides upload failed — run manually later: python agent/setup_baseline_overrides.py"
     fi
 
     # 3. Validate IAM policy grants memory access for the correct memory_id

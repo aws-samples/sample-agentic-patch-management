@@ -98,6 +98,32 @@ def _get_date_prefix(date: datetime) -> str:
     return f"{date.year}/{date.month:02d}/{date.day:02d}/"
 
 
+# Severity → baseline override S3 key mapping
+_SEVERITY_OVERRIDE_MAP = {
+    'CRITICAL': 'baseline-overrides/critical-only.json',
+    'HIGH': 'baseline-overrides/high-and-above.json',
+    'IMPORTANT': 'baseline-overrides/high-and-above.json',  # SSM uses "Important" for High
+    'MEDIUM': 'baseline-overrides/medium-and-above.json',
+    'LOW': 'baseline-overrides/all-severities.json',
+}
+
+
+def _get_baseline_override_url(severity_filter: Optional[str]) -> Optional[str]:
+    """Get the S3 URL for a severity-scoped baseline override.
+
+    Returns None if no severity filter is specified (use default baseline).
+    Returns the S3 URL if a valid severity filter is provided.
+    """
+    if not severity_filter:
+        return None
+    key = _SEVERITY_OVERRIDE_MAP.get(severity_filter.upper())
+    if not key:
+        logger.warning(f"Unknown severity filter: {severity_filter}, using default baseline")
+        return None
+    bucket = _get_compliance_bucket_name()
+    return f"s3://{bucket}/{key}"
+
+
 def _calculate_sla_requirement(frameworks: List[str], severity: str) -> Optional[dict]:
     """
     Helper function to calculate SLA requirement based on compliance frameworks.
@@ -392,12 +418,15 @@ def get_patch_compliance(environment: str,
 
 
 @tool
-def patch_dry_run(instance_ids: List[str]) -> dict:
+def patch_dry_run(instance_ids: List[str], severity_filter: Optional[str] = None) -> dict:
     """Preview what AWS-RunPatchBaseline will install, WITHOUT installing anything.
     
     Runs AWS-RunPatchBaseline with Operation=Scan on target instances. This uses
     the SAME patch baseline and logic as execute_patch_operation, so the preview
     exactly matches what will be installed.
+    
+    When severity_filter is provided, uses a BaselineOverride from S3 to scope
+    the scan to only patches at that severity level and above.
     
     After the scan, reads DescribeInstancePatches to show which patches are
     missing (will be installed) and which are already installed.
@@ -406,6 +435,9 @@ def patch_dry_run(instance_ids: List[str]) -> dict:
     
     Args:
         instance_ids: List of EC2 instance IDs to preview patches for
+        severity_filter: Optional severity level (CRITICAL, HIGH, MEDIUM, LOW).
+            When set, scopes the scan to that severity and above using BaselineOverride.
+            When not set, uses the instance's default patch baseline.
     
     Returns:
         dict: {
@@ -413,7 +445,8 @@ def patch_dry_run(instance_ids: List[str]) -> dict:
                           installed_count, missing_count}],
             'total_missing': int,
             'total_instances': int,
-            'scan_command_id': str
+            'scan_command_id': str,
+            'severity_filter': str or None
         }
     """
     try:
@@ -421,14 +454,19 @@ def patch_dry_run(instance_ids: List[str]) -> dict:
         if validation_error:
             return validation_error
 
+        # Build command parameters
+        params = {'Operation': ['Scan']}
+        override_url = _get_baseline_override_url(severity_filter)
+        if override_url:
+            params['BaselineOverride'] = [override_url]
+            logger.info(f"Dry-run using BaselineOverride: {override_url}")
+
         # Run the SAME document as execute_patch_operation, but with Scan instead of Install
         response = ssm_client.send_command(
             DocumentName='AWS-RunPatchBaseline',
             InstanceIds=instance_ids,
-            Parameters={
-                'Operation': ['Scan']
-            },
-            Comment='Patch dry-run scan (preview only, no changes)'
+            Parameters=params,
+            Comment=f'Patch dry-run scan (preview only){" severity=" + severity_filter if severity_filter else ""}'
         )
         scan_command_id = response['Command']['CommandId']
 
@@ -538,6 +576,8 @@ def patch_dry_run(instance_ids: List[str]) -> dict:
             'total_missing': total_missing,
             'total_instances': len(instance_ids),
             'scan_command_id': scan_command_id,
+            'severity_filter': severity_filter,
+            'baseline_override': override_url,
             'message': (
                 f'{total_missing} missing patches across {len(instance_ids)} instances will be installed'
                 if total_missing > 0
@@ -562,7 +602,8 @@ def execute_patch_operation(
     instance_ids: List[str],
     execution_mode: str,
     environment: str,
-    maintenance_window_id: Optional[str] = None
+    maintenance_window_id: Optional[str] = None,
+    severity_filter: Optional[str] = None
 ) -> dict:
     """Execute patching based on SLA decision (SCHEDULED or EMERGENCY).
     
@@ -570,11 +611,16 @@ def execute_patch_operation(
     - SCHEDULED: Window is within SLA deadline → register with maintenance window
     - EMERGENCY: Window exceeds SLA deadline → patch immediately
     
+    When severity_filter is provided, uses a BaselineOverride from S3 to scope
+    the operation to that severity level and above.
+    
     Args:
         instance_ids: List of EC2 instance IDs to patch
         execution_mode: "scheduled" or "immediate" (based on agent's SLA decision)
         environment: Environment name (dev/staging/prod)
         maintenance_window_id: Required if execution_mode="scheduled"
+        severity_filter: Optional severity level (CRITICAL, HIGH, MEDIUM, LOW).
+            Scopes patching to that severity and above using BaselineOverride.
     
     Returns:
         dict: Status and tracking information
@@ -660,6 +706,16 @@ def execute_patch_operation(
                     "suggestion": "Call get_maintenance_windows first to get window_id"
                 }
             
+            # Build parameters with optional BaselineOverride
+            run_params = {
+                'Operation': ['Install'],
+                'RebootOption': ['NoReboot']
+            }
+            override_url = _get_baseline_override_url(severity_filter)
+            if override_url:
+                run_params['BaselineOverride'] = [override_url]
+                logger.info(f"Scheduled patch using BaselineOverride: {override_url}")
+
             # Register task with maintenance window
             response = ssm_client.register_task_with_maintenance_window(
                 WindowId=maintenance_window_id,
@@ -671,10 +727,7 @@ def execute_patch_operation(
                 TaskType='RUN_COMMAND',
                 TaskInvocationParameters={
                     'RunCommand': {
-                        'Parameters': {
-                            'Operation': ['Install'],
-                            'RebootOption': ['NoReboot']
-                        }
+                        'Parameters': run_params
                     }
                 },
                 Priority=1,
@@ -706,14 +759,20 @@ def execute_patch_operation(
         elif execution_mode == "immediate":
             # Execute immediately (EMERGENCY)
             operator = get_operator()
+            cmd_params = {
+                'Operation': ['Install'],
+                'RebootOption': ['NoReboot']
+            }
+            override_url = _get_baseline_override_url(severity_filter)
+            if override_url:
+                cmd_params['BaselineOverride'] = [override_url]
+                logger.info(f"Emergency patch using BaselineOverride: {override_url}")
+
             response = ssm_client.send_command(
                 DocumentName='AWS-RunPatchBaseline',
                 InstanceIds=instance_ids,
-                Parameters={
-                    'Operation': ['Install'],
-                    'RebootOption': ['NoReboot']
-                },
-                Comment=f'EMERGENCY patching for {environment} by {operator}'
+                Parameters=cmd_params,
+                Comment=f'EMERGENCY patching for {environment} by {operator}{" severity=" + severity_filter if severity_filter else ""}'
             )
             
             logger.info(f"PATCH_EXECUTED: operator={operator} environment={environment} "

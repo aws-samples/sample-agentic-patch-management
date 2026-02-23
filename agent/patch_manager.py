@@ -47,14 +47,28 @@ STEP 2: MAINTENANCE WINDOW + PATCH POLICY
   → Extract: window_id, next_execution, hours_until_window
   → No window found: hours_until_window = ∞
   → Check patch policy results:
-    - If instances have an Install association → can use it for SCHEDULED patching
+    - If instances have an Install association → note it for STEP 3 decision
     - If instances have Scan-only → warn user: "Scan policy exists but no Install policy"
     - If instances have NO patch policy → warn user: "No patch policy found. Consider
-      creating one for consistent scheduled patching. Proceeding with ad-hoc command."
+      creating one for consistent scheduled patching."
 
 STEP 3: SLA DECISION (mandatory calculation)
-  hours_until_window ≤ sla_hours → SCHEDULED (use maintenance window)
+  hours_until_window ≤ sla_hours → SCHEDULED
   hours_until_window > sla_hours → EMERGENCY (patch immediately)
+  
+  PATCH POLICY INTERACTION:
+  - SCHEDULED + Install policy exists + no severity filter:
+    → Report: "Your patch policy will handle this during the next window ({name}, {schedule}).
+      No action needed — patching is already configured."
+    → Do NOT trigger the policy early. Do NOT register a new task. STOP here.
+  - SCHEDULED + Install policy exists + severity filter requested:
+    → Register task with maintenance window using BaselineOverride for the requested severity.
+      Explain: "Your policy applies all severities. To scope to {severity}+, I'll register
+      a separate task with the maintenance window using a severity-scoped baseline."
+  - SCHEDULED + no Install policy:
+    → Register task with maintenance window (with BaselineOverride if severity filter set)
+  - EMERGENCY + any:
+    → Immediate send_command with BaselineOverride if severity filter set
   
   Display: "SLA: {sla_hours}hr ({framework}) | Window: {hours_until_window}hr | Decision: {decision}"
 
@@ -69,8 +83,19 @@ STEP 3: SLA DECISION (mandatory calculation)
   risk matrices, or compliance reporting details upfront — those come when relevant during execution.
 
 STEP 3.5: DRY RUN + PRE-PATCH SNAPSHOT
-  patch_dry_run(instance_ids) → runs RunPatchBaseline Scan, populates SSM patch data
+  patch_dry_run(instance_ids, severity_filter) → runs RunPatchBaseline Scan
   THEN capture_patch_state(instance_ids) → save result as pre_patch_state
+  
+  When severity_filter is set (e.g., "HIGH"), pass it to patch_dry_run. This uses
+  a BaselineOverride from S3 to scope the scan to that severity level and above.
+  The dry-run preview will show ONLY patches at the requested severity, so the
+  operator sees exactly what will be installed.
+  
+  When the user asks for a specific CVE (e.g., "Patch CVE-2025-1234"), determine
+  the CVE's severity from the vulnerability analyst's findings, then use that as
+  the severity_filter. Explain to the operator: "SSM Patch Manager applies patches
+  by severity level, not individual CVEs. To remediate CVE-2025-1234 (HIGH), I'll
+  apply all HIGH+ severity patches. The dry-run shows exactly what will be installed."
   
   IMPORTANT: capture_patch_state reads DescribeInstancePatchStates which is only
   populated AFTER a scan has been run. patch_dry_run runs that scan. So always
@@ -93,8 +118,9 @@ STEP 3.5: DRY RUN + PRE-PATCH SNAPSHOT
   Ask operator to confirm before proceeding to EXECUTE.
 
 STEP 4: EXECUTE
-  SCHEDULED → execute_patch_operation(instance_ids, "scheduled", environment, window_id)
-  EMERGENCY → execute_patch_operation(instance_ids, "immediate", environment)
+  Pass the SAME severity_filter used in dry-run to ensure consistency.
+  SCHEDULED → execute_patch_operation(instance_ids, "scheduled", environment, window_id, severity_filter)
+  EMERGENCY → execute_patch_operation(instance_ids, "immediate", environment, severity_filter=severity_filter)
 
 STEP 5: WAIT & VERIFY
   EMERGENCY:
