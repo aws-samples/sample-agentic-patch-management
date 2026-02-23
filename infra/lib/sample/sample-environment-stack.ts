@@ -111,18 +111,29 @@ export class SampleEnvironmentStack extends cdk.Stack {
         teams: ['platform', 'api', 'frontend', 'data', 'platform'],
         products: ['api-gateway', 'user-service', 'web-app', 'analytics', 'monitoring'],
         complianceFrameworks: ['', '', 'SOC2', '', ''],
+        // No SLA overrides — uses framework defaults or global defaults
+        slaOverrides: [{}, {}, {}, {}, {}],
       },
       {
         name: 'staging', count: 5, criticality: 'Medium',
         teams: ['platform', 'api', 'frontend', 'data', 'security'],
         products: ['api-gateway', 'user-service', 'web-app', 'analytics', 'auth-service'],
         complianceFrameworks: ['SOC2', 'PCI-DSS', 'SOC2', '', 'SOC2'],
+        slaOverrides: [{}, {}, {}, {}, {}],
       },
       {
         name: 'prod', count: 5, criticality: 'High',
         teams: ['platform', 'api', 'frontend', 'data', 'security'],
         products: ['api-gateway', 'user-service', 'web-app', 'analytics', 'auth-service'],
         complianceFrameworks: ['SOC2,HIPAA', 'PCI-DSS', 'SOC2', 'HIPAA', 'PCI-DSS,SOC2'],
+        // Per-instance SLA overrides: PCI-DSS payment instances get stricter SLAs
+        slaOverrides: [
+          {},                                                    // prod-1: uses SOC2,HIPAA defaults
+          { 'SLA-CRITICAL': '6', 'SLA-HIGH': '24' },           // prod-2: PCI-DSS payment — stricter
+          {},                                                    // prod-3: uses SOC2 defaults
+          {},                                                    // prod-4: uses HIPAA defaults
+          { 'SLA-CRITICAL': '6', 'SLA-HIGH': '24' },           // prod-5: PCI-DSS,SOC2 — stricter
+        ],
       },
     ];
 
@@ -154,6 +165,11 @@ export class SampleEnvironmentStack extends cdk.Stack {
         cdk.Tags.of(instance).add('Owner', `${env.teams[i - 1]}-lead@example.com`);
         if (env.complianceFrameworks[i - 1]) {
           cdk.Tags.of(instance).add('ComplianceFrameworks', env.complianceFrameworks[i - 1]);
+        }
+        // Per-instance SLA overrides (optional — demonstrates tag-based SLA)
+        const slaOverride = env.slaOverrides?.[i - 1] ?? {};
+        for (const [key, value] of Object.entries(slaOverride)) {
+          cdk.Tags.of(instance).add(key, value as string);
         }
 
         this.instances.push(instance);
