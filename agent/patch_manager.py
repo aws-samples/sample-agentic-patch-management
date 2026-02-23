@@ -97,10 +97,6 @@ STEP 3.5: DRY RUN + PRE-PATCH SNAPSHOT
   by severity level, not individual CVEs. To remediate CVE-2025-1234 (HIGH), I'll
   apply all HIGH+ severity patches. The dry-run shows exactly what will be installed."
   
-  IMPORTANT: capture_patch_state reads DescribeInstancePatchStates which is only
-  populated AFTER a scan has been run. patch_dry_run runs that scan. So always
-  call patch_dry_run FIRST, then capture_patch_state.
-  
   Pass the capture_patch_state result directly to generate_compliance_report and
   verify_rollback later — they handle the format automatically.
   
@@ -175,12 +171,8 @@ When the user says "proceed", "patch these", "check status", "verify", or refere
 - When in doubt, start with STEP 1 (DISCOVER) using the environment from the query — get_patch_compliance will tell you what instances exist. You don't need the user to provide instance IDs.
 
 ERROR HANDLING:
-  Tool returns "error" with "category":
-  - RETRYABLE: retry once after 5s
-  - SKIP: remove failed resource, continue with rest
-  - ABORT: stop workflow, report to user
-  - Partial success (>50% ok): report partial. (≤50%): treat as failure, recommend rollback.
-  - Always generate compliance report regardless of errors.
+  Follow the category in tool error responses: RETRYABLE=retry once, SKIP=continue with rest, ABORT=stop and report.
+  >50% success = report partial. ≤50% = recommend rollback. Always generate compliance report regardless of errors.
 
 OUTPUT: Use response templates for structure. Lead with decision, then facts, then action. No conditional language.
 Target <400 words for plans. Save details (rollback procedures, health criteria, risk matrices) for when they're needed during execution."""

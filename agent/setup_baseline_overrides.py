@@ -46,9 +46,12 @@ OVERRIDES = {
 }
 
 
-def build_override_json(severities: list) -> dict:
-    """Build a BaselineOverride JSON structure for the given severities."""
-    return {
+def build_override_json(severities: list) -> list:
+    """Build a BaselineOverride JSON structure for the given severities.
+    
+    Returns a LIST of baseline objects (AWS requires an array, not a single object).
+    """
+    return [{
         "OperatingSystem": "AMAZON_LINUX_2",
         "ApprovalRules": {
             "PatchRules": [{
@@ -67,7 +70,7 @@ def build_override_json(severities: list) -> dict:
         "RejectedPatches": [],
         "GlobalFilters": {"PatchFilters": []},
         "Sources": [],
-    }
+    }]
 
 
 def main():

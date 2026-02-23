@@ -87,10 +87,12 @@ def _load_config() -> dict:
         return json.load(f)
 
 def _get_compliance_bucket_name() -> str:
-    """Get S3 bucket name for compliance reports."""
-    sts_client = boto3.client('sts', region_name=AWS_REGION, config=aws_config)
-    account_id = sts_client.get_caller_identity()['Account']
-    return f'patch-compliance-reports-{account_id}'
+    """Get S3 bucket name for compliance reports (cached)."""
+    if not hasattr(_get_compliance_bucket_name, '_cached'):
+        sts_client = boto3.client('sts', region_name=AWS_REGION, config=aws_config)
+        account_id = sts_client.get_caller_identity()['Account']
+        _get_compliance_bucket_name._cached = f'patch-compliance-reports-{account_id}'
+    return _get_compliance_bucket_name._cached
 
 
 def _get_date_prefix(date: datetime) -> str:
@@ -1825,8 +1827,10 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
 
 # ── Patch policy association cache (session-scoped) ─────────────────
 # list-associations is 1 API call regardless of fleet size.
-# We cache it to avoid repeated calls within the same agent session.
+# We cache both the raw list AND the enriched details to avoid repeated
+# describe_association calls within the same agent session.
 _patch_assoc_cache: Optional[List[dict]] = None
+_patch_assoc_enriched_cache: Optional[List[dict]] = None
 _patch_assoc_cache_time: float = 0
 _PATCH_ASSOC_CACHE_TTL = 300  # 5 minutes
 
@@ -1859,46 +1863,93 @@ def _get_cached_patch_associations() -> List[dict]:
     return patch_assocs
 
 
+def _get_enriched_patch_associations() -> List[dict]:
+    """Get patch associations with full details (cached alongside raw list).
+
+    Calls describe_association for each patch association to get schedule,
+    operation, and baseline override info. Cached for the same TTL as the
+    raw association list.
+    """
+    global _patch_assoc_enriched_cache, _patch_assoc_cache_time
+    now = time.time()
+    if _patch_assoc_enriched_cache is not None and (now - _patch_assoc_cache_time) < _PATCH_ASSOC_CACHE_TTL:
+        return _patch_assoc_enriched_cache
+
+    patch_assocs = _get_cached_patch_associations()
+    enriched = []
+    for pa in patch_assocs:
+        assoc_id = pa['AssociationId']
+        try:
+            detail = ssm_client.describe_association(AssociationId=assoc_id)
+            desc = detail['AssociationDescription']
+            params = desc.get('Parameters', {})
+            operation = 'Scan'
+            for op_val in params.get('Operation', []):
+                operation = op_val
+
+            enriched.append({
+                'association_id': assoc_id,
+                'name': desc.get('AssociationName', pa.get('AssociationName', pa['Name'])),
+                'document': pa['Name'],
+                'operation': operation,
+                'schedule': desc.get('ScheduleExpression', 'none'),
+                'targets': pa.get('Targets', []),
+                'status': pa.get('Overview', {}).get('Status', 'unknown'),
+                'baseline_override': params.get('BaselineOverride', [None])[0],
+            })
+        except Exception as e:
+            logger.warning(f"Could not describe association {assoc_id}: {e}")
+            enriched.append({
+                'association_id': assoc_id,
+                'name': pa.get('AssociationName', pa['Name']),
+                'document': pa['Name'],
+                'operation': 'unknown',
+                'schedule': 'unknown',
+                'targets': pa.get('Targets', []),
+                'status': 'unknown',
+            })
+
+    _patch_assoc_enriched_cache = enriched
+    logger.info(f"Enriched {len(enriched)} patch associations")
+    return enriched
+
+
 def _match_association_to_instance(assoc_targets: List[dict], instance_id: str,
                                    instance_tags: Dict[str, str]) -> bool:
     """Check if an association's targets match a specific instance.
 
+    SSM target semantics: multiple target entries are OR (any match = included).
+    Within a single target entry, key/values define the filter.
+
     Handles all SSM target types:
     - InstanceIds: ['*'] → matches all
     - InstanceIds: ['i-abc', 'i-def'] → explicit list
-    - tag:Key: ['Value1', 'Value2'] → tag-based targeting
+    - tag:Key: ['Value1', 'Value2'] → tag-based targeting (value in list)
     - tag-key: ['KeyName'] → instances that have the tag (any value)
     """
     if not assoc_targets:
         return False
 
+    # OR logic: if ANY target entry matches, the instance is included
     for target in assoc_targets:
         key = target.get('Key', '')
         values = target.get('Values', [])
 
         if key == 'InstanceIds':
-            if values == ['*']:
+            if values == ['*'] or instance_id in values:
                 return True
-            if instance_id in values:
-                return True
-            return False
 
-        if key.startswith('tag:'):
+        elif key.startswith('tag:'):
             tag_name = key[4:]  # strip 'tag:' prefix
             tag_value = instance_tags.get(tag_name)
-            if tag_value not in values:
-                return False
-            # Continue checking other targets (AND logic)
+            if tag_value in values:
+                return True
 
         elif key == 'tag-key':
-            if not any(v in instance_tags for v in values):
-                return False
+            if any(v in instance_tags for v in values):
+                return True
 
-        else:
-            # Unknown target type — don't match
-            return False
-
-    return True
+    return False
 
 
 @tool
@@ -1941,42 +1992,8 @@ def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None)
         except ClientError as e:
             logger.warning(f"Could not get instance tags: {e}")
 
-        # Get cached patch associations (1 API call, cached 5 min)
-        patch_assocs = _get_cached_patch_associations()
-
-        # Enrich associations with details (schedule, operation, etc.)
-        enriched_assocs = []
-        for pa in patch_assocs:
-            assoc_id = pa['AssociationId']
-            try:
-                detail = ssm_client.describe_association(AssociationId=assoc_id)
-                desc = detail['AssociationDescription']
-                params = desc.get('Parameters', {})
-                operation = 'Scan'
-                for op_val in params.get('Operation', []):
-                    operation = op_val
-
-                enriched_assocs.append({
-                    'association_id': assoc_id,
-                    'name': desc.get('AssociationName', pa.get('AssociationName', pa['Name'])),
-                    'document': pa['Name'],
-                    'operation': operation,
-                    'schedule': desc.get('ScheduleExpression', 'none'),
-                    'targets': pa.get('Targets', []),
-                    'status': pa.get('Overview', {}).get('Status', 'unknown'),
-                    'baseline_override': params.get('BaselineOverride', [None])[0],
-                })
-            except Exception as e:
-                logger.warning(f"Could not describe association {assoc_id}: {e}")
-                enriched_assocs.append({
-                    'association_id': assoc_id,
-                    'name': pa.get('AssociationName', pa['Name']),
-                    'document': pa['Name'],
-                    'operation': 'unknown',
-                    'schedule': 'unknown',
-                    'targets': pa.get('Targets', []),
-                    'status': 'unknown',
-                })
+        # Get cached + enriched patch associations (cached 5 min)
+        enriched_assocs = _get_enriched_patch_associations()
 
         # Match associations to instances
         instance_policies: Dict[str, List[dict]] = {iid: [] for iid in instance_ids}
@@ -2031,6 +2048,11 @@ def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None)
 @tool
 def capture_patch_state(instance_ids: List[str]) -> dict:
     """Capture current patch compliance state for instances (snapshot).
+    
+    IMPORTANT: This reads DescribeInstancePatchStates which is only populated
+    AFTER a scan (patch_dry_run) has been run. Always call patch_dry_run FIRST,
+    then capture_patch_state. Without a prior scan, patch state data may be
+    empty or stale.
     
     Call this BEFORE patching to capture pre-patch state, and AFTER patching
     to capture post-patch state. Pass both snapshots to generate_compliance_report
