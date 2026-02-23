@@ -193,6 +193,20 @@ deploy_agent() {
         print_status "AgentCore CLI installed"
     fi
 
+    # Detect current account and check for stale config from a different account
+    local current_account
+    current_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+
+    if [ -f ".bedrock_agentcore.yaml" ]; then
+        local config_account
+        config_account=$(grep -A1 "account:" .bedrock_agentcore.yaml | tail -1 | tr -d " '\"" | sed 's/account://')
+        if [ -n "$config_account" ] && [ "$config_account" != "$current_account" ]; then
+            print_warning "Stale .bedrock_agentcore.yaml detected (account: $config_account, current: $current_account)"
+            print_warning "Removing stale config — agentcore configure will create a fresh one for this account."
+            rm -f .bedrock_agentcore.yaml
+        fi
+    fi
+
     # First-time setup: generate .bedrock_agentcore.yaml + Dockerfile if they don't exist.
     # agentcore configure creates the memory resource, IAM role, ECR repo, and writes
     # the config yaml + generated Dockerfile. On subsequent deploys, agentcore launch

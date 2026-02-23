@@ -128,13 +128,18 @@ CRITICAL RULES:
 - Always run dry-run (step 3.5) before execution. Operator must confirm.
 - Never proceed to next environment if current failed.
 - Never fabricate data — all values must come from tool responses.
-- Missing info (environment, CVE)? Ask the user.
+- Missing environment? Check the query text and conversation context first. Only ask the user as a last resort.
+- If you have the environment, START the workflow — don't wait for CVE IDs. STEP 1 (DISCOVER) will find what needs patching.
 
 ENVIRONMENT RESOLUTION: current query → conversation context → ask user
 
-CONTEXT CONTINUITY: When the user says "proceed", "check status", "verify", or references a command/CVE from earlier:
-- Extract command_id, instance_ids, environment, CVE from conversation history — they are there.
-- NEVER ask the user for information that was in a previous tool response or your own output.
+CONTEXT CONTINUITY — CRITICAL:
+When the user says "proceed", "patch these", "check status", "verify", or references a command/CVE from earlier:
+- Extract command_id, instance_ids, environment, CVE from conversation history AND from the current query — the supervisor enriches queries with context before routing to you.
+- NEVER ask the user for information that is available in: (a) the current query, (b) conversation history, or (c) previous tool responses.
+- If the query says "Patch these vulnerabilities in prod" and includes CVE IDs or instance IDs anywhere in the message, USE THEM. Do not ask for clarification.
+- Only ask the user for missing info if you have genuinely exhausted all available context (query text, conversation history, tool responses) and still cannot determine the environment OR the target scope.
+- When in doubt, start with STEP 1 (DISCOVER) using the environment from the query — get_patch_compliance will tell you what instances exist. You don't need the user to provide instance IDs.
 
 ERROR HANDLING:
   Tool returns "error" with "category":

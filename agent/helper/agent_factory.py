@@ -85,15 +85,15 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             actor_id=actor_id,
             retrieval_config=retrieval_config,
         )
-        print(f"[MEMORY] Creating session manager: actor={actor_id} session={session_id} retrieval={retrieval_config}", file=sys.stderr, flush=True)
+        logger.info(f"[MEMORY] Creating session manager: actor={actor_id} session={session_id} retrieval={retrieval_config}")
         try:
             session_manager = AgentCoreMemorySessionManager(
                 boto_client_config=_RETRY_CONFIG,
                 agentcore_memory_config=config,
             )
-            print(f"[MEMORY] Session manager created OK for {name}", file=sys.stderr, flush=True)
+            logger.info(f"[MEMORY] Session manager created OK for {name}")
         except Exception as e:
-            print(f"[MEMORY] ERROR creating session manager: {e}", file=sys.stderr, flush=True)
+            logger.error(f"[MEMORY] ERROR creating session manager: {e}")
             session_manager = None
 
     elif memory_id and memory_read_only:
@@ -103,7 +103,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             actor_id=actor_id,
             session_id=session_id,
         ))
-        print(f"[MEMORY] Read-only hook for {name} (actor={actor_id})", file=sys.stderr, flush=True)
+        logger.info(f"[MEMORY] Read-only hook for {name} (actor={actor_id})")
 
     # Inject response templates for this agent
     full_prompt = system_prompt + get_templates_for_agent(name)

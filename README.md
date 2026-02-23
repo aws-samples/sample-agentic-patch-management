@@ -371,16 +371,42 @@ cd ui/frontend && npm run dev          # Frontend on port 5173
 
 ## Observability
 
-The agent ships with full observability via OpenTelemetry auto-instrumentation and CloudWatch.
+The agent ships with observability via OpenTelemetry auto-instrumentation and CloudWatch.
+
+### Important: Logging Configuration
+
+AgentCore containers run with OTEL auto-instrumentation (`opentelemetry-instrument` via `aws-opentelemetry-distro`). The OTEL log pipeline captures Python `logging` module output — **not** raw `print()` to stderr. All agent code uses `logging.getLogger()` to ensure logs are captured.
+
+If you extend the agent with custom code, always use Python's `logging` module:
+```python
+import logging
+logger = logging.getLogger(__name__)
+logger.info("This will appear in CloudWatch via OTEL")
+# print("This will NOT appear in CloudWatch", file=sys.stderr)  # Don't do this
+```
 
 ### Log Streams
 
 All logs flow to CloudWatch under `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT/`:
 
-| Stream | Content |
-|--------|---------|
-| `[runtime-logs]<uuid>` | Application logs (`[SUPERVISOR]`, `[MEMORY]`), Strands debug, memory lifecycle |
+| Stream pattern | Content |
+|----------------|---------|
+| `YYYY/MM/DD/[runtime-logs]<uuid>` | Application logs (`[SUPERVISOR]`, `[MEMORY]`), Strands debug, memory lifecycle |
 | `otel-rt-logs` | OTEL structured JSON logs with `traceId`/`spanId` for end-to-end correlation |
+
+The UI container logs to `/patch-automation/ui` (FastAPI access logs, chat request metadata).
+
+### Finding Your Runtime ID
+
+The runtime ID is needed for log queries. Find it with:
+```bash
+# From agentcore CLI
+source venv/bin/activate && cd agent && agentcore status
+
+# Or from the API
+aws bedrock-agentcore-control list-agent-runtimes \
+  --query 'agentRuntimes[0].agentRuntimeId' --output text
+```
 
 ### Tailing Logs
 
@@ -573,6 +599,21 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 | Config recorder conflict | Deploy with `-c skipConfigRecorder=true` |
 | UI container unhealthy | Check logs: `aws logs tail /patch-automation/ui --follow` |
 | SSM tunnel fails | Ensure Session Manager plugin is installed and at least one instance is online |
+| Agent logs missing from CloudWatch | Ensure all agent code uses Python `logging` module, not `print()` to stderr. See [Observability → Logging Configuration](#important-logging-configuration) |
+| Stale config after account migration | Delete `agent/.bedrock_agentcore.yaml` and redeploy: `./deploy.sh agent`. The deploy script auto-detects stale configs from different accounts. |
+| Memory not persisting | Check `agentcore status` for memory errors. Verify the memory resource exists: `aws bedrock-agentcore-control list-memories` |
+| Agent asks for info already provided | This is a context-forwarding issue. The supervisor should enrich queries with CVE IDs and instance IDs from previous turns. If it persists, check that memory is active and the session_id is consistent across requests. |
+
+### Deploying to a New Account
+
+When moving the solution to a different AWS account:
+
+1. Update `.env` with the new `AWS_PROFILE` (and optionally `AWS_REGION`)
+2. Delete `agent/.bedrock_agentcore.yaml` (it contains the old account's agent ARN, memory ID, and ECR repo)
+3. Run `./deploy.sh --with-sample-env` — the script will run `agentcore configure` to create fresh resources in the new account
+4. Run `python agent/setup_memory_strategies.py` to configure LTM strategies for the new memory resource
+
+The deploy script now auto-detects stale configs: if `.bedrock_agentcore.yaml` references a different account than your current AWS credentials, it removes the file and triggers a fresh `agentcore configure`.
 
 ### Known Limitations
 
