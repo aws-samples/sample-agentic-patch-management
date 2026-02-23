@@ -24,6 +24,7 @@ AWS_REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', '
 
 # Per-request operator identity — safe for concurrent async requests
 _current_operator: contextvars.ContextVar[str] = contextvars.ContextVar('_current_operator', default='unknown')
+_current_timezone: contextvars.ContextVar[str] = contextvars.ContextVar('_current_timezone', default='UTC')
 
 
 def set_operator(identity: str) -> None:
@@ -34,6 +35,39 @@ def set_operator(identity: str) -> None:
 def get_operator() -> str:
     """Get the operator identity for the current request context."""
     return _current_operator.get()
+
+
+def set_timezone(tz_name: str) -> None:
+    """Set the user's timezone for the current request context."""
+    _current_timezone.set(tz_name or 'UTC')
+
+
+def get_timezone() -> str:
+    """Get the user's timezone for the current request context."""
+    return _current_timezone.get()
+
+
+def _format_utc_as_local(utc_str: str) -> str:
+    """Convert a UTC datetime string to the user's local timezone for display.
+    
+    Returns a human-readable string like '24 Feb 2026 12:00 PM AEST'.
+    Falls back to UTC if timezone conversion fails.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        tz_name = get_timezone()
+        # Parse the UTC time
+        utc_clean = str(utc_str).replace('Z', '+00:00')
+        utc_dt = datetime.fromisoformat(utc_clean)
+        if utc_dt.tzinfo is None:
+            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+        # Convert to local
+        local_tz = ZoneInfo(tz_name)
+        local_dt = utc_dt.astimezone(local_tz)
+        # Format nicely
+        return local_dt.strftime('%d %b %Y %I:%M %p %Z')
+    except Exception:
+        return str(utc_str)
 
 # Instance ID validation pattern
 INSTANCE_ID_PATTERN = re.compile(r'^i-[0-9a-f]{8,17}$')
@@ -369,7 +403,7 @@ def get_patch_compliance(environment: str,
                 'security_non_compliant_count': state.get('SecurityNonCompliantCount', 0),
                 'operation': state.get('Operation', 'N/A'),
                 'operation_start_time': state.get('OperationStartTime', '').isoformat() if state.get('OperationStartTime') else 'N/A',
-                'operation_end_time': state.get('OperationEndTime', '').isoformat() if state.get('OperationEndTime') else 'N/A',
+                'operation_end_time': _format_utc_as_local(state.get('OperationEndTime', '').isoformat()) if state.get('OperationEndTime') else 'N/A',
                 'reboot_option': state.get('RebootOption', 'N/A')
             })
         
@@ -752,7 +786,7 @@ def execute_patch_operation(
                 'window_task_id': response['WindowTaskId'],
                 'maintenance_window_id': maintenance_window_id,
                 'window_name': window_details.get('Name'),
-                'next_execution': window_details.get('NextExecutionTime', 'See maintenance window schedule'),
+                'next_execution': _format_utc_as_local(str(window_details.get('NextExecutionTime', ''))) if window_details.get('NextExecutionTime') else 'See maintenance window schedule',
                 'instance_count': len(instance_ids),
                 'operator': operator,
                 'message': f'Patching scheduled in maintenance window: {window_details.get("Name")}'
@@ -1771,7 +1805,8 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
                     'window_id': window_id,
                     'name': window_details.get('Name'),
                     'schedule': window_details.get('Schedule', ''),
-                    'next_execution': next_execution,
+                    'next_execution': _format_utc_as_local(next_execution) if next_execution else None,
+                    'next_execution_utc': str(next_execution) if next_execution else None,
                     'hours_until_window': round(hours_until_window, 1) if hours_until_window is not None else None,
                     'duration_hours': window_details.get('Duration'),
                     'cutoff_hours': window_details.get('Cutoff'),

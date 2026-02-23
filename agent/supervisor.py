@@ -257,10 +257,12 @@ async def agent_invocation(payload, context):
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
     operator_identity = payload.get("operator", "unknown")
+    user_timezone = payload.get("timezone", "UTC")
     
-    # Set operator identity in request-scoped context (safe for concurrent requests)
-    from helper.tools import set_operator
+    # Set operator identity and timezone in request-scoped context
+    from helper.tools import set_operator, set_timezone
     set_operator(operator_identity)
+    set_timezone(user_timezone)
     
     logger.info(f"[SUPERVISOR] New request: operator={operator_identity} session={context.session_id}")
     logger.info(f"[SUPERVISOR] Message: {user_message[:100]}")

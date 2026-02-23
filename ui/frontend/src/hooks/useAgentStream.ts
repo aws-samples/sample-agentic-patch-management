@@ -111,6 +111,7 @@ export function useAgentStream(role: string = "operator") {
           body: JSON.stringify({
             message: text,
             session_id: state.sessionId,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
           signal: abortRef.current.signal,
         });

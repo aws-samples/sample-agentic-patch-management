@@ -60,6 +60,7 @@ _SESSION_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10_000)
     session_id: str | None = Field(None, max_length=100)
+    timezone: str | None = Field(None, max_length=50)
 
 
 # ── Rate limiting (in-memory token bucket) ──────────────────────────
@@ -309,7 +310,7 @@ async def chat(req: ChatRequest, request: Request):
     logger.info(f"Chat request: session_id={session_id} role={getattr(request.state, 'role', 'unknown')} message={message[:80]}")
     client = _get_client()
     role = getattr(request.state, "role", "operator")
-    payload = json.dumps({"prompt": message, "operator": f"{role}@{session_id[:12]}"}).encode()
+    payload = json.dumps({"prompt": message, "operator": f"{role}@{session_id[:12]}", "timezone": req.timezone or "UTC"}).encode()
 
     try:
         response = client.invoke_agent_runtime(
