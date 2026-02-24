@@ -77,6 +77,13 @@ export class SampleEnvironmentStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // S3 read access for BaselineOverride files (severity-scoped patching)
+    instanceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject'],
+      resources: [`arn:aws:s3:::patch-compliance-reports-${this.account}/baseline-overrides/*`],
+    }));
+
     new iam.CfnInstanceProfile(this, 'SampleInstanceProfile', {
       roles: [instanceRole.roleName],
     });

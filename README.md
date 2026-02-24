@@ -203,6 +203,7 @@ The following AWS services must be enabled and configured in your account for th
 For the agent to manage EC2 instances, they need:
 - SSM Agent installed and running (`aws ssm describe-instance-information` shows the instance as `Online`)
 - IAM instance profile with `AmazonSSMManagedInstanceCore` managed policy
+- IAM instance profile must also allow `s3:GetObject` on `s3://patch-compliance-reports-<account-id>/baseline-overrides/*` for severity-scoped patching (the sample environment configures this automatically)
 - Tag: `Environment` (e.g., `dev`, `staging`, `prod`) — used for environment-based routing
 - Tag: `PatchGroup` (e.g., `dev-patch-group`) — used by SSM Patch Manager for baseline mapping
 - Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) — included in compliance reports for audit context
