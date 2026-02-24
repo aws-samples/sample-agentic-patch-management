@@ -86,7 +86,6 @@ export class SampleEnvironmentStack extends cdk.Stack {
     userData.addCommands(
       '#!/bin/bash',
       'set -e',
-      'yum update -y',
       'yum install -y amazon-ssm-agent',
       'systemctl enable amazon-ssm-agent',
       'systemctl start amazon-ssm-agent',
