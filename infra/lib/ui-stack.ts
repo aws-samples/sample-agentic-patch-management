@@ -174,7 +174,7 @@ export class UIStack extends cdk.Stack {
       });
 
       // Domain for hosted UI
-      userPool.addDomain('CognitoDomain', {
+      const userPoolDomain = userPool.addDomain('CognitoDomain', {
         cognitoDomain: { domainPrefix },
       });
 
