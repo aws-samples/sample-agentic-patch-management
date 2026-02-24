@@ -16,8 +16,11 @@ export interface VulnerabilityFinding {
   cvss_score: number | null;
   title: string;
   environment: string;
+  environments: string[];
+  services: string[];
   resource_id: string;
   fix_available: string;
+  instance_count: number;
 }
 
 export interface ActivityItem {

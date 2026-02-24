@@ -439,17 +439,15 @@ def _fetch_environments():
 def _fetch_vulnerabilities():
     """Sync: Active Inspector findings with full pagination.
 
-    Paginates through all active findings to get accurate severity counts.
-    Returns up to 200 findings for the table (sorted by severity) and
-    accurate total counts across all findings.
+    Deduplicates by CVE ID — aggregates instance count, environments, and
+    resource types per CVE. Returns unique CVEs sorted by severity.
     """
     session = _aws_session()
     inspector = session.client("inspector2")
 
-    findings = []
     severity_counts: dict[str, int] = {}
-    # Collect findings per severity to ensure all severities are represented
-    findings_by_sev: dict[str, list] = {}
+    # Deduplicate: CVE ID → aggregated finding
+    cve_map: dict[str, dict] = {}
     next_token = None
 
     while True:
@@ -458,7 +456,7 @@ def _fetch_vulnerabilities():
                 "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
             },
             "sortCriteria": {"field": "SEVERITY", "sortOrder": "DESC"},
-            "maxResults": 100,  # Inspector API max per page
+            "maxResults": 100,
         }
         if next_token:
             kwargs["nextToken"] = next_token
@@ -468,42 +466,65 @@ def _fetch_vulnerabilities():
         for f in resp.get("findings", []):
             vuln = f.get("packageVulnerabilityDetails", {})
             sev = f.get("severity", "UNKNOWN")
+            cve_id = vuln.get("vulnerabilityId", "N/A")
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
+            # Extract environment and resource type
             env = "unknown"
+            resource_type = "unknown"
+            resource_id = ""
             for r in f.get("resources", []):
+                resource_type = r.get("type", "unknown")
+                resource_id = r.get("id", "")
                 for t in r.get("tags", {}).items():
                     if t[0] == "Environment":
                         env = t[1]
 
-            # Collect per severity — cap each bucket at 250
-            if sev not in findings_by_sev:
-                findings_by_sev[sev] = []
-            if len(findings_by_sev[sev]) < 250:
-                findings_by_sev[sev].append({
-                    "cve_id": vuln.get("vulnerabilityId", "N/A"),
+            # Map resource type to friendly service name
+            service = _resource_type_to_service(resource_type)
+
+            if cve_id in cve_map:
+                # Aggregate: add instance, environment, service
+                entry = cve_map[cve_id]
+                entry["instance_count"] += 1
+                if env not in entry["environments"]:
+                    entry["environments"].append(env)
+                if service not in entry["services"]:
+                    entry["services"].append(service)
+            else:
+                cve_map[cve_id] = {
+                    "cve_id": cve_id,
                     "severity": sev,
                     "cvss_score": (vuln.get("cvss") or [{}])[0].get("baseScore") if vuln.get("cvss") else None,
                     "title": f.get("title", ""),
                     "environment": env,
-                    "resource_id": f.get("resources", [{}])[0].get("id", "") if f.get("resources") else "",
+                    "environments": [env],
+                    "services": [service],
+                    "resource_id": resource_id,
                     "fix_available": f.get("fixAvailable", "UNKNOWN"),
-                })
+                    "instance_count": 1,
+                }
 
         next_token = resp.get("nextToken")
         if not next_token:
             break
 
-    # Merge all severity buckets into a single list, sorted by severity order
-    sev_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL", "UNTRIAGED", "UNKNOWN"]
-    for sev in sev_order:
-        findings.extend(findings_by_sev.get(sev, []))
-    # Include any severities not in the predefined order
-    for sev, items in findings_by_sev.items():
-        if sev not in sev_order:
-            findings.extend(items)
+    # Sort by severity order, then CVSS desc
+    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFORMATIONAL": 4, "UNTRIAGED": 5, "UNKNOWN": 6}
+    findings = sorted(cve_map.values(), key=lambda x: (sev_order.get(x["severity"], 9), -(x["cvss_score"] or 0)))
 
     return {"findings": findings, "severity_counts": severity_counts}
+
+
+def _resource_type_to_service(resource_type: str) -> str:
+    """Map Inspector resource type to friendly service name."""
+    mapping = {
+        "AWS_EC2_INSTANCE": "EC2",
+        "AWS_LAMBDA_FUNCTION": "Lambda",
+        "AWS_ECR_CONTAINER_IMAGE": "ECR",
+        "AWS_ECR_REPOSITORY": "ECR",
+    }
+    return mapping.get(resource_type, resource_type.replace("AWS_", "").replace("_", " ").title())
 
 
 def _list_report_keys(s3, bucket: str, days: int) -> list[dict]:
