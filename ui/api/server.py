@@ -102,35 +102,51 @@ _OPERATOR_PATHS = {"/api/chat"}
 
 
 def _resolve_role(request: Request) -> str | None:
-    """Resolve the user's role from the API key header or X-Role header.
+    """Resolve the user's role from Cognito JWT, API key, or X-Role header.
     
-    Returns: "operator", "viewer", or None (unauthorized).
-
-    Pilot mode (no API keys configured): respects X-Role header from the
-    frontend role switcher. Defaults to "operator" if header is absent.
-
-    Production mode (API keys configured): ignores X-Role header and
-    resolves role from the API key only.
+    Priority:
+    1. Cognito (ALB-injected x-amzn-oidc-data JWT) → extract cognito:groups
+    2. API key (X-API-Key header) → map to role
+    3. Pilot mode (no auth) → X-Role header from frontend
     """
-    # No auth configured → pilot mode, use X-Role header
-    if not any([API_KEY, API_KEY_OPERATOR, API_KEY_VIEWER]):
-        role_header = request.headers.get("X-Role", "operator")
-        return "viewer" if role_header == "viewer" else "operator"
+    # 1. Cognito JWT from ALB (highest priority)
+    oidc_data = request.headers.get("x-amzn-oidc-data")
+    if oidc_data:
+        try:
+            import base64
+            # ALB JWT is base64-encoded, 3 parts separated by dots
+            payload = oidc_data.split('.')[1]
+            # Add padding
+            payload += '=' * (4 - len(payload) % 4)
+            claims = json.loads(base64.b64decode(payload))
+            groups = claims.get("cognito:groups", [])
+            # Store email as operator identity
+            request.state.cognito_email = claims.get("email", "unknown")
+            if "operators" in groups:
+                return "operator"
+            elif "viewers" in groups:
+                return "viewer"
+            # Authenticated but no group → default to viewer
+            return "viewer"
+        except Exception as e:
+            logger.warning(f"Failed to parse Cognito JWT: {e}")
 
-    provided_key = request.headers.get("X-API-Key")
-    if not provided_key:
+    # 2. API key auth
+    if any([API_KEY, API_KEY_OPERATOR, API_KEY_VIEWER]):
+        provided_key = request.headers.get("X-API-Key")
+        if not provided_key:
+            return None
+        if API_KEY_OPERATOR and provided_key == API_KEY_OPERATOR:
+            return "operator"
+        if API_KEY_VIEWER and provided_key == API_KEY_VIEWER:
+            return "viewer"
+        if API_KEY and provided_key == API_KEY:
+            return "operator"
         return None
 
-    # Check explicit role keys first
-    if API_KEY_OPERATOR and provided_key == API_KEY_OPERATOR:
-        return "operator"
-    if API_KEY_VIEWER and provided_key == API_KEY_VIEWER:
-        return "viewer"
-    # Backward compatible: single API_KEY = operator
-    if API_KEY and provided_key == API_KEY:
-        return "operator"
-
-    return None
+    # 3. Pilot mode — no auth configured, use X-Role header
+    role_header = request.headers.get("X-Role", "operator")
+    return "viewer" if role_header == "viewer" else "operator"
 
 
 @app.middleware("http")
@@ -310,7 +326,9 @@ async def chat(req: ChatRequest, request: Request):
     logger.info(f"Chat request: session_id={session_id} role={getattr(request.state, 'role', 'unknown')} message={message[:80]}")
     client = _get_client()
     role = getattr(request.state, "role", "operator")
-    payload = json.dumps({"prompt": message, "operator": f"{role}@{session_id[:12]}", "timezone": req.timezone or "UTC"}).encode()
+    cognito_email = getattr(request.state, "cognito_email", None)
+    operator = cognito_email or f"{role}@{session_id[:12]}"
+    payload = json.dumps({"prompt": message, "operator": operator, "timezone": req.timezone or "UTC"}).encode()
 
     try:
         response = client.invoke_agent_runtime(

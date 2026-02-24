@@ -53,12 +53,17 @@ new CoreStack(app, 'Patchy-Core', {
 });
 
 // ── UI (deploy separately with ./deploy.sh ui) ────────────────────
+const cognitoEnabled = !!process.env.COGNITO_DOMAIN_PREFIX;
 const uiStack = new UIStack(app, 'Patchy-UI', {
   env,
   vpc,
   agentCoreRoleArn: resolvedRoleArn,
   certificateArn: process.env.ACM_CERTIFICATE_ARN || undefined,
-  description: 'Patchy: Web UI (Fargate + internal ALB)',
+  cognitoEnabled,
+  cognitoDomainPrefix: process.env.COGNITO_DOMAIN_PREFIX || undefined,
+  description: cognitoEnabled
+    ? 'Patchy: Web UI (Fargate + Cognito + public ALB)'
+    : 'Patchy: Web UI (Fargate + internal ALB)',
 });
 if (networkingStack) uiStack.addDependency(networkingStack);
 
