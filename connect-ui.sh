@@ -63,11 +63,39 @@ fi
 ALB_HOST="${ALB_DNS#https://}"
 ALB_HOST="${ALB_HOST#http://}"
 
-# Find an SSM-managed instance to use as the tunnel hop
-echo "Finding SSM-managed instance..."
-INSTANCE_ID=$(aws ssm describe-instance-information \
-    --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' \
-    --output text 2>/dev/null | awk '{print $1}' | head -1)
+# Find an SSM-managed instance in the SAME VPC as the ALB
+echo "Finding SSM-managed instance in ALB VPC..."
+
+# Get ALB VPC
+ALB_VPC=$(aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[?DNSName=='${ALB_HOST}'].VpcId" \
+    --output text 2>/dev/null)
+
+if [ -z "$ALB_VPC" ] || [ "$ALB_VPC" = "None" ]; then
+    echo -e "${RED}Could not determine ALB VPC. Falling back to any SSM instance.${NC}"
+    INSTANCE_ID=$(aws ssm describe-instance-information \
+        --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' \
+        --output text 2>/dev/null | awk '{print $1}' | head -1)
+else
+    # Find instances in the ALB's VPC that are SSM-managed
+    VPC_INSTANCES=$(aws ec2 describe-instances \
+        --filters "Name=vpc-id,Values=${ALB_VPC}" "Name=instance-state-name,Values=running" \
+        --query 'Reservations[*].Instances[*].InstanceId' \
+        --output text 2>/dev/null)
+
+    # Check which ones are SSM-online
+    INSTANCE_ID=""
+    for iid in $VPC_INSTANCES; do
+        STATUS=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=${iid}" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text 2>/dev/null)
+        if [ "$STATUS" = "Online" ]; then
+            INSTANCE_ID="$iid"
+            break
+        fi
+    done
+fi
 
 if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
     echo -e "${RED}No online SSM-managed instances found.${NC}"
