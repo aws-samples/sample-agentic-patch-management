@@ -201,9 +201,7 @@ export class UIStack extends cdk.Stack {
         defaultAction: new elbv2_actions.AuthenticateCognitoAction({
           userPool,
           userPoolClient,
-          userPoolDomain: userPool.addDomain('ALBDomain', {
-            cognitoDomain: { domainPrefix: `${domainPrefix}-alb` },
-          }),
+          userPoolDomain,
           next: elbv2.ListenerAction.forward([targetGroup]),
         }),
       });
