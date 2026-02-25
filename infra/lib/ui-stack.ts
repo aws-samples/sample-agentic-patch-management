@@ -202,6 +202,7 @@ export class UIStack extends cdk.Stack {
           userPool,
           userPoolClient,
           userPoolDomain,
+          scope: 'openid email profile',
           next: elbv2.ListenerAction.forward([targetGroup]),
         }),
       });
