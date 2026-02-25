@@ -403,14 +403,25 @@ deploy_ui() {
         npm ci --silent
     fi
     ensure_cdk_bootstrap
+    # Export Cognito domain prefix if set (enables internet-facing ALB + Cognito auth)
+    if [ -n "$COGNITO_DOMAIN_PREFIX" ]; then
+        export COGNITO_DOMAIN_PREFIX
+        print_status "Cognito auth enabled (domain: $COGNITO_DOMAIN_PREFIX)"
+    fi
+
     npx cdk deploy Patchy-UI \
         --require-approval never \
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
     print_status "Web UI deployed"
 
     echo ""
-    echo -e "${GREEN}UI is on an internal ALB (not publicly accessible).${NC}"
-    echo -e "Connect via SSM port forwarding: ${BLUE}./connect-ui.sh${NC}"
+    if [ -n "$COGNITO_DOMAIN_PREFIX" ]; then
+        echo -e "${GREEN}UI is publicly accessible with Cognito authentication.${NC}"
+        echo -e "URL: $(aws cloudformation describe-stacks --stack-name Patchy-UI --query 'Stacks[0].Outputs[?OutputKey==\`UIUrl\`].OutputValue' --output text 2>/dev/null)"
+    else
+        echo -e "${GREEN}UI is on an internal ALB (not publicly accessible).${NC}"
+        echo -e "Connect via SSM port forwarding: ${BLUE}./connect-ui.sh${NC}"
+    fi
     echo ""
     echo -e "Internal ALB DNS:"
     aws cloudformation describe-stacks \
