@@ -38,8 +38,6 @@ doc/
 *.md
 !ui/frontend/README.md
 
-# Conversations and test data
-conversations/
 
 # Docker
 Dockerfile
