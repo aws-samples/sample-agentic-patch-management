@@ -652,6 +652,8 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 
 > **Note:** `agentcore destroy` removes the agent runtime but leaves the memory resource intact (it may contain audit-relevant conversation history). To delete memory: `aws bedrock-agentcore-control delete-memory --memory-id <memory-id>`.
 
+> **Note:** The Cognito User Pool is retained on stack deletion to preserve user accounts when toggling between Cognito and bastion mode. To delete it manually: `aws cognito-idp delete-user-pool --user-pool-id <id>` (find the ID in CloudFormation outputs or the Cognito console).
+
 ---
 
 ## Troubleshooting

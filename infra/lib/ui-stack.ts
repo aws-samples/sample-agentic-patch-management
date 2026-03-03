@@ -158,7 +158,9 @@ export class UIStack extends cdk.Stack {
           requireDigits: true,
           requireSymbols: false,
         },
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        // RETAIN preserves users when toggling between Cognito and bastion mode.
+        // To fully delete: aws cognito-idp delete-user-pool --user-pool-id <id>
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
       });
 
       // Groups
