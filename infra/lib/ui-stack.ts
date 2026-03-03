@@ -143,10 +143,11 @@ export class UIStack extends cdk.Stack {
     });
 
     // ── Cognito (opt-in) ───────────────────────────────────────────
+    // cognitoEnabled=true  → HTTPS listener with Cognito auth action (internet-facing ALB)
+    // cognitoEnabled=false → HTTPS or HTTP listener, no auth (internal ALB + bastion)
     if (cognitoEnabled && props.certificateArn) {
       const domainPrefix = props.cognitoDomainPrefix ?? `patchy-${accountId}`;
 
-      // User Pool
       const userPool = new cognito.UserPool(this, 'UserPool', {
         userPoolName: 'patchy-users',
         selfSignUpEnabled: false,
@@ -158,12 +159,12 @@ export class UIStack extends cdk.Stack {
           requireDigits: true,
           requireSymbols: false,
         },
-        // RETAIN preserves users when toggling between Cognito and bastion mode.
-        // To fully delete: aws cognito-idp delete-user-pool --user-pool-id <id>
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        // DESTROY: when COGNITO_ENABLED=false the pool and all users are deleted.
+        // A dormant pool with credentials is a security liability.
+        // Re-enabling Cognito creates a fresh pool — re-invite users.
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
 
-      // Groups
       new cognito.CfnUserPoolGroup(this, 'OperatorsGroup', {
         userPoolId: userPool.userPoolId,
         groupName: 'operators',
@@ -175,12 +176,10 @@ export class UIStack extends cdk.Stack {
         description: 'Read-only: dashboard only, no chat or patching',
       });
 
-      // Domain for hosted UI
       const userPoolDomain = userPool.addDomain('CognitoDomain', {
         cognitoDomain: { domainPrefix },
       });
 
-      // App client
       const callbackUrl = `https://${alb.loadBalancerDnsName}/oauth2/idpresponse`;
       const userPoolClient = new cognito.UserPoolClient(this, 'UserPoolClient', {
         userPool,
@@ -194,7 +193,6 @@ export class UIStack extends cdk.Stack {
         supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
       });
 
-      // HTTPS listener with Cognito auth action
       const httpsListener = alb.addListener('HTTPSListener', {
         port: 443,
         protocol: elbv2.ApplicationProtocol.HTTPS,
@@ -209,14 +207,12 @@ export class UIStack extends cdk.Stack {
         }),
       });
 
-      // Health check bypass — ALB auth doesn't apply to health checks
       httpsListener.addAction('HealthBypass', {
         priority: 1,
         conditions: [elbv2.ListenerCondition.pathPatterns(['/api/health'])],
         action: elbv2.ListenerAction.forward([targetGroup]),
       });
 
-      // HTTP → HTTPS redirect
       alb.addListener('HTTPRedirect', {
         port: 80,
         protocol: elbv2.ApplicationProtocol.HTTP,
@@ -225,7 +221,6 @@ export class UIStack extends cdk.Stack {
         }),
       });
 
-      // Outputs
       new cdk.CfnOutput(this, 'CognitoUserPoolId', {
         value: userPool.userPoolId,
         description: 'Cognito User Pool ID — create users here',
@@ -236,7 +231,7 @@ export class UIStack extends cdk.Stack {
       });
 
     } else if (props.certificateArn) {
-      // ── HTTPS without Cognito (internal ALB + SSM tunnel) ────────
+      // HTTPS without Cognito auth enforcement (internal ALB + SSM tunnel)
       const httpsListener = alb.addListener('HTTPSListener', {
         port: 443,
         protocol: elbv2.ApplicationProtocol.HTTPS,
@@ -254,7 +249,7 @@ export class UIStack extends cdk.Stack {
       });
 
     } else {
-      // ── HTTP only (no cert) ──────────────────────────────────────
+      // HTTP only (no cert)
       const listener = alb.addListener('HTTPListener', {
         port: 80,
         protocol: elbv2.ApplicationProtocol.HTTP,

@@ -578,6 +578,18 @@ The pilot uses a frontend role switcher with session-based identity. For product
 
 This is approximately 2-3 hours of work. The ALB-Cognito integration is the key shortcut — the frontend never handles passwords or tokens.
 
+### Federating with Okta, Ping, or Azure AD
+
+If your organisation already has an IdP, you don't need to manage users in Cognito directly. Cognito acts as a thin OIDC/SAML proxy — users log in via your corporate IdP and Cognito issues the JWT that the ALB validates. No app code changes, no ALB changes.
+
+**Steps (Okta example, ~15 min):**
+1. In Okta: create a new OIDC app, set the callback URL to `https://<alb-dns>/oauth2/idpresponse`
+2. In Cognito: add Okta as an OIDC identity provider (Console → User Pool → Sign-in experience → Federated identity provider sign-in)
+3. Map Okta groups to Cognito groups (`operators`, `viewers`) via attribute mapping
+4. Update the User Pool Client's `supportedIdentityProviders` to include the Okta provider
+
+Users are redirected straight to Okta's login page — Cognito's hosted UI is bypassed entirely. Group membership flows through as JWT claims and the backend resolves roles identically.
+
 ### Native AWS Audit Capabilities
 
 Before building custom audit infrastructure, consider what AWS already provides:
@@ -652,7 +664,7 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 
 > **Note:** `agentcore destroy` removes the agent runtime but leaves the memory resource intact (it may contain audit-relevant conversation history). To delete memory: `aws bedrock-agentcore-control delete-memory --memory-id <memory-id>`.
 
-> **Note:** The Cognito User Pool is retained on stack deletion to preserve user accounts when toggling between Cognito and bastion mode. To delete it manually: `aws cognito-idp delete-user-pool --user-pool-id <id>` (find the ID in CloudFormation outputs or the Cognito console).
+> **Note:** The Cognito User Pool is deleted when `COGNITO_ENABLED=false` is set and the UI is redeployed. A dormant pool with credentials is a security liability. Re-enabling Cognito creates a fresh pool — users will need to be re-invited. If you need to preserve users across a temporary mode switch, export them first with `aws cognito-idp list-users`.
 
 ---
 
