@@ -53,7 +53,9 @@ new CoreStack(app, 'Patchy-Core', {
 });
 
 // ── UI (deploy separately with ./deploy.sh ui) ────────────────────
-const cognitoEnabled = !!process.env.COGNITO_DOMAIN_PREFIX;
+// Cognito is enabled by default when ACM_CERTIFICATE_ARN is set.
+// COGNITO_DOMAIN_PREFIX is auto-derived from account ID if not set.
+const cognitoEnabled = !!process.env.ACM_CERTIFICATE_ARN;
 const uiStack = new UIStack(app, 'Patchy-UI', {
   env,
   vpc,

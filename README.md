@@ -227,18 +227,15 @@ The sample environment (`--with-sample-env`) creates maintenance windows but not
 cp .env.example .env
 # Edit .env — set AWS_PROFILE and AWS_REGION
 
-# 2. Enable HTTPS (optional, recommended)
-./setup-tls.sh
-
-# 3. Deploy everything (with sample EC2 instances)
+# 2. Deploy everything (with sample EC2 instances)
 ./deploy.sh --with-sample-env
 
-# 4. Connect to the UI
-./connect-ui.sh
-# Then open https://localhost:8443 in your browser
+# 3. Open the URL printed at the end of deploy
+# Log in with your Cognito credentials
+# (create users: see "Post-Deployment Setup → User Management")
 ```
 
-`deploy.sh` handles the full sequence: Python venv → agent → role detection → CDK bootstrap → infrastructure → Docker build → Fargate UI.
+`deploy.sh` handles the full sequence: Python venv → agent → role detection → CDK bootstrap → infrastructure → TLS certificate (auto-generated) → Cognito user pool → Docker build → Fargate UI.
 
 ---
 

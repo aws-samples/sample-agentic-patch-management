@@ -7,6 +7,7 @@ WORKDIR /build
 COPY ui/frontend/package.json ui/frontend/package-lock.json ./
 RUN npm ci --silent
 COPY ui/frontend/ ./
+# cache-bust: 2026-03-03
 RUN npm run build
 
 # ── Stage 2: Production runtime ────────────────────────────────────

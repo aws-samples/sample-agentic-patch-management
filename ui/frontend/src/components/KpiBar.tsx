@@ -26,9 +26,7 @@ export default function KpiBar({ data }: Props) {
   const mediumVulns = data.severityCounts["MEDIUM"] ?? 0;
   const lowVulns = data.severityCounts["LOW"] ?? 0;
   const totalVulns = Object.values(data.severityCounts).reduce((s, n) => s + n, 0);
-  const slaRate = data.compliance?.sla_rate_percent ?? 0;
   const totalReports = data.compliance?.total_reports ?? 0;
-  const slaMet = data.compliance?.sla_met ?? 0;
   const slaBreached = data.compliance?.sla_breached ?? 0;
 
   // Instance-level compliance: sum success_count / failure_count across all reports
