@@ -4,6 +4,11 @@ import { Badge, sevVariant, decisionVariant, SlaBadge } from "./ui/Badge";
 import { Card, CardContent } from "./ui/Card";
 import type { ComplianceSummary as ComplianceData, ReportDetail } from "../lib/api";
 
+/** Parse timestamps that may have a trailing Z after a UTC offset (e.g. +00:00Z) */
+function parseTimestamp(ts: string): Date {
+  return new Date(ts.replace(/([+-]\d{2}:\d{2})Z$/, "$1"));
+}
+
 interface Props {
   data: ComplianceData | null;
   reports: ReportDetail[];
@@ -97,7 +102,7 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
           <tbody className="divide-y divide-gray-100">
             {paged.map((item) => (
               <tr key={item.report_id} className="hover:bg-blue-50/30 transition-colors">
-                <td className="py-2.5 px-3 text-xs text-gray-500">{new Date(item.timestamp).toLocaleString()}</td>
+                <td className="py-2.5 px-3 text-xs text-gray-500">{parseTimestamp(item.timestamp).toLocaleString()}</td>
                 <td className="py-2.5 px-3 text-blue-600 font-medium">{item.cve_id}</td>
                 <td className="py-2.5 px-3 text-gray-700">{item.environment}</td>
                 <td className="py-2.5 px-3 text-gray-700">{item.team}</td>

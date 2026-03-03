@@ -15,6 +15,7 @@ from helper.tools import (
     verify_rollback,
     capture_patch_state,
     generate_compliance_report,
+    verify_cve_remediation,
 )
 
 SYSTEM_PROMPT = """You are a patch management coordinator for EC2 infrastructure.
@@ -134,13 +135,29 @@ STEP 6: HEALTH CHECK (emergency only, after Success)
 STEP 6.5: POST-PATCH SNAPSHOT
   capture_patch_state(instance_ids) → save result as post_patch_state
 
+STEP 6.7: CVE REMEDIATION VERIFICATION
+  verify_cve_remediation(cve_ids=[cve_id] + additional_cve_ids, instance_ids)
+  - cve_ids: the primary CVE plus all additional_cve_ids collected from the dry-run
+  - Queries Inspector to confirm which CVEs are actually CLOSED vs still ACTIVE
+  - Save the full result as cve_remediation_result
+  - Inspector typically updates within 5-15 minutes; the tool waits up to 5 min by default
+  - If status is NOT_FOUND for all CVEs: note this in the report — Inspector may not have
+    re-scanned yet. Do NOT treat NOT_FOUND as failure.
+  - Present a summary table: CVE | Status | Remediated On | Still Active On
+
 STEP 7: COMPLIANCE REPORT (always, after execution — do not wait for user)
   generate_compliance_report(cve_id, environment, command_id, decision,
     severity, cvss_score, sla_hours, sla_source,
     pre_patch_state=pre_patch_state,
-    post_patch_state=post_patch_state)
+    post_patch_state=post_patch_state,
+    additional_cve_ids=additional_cve_ids,
+    cve_remediation=cve_remediation_result)
   Pass ALL parameters from earlier steps — do not omit optional fields.
-  Call this IMMEDIATELY after health checks pass. Do not wait for the user to ask.
+  For additional_cve_ids: collect ALL unique CVE IDs from the dry-run results
+    (the cve_ids field on each missing_patch entry across all instances).
+    Pass them as a flat deduplicated list. This ensures every CVE remediated
+    by the patch operation is recorded, not just the triggering CVE.
+  Call this IMMEDIATELY after Step 6.7. Do not wait for the user to ask.
   
   Present the delta: "Compliance improved from {before}% → {after}%. {N} patches applied."
 
@@ -199,6 +216,7 @@ def patching_operations(context):
             rollback_patches,
             verify_rollback,
             capture_patch_state,
+            verify_cve_remediation,
             generate_compliance_report,
         ],
         context=context,

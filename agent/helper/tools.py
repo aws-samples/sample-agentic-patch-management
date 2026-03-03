@@ -2151,7 +2151,9 @@ def generate_compliance_report(
     sla_hours: Optional[int] = None,
     sla_source: Optional[str] = None,
     pre_patch_state: Optional[Dict[str, Any]] = None,
-    post_patch_state: Optional[Dict[str, Any]] = None
+    post_patch_state: Optional[Dict[str, Any]] = None,
+    additional_cve_ids: Optional[List[str]] = None,
+    cve_remediation: Optional[Dict[str, Any]] = None
 ) -> dict:
     """Generate compliance report after patching, with optional before/after delta.
     
@@ -2163,7 +2165,7 @@ def generate_compliance_report(
         {"i-xxx": {"missing_count": 12, "installed_count": 45, "security_non_compliant": 3}}
     
     Args:
-        cve_id: CVE identifier (e.g., 'CVE-2024-1234')
+        cve_id: Primary CVE identifier that triggered patching (e.g., 'CVE-2024-1234')
         environment: Target environment (dev, staging, prod)
         command_id: SSM command ID from execute_patch_operation
         decision: Patching decision (EMERGENCY, SCHEDULED)
@@ -2173,6 +2175,12 @@ def generate_compliance_report(
         sla_source: SLA source framework (from get_patch_compliance)
         pre_patch_state: Patch state before execution (from capture_patch_state)
         post_patch_state: Patch state after execution (from capture_patch_state)
+        additional_cve_ids: Other CVE IDs remediated by the same patch operation
+        cve_remediation: Output from verify_cve_remediation — per-CVE Inspector status
+        post_patch_state: Patch state after execution (from capture_patch_state)
+        additional_cve_ids: Other CVE IDs remediated by the same patch operation
+            (from dry-run cve_ids fields). Include all CVEs from the dry-run results
+            that were fixed alongside the primary CVE.
     
     Returns:
         dict: {'report_id': str, 's3_location': str, 'sla_met': bool, 'delta': dict (if states provided)}
@@ -2253,13 +2261,15 @@ def generate_compliance_report(
         
         report = {
             "report_id": report_id,
-            "timestamp": timestamp.isoformat() + 'Z',
+            "timestamp": timestamp.strftime('%Y-%m-%dT%H:%M:%S.%f+00:00'),
             "operator": get_operator(),
             
             "vulnerability": {
                 "cve_id": cve_id,
+                "additional_cve_ids": [c for c in (additional_cve_ids or []) if c != cve_id],
                 "severity": severity or "UNKNOWN",
-                "cvss_score": cvss_score
+                "cvss_score": cvss_score,
+                "cve_remediation": cve_remediation or {}
             },
             
             "scope": {
@@ -2278,7 +2288,7 @@ def generate_compliance_report(
             
             "execution": {
                 "decision": decision,
-                "patched_at": patched_at.isoformat() + 'Z' if isinstance(patched_at, datetime) else str(patched_at),
+                "patched_at": patched_at.strftime('%Y-%m-%dT%H:%M:%S.%f+00:00') if isinstance(patched_at, datetime) else str(patched_at),
                 "command_id": command_id,
                 "status": command_status.get('status', 'UNKNOWN'),
                 "success_count": command_status.get('summary', {}).get('success', 0),
@@ -2388,6 +2398,167 @@ def generate_compliance_report(
         result = classify_error(e)
         result["report_id"] = None
         return result
+
+
+@tool
+def verify_cve_remediation(
+    cve_ids: List[str],
+    instance_ids: List[str],
+    max_wait_minutes: int = 15
+) -> dict:
+    """Verify whether CVEs have been remediated by querying Amazon Inspector post-patch.
+
+    Inspector is the authoritative source for CVE remediation status — it re-evaluates
+    findings after patching and closes them when the fix is confirmed. SSM only tracks
+    patch state (installed/missing counts), not per-CVE resolution.
+
+    Call this after health checks pass (Step 6) and before generating the compliance
+    report (Step 7). Inspector findings typically update within 5-15 minutes of a
+    successful patch operation.
+
+    Args:
+        cve_ids: List of CVE IDs to verify (primary + additional from dry-run)
+        instance_ids: List of EC2 instance IDs that were patched
+        max_wait_minutes: How long to wait for Inspector to update (default: 15).
+            Set to 0 to query immediately without waiting.
+
+    Returns:
+        dict: {
+            'cve_status': {
+                'CVE-XXXX-YYYY': {
+                    'status': 'REMEDIATED' | 'STILL_ACTIVE' | 'NOT_FOUND',
+                    'remediated_on': [instance_ids],
+                    'still_active_on': [instance_ids],
+                    'remediation_rate': '4/5 instances'
+                }
+            },
+            'summary': {
+                'total_cves': int,
+                'fully_remediated': int,
+                'partially_remediated': int,
+                'still_active': int,
+                'not_found_in_inspector': int
+            },
+            'waited_minutes': int
+        }
+    """
+    try:
+        validation_error = _validate_instance_ids(instance_ids)
+        if validation_error:
+            return validation_error
+
+        if not cve_ids:
+            return {"error": "cve_ids list is empty", "category": "ABORT", "retryable": False}
+
+        # Optionally wait for Inspector to re-evaluate
+        waited = 0
+        if max_wait_minutes > 0:
+            logger.info(f"[CVE_VERIFY] Waiting up to {max_wait_minutes}min for Inspector re-evaluation...")
+            import time as _time
+            _time.sleep(min(max_wait_minutes, 5) * 60)  # Wait up to 5 min initially
+            waited = min(max_wait_minutes, 5)
+
+        # Build instance ID set for fast lookup
+        instance_set = set(instance_ids)
+
+        # Query Inspector for each CVE — check both ACTIVE and CLOSED findings
+        cve_status: Dict[str, Dict] = {}
+
+        for cve_id in cve_ids:
+            active_instances = []
+            closed_instances = []
+
+            # Check ACTIVE findings (still vulnerable)
+            try:
+                active_resp = inspector_client.list_findings(
+                    filterCriteria={
+                        'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
+                        'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}],
+                    },
+                    maxResults=100
+                )
+                for finding in active_resp.get('findings', []):
+                    for resource in finding.get('resources', []):
+                        rid = resource.get('id', '')
+                        if rid in instance_set:
+                            active_instances.append(rid)
+            except Exception as e:
+                logger.warning(f"[CVE_VERIFY] Inspector query failed for {cve_id} (ACTIVE): {e}")
+
+            # Check CLOSED findings (remediated)
+            try:
+                closed_resp = inspector_client.list_findings(
+                    filterCriteria={
+                        'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
+                        'findingStatus': [{'comparison': 'EQUALS', 'value': 'CLOSED'}],
+                    },
+                    maxResults=100
+                )
+                for finding in closed_resp.get('findings', []):
+                    for resource in finding.get('resources', []):
+                        rid = resource.get('id', '')
+                        if rid in instance_set:
+                            closed_instances.append(rid)
+            except Exception as e:
+                logger.warning(f"[CVE_VERIFY] Inspector query failed for {cve_id} (CLOSED): {e}")
+
+            # Deduplicate
+            active_instances = list(set(active_instances))
+            closed_instances = list(set(closed_instances))
+
+            # Instances with no finding at all (never appeared in Inspector for this CVE)
+            found_instances = set(active_instances) | set(closed_instances)
+            not_found_instances = [i for i in instance_ids if i not in found_instances]
+
+            total = len(instance_ids)
+            remediated_count = len(closed_instances) + len(not_found_instances)  # not found = was never vulnerable or already fixed
+
+            if not active_instances and not closed_instances:
+                status = 'NOT_FOUND'  # Inspector has no record — may not have scanned yet
+            elif not active_instances:
+                status = 'REMEDIATED'
+            elif not closed_instances and not not_found_instances:
+                status = 'STILL_ACTIVE'
+            else:
+                status = 'PARTIALLY_REMEDIATED'
+
+            cve_status[cve_id] = {
+                'status': status,
+                'remediated_on': closed_instances + not_found_instances,
+                'still_active_on': active_instances,
+                'remediation_rate': f"{remediated_count}/{total} instances",
+            }
+
+        # Build summary
+        statuses = [v['status'] for v in cve_status.values()]
+        summary = {
+            'total_cves': len(cve_ids),
+            'fully_remediated': statuses.count('REMEDIATED'),
+            'partially_remediated': statuses.count('PARTIALLY_REMEDIATED'),
+            'still_active': statuses.count('STILL_ACTIVE'),
+            'not_found_in_inspector': statuses.count('NOT_FOUND'),
+        }
+
+        logger.info(f"[CVE_VERIFY] Results: {summary}")
+
+        return {
+            'cve_status': cve_status,
+            'summary': summary,
+            'waited_minutes': waited,
+            'note': (
+                'NOT_FOUND means Inspector has no active or closed finding for this CVE on these instances. '
+                'This can mean: (a) Inspector has not yet re-scanned, (b) the CVE was never detected on '
+                'these instances by Inspector, or (c) the fix is not yet available in the OS repos.'
+            )
+        }
+
+    except ClientError as e:
+        error_info = classify_error(e)
+        logger.error(f"[CVE_VERIFY] Error: {error_info}")
+        return error_info
+    except Exception as e:
+        logger.error(f"[CVE_VERIFY] Error: {e}")
+        return classify_error(e)
 
 
 @tool

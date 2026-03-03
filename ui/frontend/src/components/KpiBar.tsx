@@ -31,14 +31,20 @@ export default function KpiBar({ data }: Props) {
   const slaMet = data.compliance?.sla_met ?? 0;
   const slaBreached = data.compliance?.sla_breached ?? 0;
 
+  // Instance-level compliance: sum success_count / failure_count across all reports
+  const totalInstancesPatched = data.reportDetails.reduce((s, r) => s + (r.success_count ?? 0) + (r.failure_count ?? 0), 0);
+  const compliantInstances = data.reportDetails.reduce((s, r) => s + (r.success_count ?? 0), 0);
+  const nonCompliantInstances = data.reportDetails.reduce((s, r) => s + (r.failure_count ?? 0), 0);
+  const instanceComplianceRate = totalInstancesPatched > 0 ? Math.round((compliantInstances / totalInstancesPatched) * 100 * 10) / 10 : 0;
+
   const scope = data.scopes?.[0];
   const scopeDetail = scope
     ? `${scope.accountId} · ${scope.region}`
     : "unknown";
 
   // Donut data
-  const complianceData = totalReports > 0
-    ? [{ value: slaMet, color: COLORS.compliant }, { value: slaBreached, color: COLORS.nonCompliant }]
+  const complianceData = totalInstancesPatched > 0
+    ? [{ value: compliantInstances, color: COLORS.compliant }, { value: nonCompliantInstances, color: COLORS.nonCompliant }]
     : [{ value: 1, color: COLORS.empty }];
 
   const criticalData = criticalVulns > 0
@@ -59,11 +65,11 @@ export default function KpiBar({ data }: Props) {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <DonutCard
           title="Compliance Summary"
-          centerValue={totalReports > 0 ? `${slaRate}%` : "—"}
+          centerValue={totalInstancesPatched > 0 ? `${instanceComplianceRate}%` : "—"}
           data={complianceData}
-          legend={totalReports > 0 ? [
-            { label: `Compliant ${slaMet}`, color: COLORS.compliant },
-            { label: `Non-Compliant ${slaBreached}`, color: COLORS.nonCompliant },
+          legend={totalInstancesPatched > 0 ? [
+            { label: `Compliant ${compliantInstances}`, color: COLORS.compliant },
+            { label: `Non-Compliant ${nonCompliantInstances}`, color: COLORS.nonCompliant },
           ] : [{ label: "No reports yet", color: COLORS.empty }]}
         />
         <DonutCard
