@@ -372,6 +372,7 @@ deploy_infra() {
     fi
 
     npx cdk deploy $stacks \
+        --exclusively \
         --require-approval never \
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
     print_status "Infrastructure deployed ($stack_count stacks)"
@@ -410,6 +411,7 @@ deploy_ui() {
     fi
 
     npx cdk deploy Patchy-UI \
+        --exclusively \
         --require-approval never \
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
     print_status "Web UI deployed"
@@ -439,7 +441,7 @@ destroy() {
 
     if [ "$demo_only" = true ]; then
         echo -e "${RED}Destroying sample environment...${NC}"
-        npx cdk destroy Patchy-SampleEnv --force \
+        npx cdk destroy Patchy-SampleEnv --exclusively --force \
             -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
         print_status "Sample environment destroyed (solution infrastructure preserved)"
     else

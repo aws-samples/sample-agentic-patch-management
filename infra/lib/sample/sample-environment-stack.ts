@@ -12,6 +12,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as targets from 'aws-cdk-lib/aws-elasticloadbalancingv2-targets';
@@ -77,12 +78,17 @@ export class SampleEnvironmentStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // S3 read access for BaselineOverride files (severity-scoped patching)
-    instanceRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['s3:GetObject'],
-      resources: [`arn:aws:s3:::patch-compliance-reports-${this.account}/baseline-overrides/*`],
-    }));
+    // S3 read access for BaselineOverride files (severity-scoped patching).
+    // The compliance reports bucket is created by Patchy-Core. We reference it
+    // by its deterministic name so this stack stays independent of CoreStack.
+    // The bucket policy (set by CoreStack via grantReadWrite) only covers the
+    // AgentCore role — we add an explicit bucket policy statement here so the
+    // instance role can also GetObject on baseline-overrides/* at runtime.
+    const complianceBucket = s3.Bucket.fromBucketName(
+      this, 'ComplianceBucketRef',
+      `patch-compliance-reports-${this.account}`
+    );
+    complianceBucket.grantRead(instanceRole, 'baseline-overrides/*');
 
     new iam.CfnInstanceProfile(this, 'SampleInstanceProfile', {
       roles: [instanceRole.roleName],

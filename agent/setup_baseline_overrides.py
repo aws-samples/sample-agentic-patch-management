@@ -50,6 +50,7 @@ def build_override_json(severities: list) -> list:
     """Build a BaselineOverride JSON structure for the given severities.
     
     Returns a LIST of baseline objects (AWS requires an array, not a single object).
+    All fields must be explicitly typed — SSM rejects null values for booleans/strings.
     """
     return [{
         "OperatingSystem": "AMAZON_LINUX_2",
@@ -67,7 +68,10 @@ def build_override_json(severities: list) -> list:
             }]
         },
         "ApprovedPatches": [],
+        "ApprovedPatchesComplianceLevel": "CRITICAL",
+        "ApprovedPatchesEnableNonSecurity": False,
         "RejectedPatches": [],
+        "RejectedPatchesAction": "BLOCK",
         "GlobalFilters": {"PatchFilters": []},
         "Sources": [],
     }]
