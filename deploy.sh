@@ -399,39 +399,47 @@ deploy_ui() {
 
     # ── Auto-setup TLS (required for Cognito) ──────────────────────
     # Cognito requires HTTPS. Auto-run setup-tls.sh if no cert is configured.
-    if [ -z "$ACM_CERTIFICATE_ARN" ]; then
-        echo -e "${BLUE}No ACM_CERTIFICATE_ARN set — generating self-signed certificate...${NC}"
-        ./setup-tls.sh
-        # Reload .env to pick up the new ACM_CERTIFICATE_ARN
-        if [ -f ".env" ]; then
-            set -a; source .env; set +a
-        fi
+    # To disable Cognito and use internal ALB + bastion instead, set COGNITO_ENABLED=false in .env.
+    local use_cognito=true
+    if [ "${COGNITO_ENABLED:-true}" = "false" ]; then
+        use_cognito=false
+        print_status "Cognito disabled — deploying with internal ALB + bastion host"
     fi
 
-    if [ -z "$ACM_CERTIFICATE_ARN" ]; then
-        print_error "ACM_CERTIFICATE_ARN still not set after setup-tls.sh. Check for errors above."
-        exit 1
-    fi
-    export ACM_CERTIFICATE_ARN
-    print_status "TLS certificate: $ACM_CERTIFICATE_ARN"
-
-    # ── Auto-derive Cognito domain prefix ──────────────────────────
-    # Cognito is enabled by default. Domain prefix must be globally unique —
-    # use account ID as suffix to guarantee uniqueness.
-    if [ -z "$COGNITO_DOMAIN_PREFIX" ]; then
-        local account_id
-        account_id=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
-        COGNITO_DOMAIN_PREFIX="patchy-${account_id}"
-        echo -e "${BLUE}Auto-derived Cognito domain prefix: ${COGNITO_DOMAIN_PREFIX}${NC}"
-        # Persist to .env for future deploys
-        if [ -f ".env" ] && ! grep -q "COGNITO_DOMAIN_PREFIX" .env; then
-            echo "" >> .env
-            echo "# Cognito hosted UI domain (auto-generated)" >> .env
-            echo "COGNITO_DOMAIN_PREFIX=${COGNITO_DOMAIN_PREFIX}" >> .env
+    if [ "$use_cognito" = true ]; then
+        if [ -z "$ACM_CERTIFICATE_ARN" ]; then
+            echo -e "${BLUE}No ACM_CERTIFICATE_ARN set — generating self-signed certificate...${NC}"
+            ./setup-tls.sh
+            # Reload .env to pick up the new ACM_CERTIFICATE_ARN
+            if [ -f ".env" ]; then
+                set -a; source .env; set +a
+            fi
         fi
+
+        if [ -z "$ACM_CERTIFICATE_ARN" ]; then
+            print_error "ACM_CERTIFICATE_ARN still not set after setup-tls.sh. Check for errors above."
+            exit 1
+        fi
+        export ACM_CERTIFICATE_ARN
+        print_status "TLS certificate: $ACM_CERTIFICATE_ARN"
+
+        # ── Auto-derive Cognito domain prefix ──────────────────────────
+        # Domain prefix must be globally unique — use account ID as suffix.
+        if [ -z "$COGNITO_DOMAIN_PREFIX" ]; then
+            local account_id
+            account_id=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+            COGNITO_DOMAIN_PREFIX="patchy-${account_id}"
+            echo -e "${BLUE}Auto-derived Cognito domain prefix: ${COGNITO_DOMAIN_PREFIX}${NC}"
+            # Persist to .env for future deploys
+            if [ -f ".env" ] && ! grep -q "COGNITO_DOMAIN_PREFIX" .env; then
+                echo "" >> .env
+                echo "# Cognito hosted UI domain (auto-generated)" >> .env
+                echo "COGNITO_DOMAIN_PREFIX=${COGNITO_DOMAIN_PREFIX}" >> .env
+            fi
+        fi
+        export COGNITO_DOMAIN_PREFIX
+        print_status "Cognito auth enabled (domain: $COGNITO_DOMAIN_PREFIX)"
     fi
-    export COGNITO_DOMAIN_PREFIX
-    print_status "Cognito auth enabled (domain: $COGNITO_DOMAIN_PREFIX)"
 
     resolve_agentcore_role
 
@@ -448,16 +456,26 @@ deploy_ui() {
     print_status "Web UI deployed"
 
     echo ""
-    echo -e "${GREEN}UI is publicly accessible with Cognito authentication.${NC}"
-    local ui_url
-    ui_url=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
-        --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text 2>/dev/null)
-    echo -e "URL: ${BLUE}${ui_url}${NC}"
-    echo ""
-    echo -e "Next steps:"
-    echo -e "  1. Open the URL above in your browser"
-    echo -e "  2. Create users in Cognito: ${BLUE}aws cognito-idp admin-create-user --user-pool-id \$(aws cloudformation describe-stacks --stack-name Patchy-UI --query 'Stacks[0].Outputs[?OutputKey==\`CognitoUserPoolId\`].OutputValue' --output text) --username <email> --user-attributes Name=email,Value=<email> --temporary-password <TempPass1!>${NC}"
-    echo -e "  3. Add users to groups: operators (full access) or viewers (read-only)"
+    if [ "$use_cognito" = true ]; then
+        echo -e "${GREEN}UI is publicly accessible with Cognito authentication.${NC}"
+        local ui_url
+        ui_url=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+            --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text 2>/dev/null)
+        echo -e "URL: ${BLUE}${ui_url}${NC}"
+        echo ""
+        echo -e "Next steps:"
+        echo -e "  1. Open the URL above in your browser"
+        echo -e "  2. Create users in Cognito: ${BLUE}aws cognito-idp admin-create-user --user-pool-id \$(aws cloudformation describe-stacks --stack-name Patchy-UI --query 'Stacks[0].Outputs[?OutputKey==\`CognitoUserPoolId\`].OutputValue' --output text) --username <email> --user-attributes Name=email,Value=<email> --temporary-password <TempPass1!>${NC}"
+        echo -e "  3. Add users to groups: operators (full access) or viewers (read-only)"
+    else
+        echo -e "${GREEN}UI is on an internal ALB (not publicly accessible).${NC}"
+        echo -e "Connect via SSM port forwarding: ${BLUE}./connect-ui.sh${NC}"
+        echo ""
+        local ui_url
+        ui_url=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+            --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text 2>/dev/null)
+        echo -e "Internal ALB DNS: ${ui_url}"
+    fi
     cd ..
 }
 
