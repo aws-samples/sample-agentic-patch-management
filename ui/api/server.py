@@ -399,16 +399,16 @@ async def auth_config(request: Request):
     # Build logout URL if Cognito is configured
     logout_url = None
     if cognito_domain and email:
-        # Extract client_id from the ALB-injected OIDC access token
-        oidc_data = request.headers.get("x-amzn-oidc-data", "")
+        # Extract client_id from the ALB-injected access token
         client_id = ""
-        if oidc_data:
+        access_token = request.headers.get("x-amzn-oidc-accesstoken", "")
+        if access_token:
             try:
                 import base64
-                payload = oidc_data.split('.')[1]
+                payload = access_token.split('.')[1]
                 payload += '=' * (4 - len(payload) % 4)
                 claims = json.loads(base64.b64decode(payload))
-                client_id = claims.get("aud", "") or claims.get("client_id", "")
+                client_id = claims.get("client_id", "")
             except Exception:
                 pass
 
