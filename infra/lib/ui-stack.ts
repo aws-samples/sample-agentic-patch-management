@@ -187,10 +187,6 @@ export class UIStack extends cdk.Stack {
       const userPoolDomain = userPool.addDomain('CognitoDomain', {
         cognitoDomain: { domainPrefix },
       });
-      // Use managed login v2 (modern branding) instead of classic hosted UI.
-      // CDK 2.87 doesn't expose managedLoginVersion, so we set it via CFN override.
-      const cfnDomain = userPoolDomain.node.defaultChild as cdk.CfnResource;
-      cfnDomain.addPropertyOverride('ManagedLoginVersion', 2);
 
       // ALB DNS names are mixed-case (e.g., Patchy-UIALB-xYz...) but browsers
       // lowercase them. Cognito compares callback URLs case-sensitively.
