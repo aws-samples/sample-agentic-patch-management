@@ -127,7 +127,10 @@ export class UIStack extends cdk.Stack {
     service.connections.allowFrom(alb, ec2.Port.tcp(8000), 'ALB to Fargate');
 
     // ── Target group (shared) ──────────────────────────────────────
-    const targetGroup = new elbv2.ApplicationTargetGroup(this, 'UITargetGroup', {
+    // Logical ID includes Cognito flag so switching ALB scheme forces a new TG
+    // (a TG can't be shared between two ALBs during CloudFormation replacement).
+    const tgId = cognitoEnabled ? 'UITargetGroupPublic' : 'UITargetGroup';
+    const targetGroup = new elbv2.ApplicationTargetGroup(this, tgId, {
       vpc: props.vpc,
       port: 8000,
       protocol: elbv2.ApplicationProtocol.HTTP,
@@ -179,16 +182,30 @@ export class UIStack extends cdk.Stack {
       const userPoolDomain = userPool.addDomain('CognitoDomain', {
         cognitoDomain: { domainPrefix },
       });
+      // Use managed login v2 (modern branding) instead of classic hosted UI.
+      // CDK 2.87 doesn't expose managedLoginVersion, so we set it via CFN override.
+      const cfnDomain = userPoolDomain.node.defaultChild as cdk.CfnResource;
+      cfnDomain.addPropertyOverride('ManagedLoginVersion', 2);
 
-      const callbackUrl = `https://${alb.loadBalancerDnsName}/oauth2/idpresponse`;
+      // ALB DNS names are mixed-case (e.g., Patchy-UIALB-xYz...) but browsers
+      // lowercase them. Cognito compares callback URLs case-sensitively.
+      // We register the mixed-case URL here (only option at synth time since
+      // CloudFormation has no lowercase intrinsic), then deploy.sh runs a
+      // post-deploy fixup to add the lowercase variant via CLI.
+      const albDns = alb.loadBalancerDnsName;
+
       const userPoolClient = new cognito.UserPoolClient(this, 'UserPoolClient', {
         userPool,
         generateSecret: true,
         oAuth: {
           flows: { authorizationCodeGrant: true },
           scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
-          callbackUrls: [callbackUrl],
-          logoutUrls: [`https://${alb.loadBalancerDnsName}`],
+          callbackUrls: [
+            `https://${albDns}/oauth2/idpresponse`,
+          ],
+          logoutUrls: [
+            `https://${albDns}`,
+          ],
         },
         supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
       });

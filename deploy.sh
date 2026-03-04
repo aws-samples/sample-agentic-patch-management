@@ -455,6 +455,37 @@ deploy_ui() {
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
     print_status "Web UI deployed"
 
+    # ── Fix Cognito callback URLs (lowercase ALB DNS) ──────────────
+    # ALB DNS names are mixed-case but browsers lowercase them.
+    # Cognito compares callback URLs case-sensitively, so we add the
+    # lowercase variant post-deploy (CloudFormation has no lowercase intrinsic).
+    if [ "$use_cognito" = true ]; then
+        echo -e "${BLUE}Fixing Cognito callback URLs (lowercase ALB DNS)...${NC}"
+        local pool_id client_id alb_dns alb_dns_lower
+        pool_id=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+            --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text 2>/dev/null)
+        client_id=$(aws cognito-idp list-user-pool-clients --user-pool-id "$pool_id" \
+            --query 'UserPoolClients[0].ClientId' --output text 2>/dev/null)
+        alb_dns=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+            --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text 2>/dev/null | sed 's|https://||')
+        alb_dns_lower=$(echo "$alb_dns" | tr '[:upper:]' '[:lower:]')
+        if [ -n "$pool_id" ] && [ -n "$client_id" ] && [ -n "$alb_dns" ]; then
+            aws cognito-idp update-user-pool-client \
+                --user-pool-id "$pool_id" \
+                --client-id "$client_id" \
+                --supported-identity-providers COGNITO \
+                --allowed-o-auth-flows code \
+                --allowed-o-auth-scopes openid email profile \
+                --allowed-o-auth-flows-user-pool-client \
+                --callback-urls "https://${alb_dns}/oauth2/idpresponse" "https://${alb_dns_lower}/oauth2/idpresponse" \
+                --logout-urls "https://${alb_dns}" "https://${alb_dns_lower}" \
+                > /dev/null 2>&1
+            print_status "Cognito callback URLs updated (added lowercase: ${alb_dns_lower})"
+        else
+            print_warning "Could not fix Cognito callbacks — update manually if login fails"
+        fi
+    fi
+
     echo ""
     if [ "$use_cognito" = true ]; then
         echo -e "${GREEN}UI is publicly accessible with Cognito authentication.${NC}"
