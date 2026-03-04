@@ -120,8 +120,10 @@ def _resolve_role(request: Request) -> str | None:
             payload += '=' * (4 - len(payload) % 4)
             claims = json.loads(base64.b64decode(payload))
             groups = claims.get("cognito:groups", [])
+            email = claims.get("email", "unknown")
+            logger.info(f"Cognito JWT: email={email}, groups={groups}")
             # Store email as operator identity
-            request.state.cognito_email = claims.get("email", "unknown")
+            request.state.cognito_email = email
             if "operators" in groups:
                 return "operator"
             elif "viewers" in groups:
