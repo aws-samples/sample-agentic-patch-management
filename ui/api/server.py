@@ -110,20 +110,33 @@ def _resolve_role(request: Request) -> str | None:
     3. Pilot mode (no auth) → X-Role header from frontend
     """
     # 1. Cognito JWT from ALB (highest priority)
+    # The ALB injects two relevant headers:
+    #   x-amzn-oidc-data        → UserInfo claims (email, sub, etc.) — NO groups
+    #   x-amzn-oidc-accesstoken → Access token (cognito:groups lives here)
     oidc_data = request.headers.get("x-amzn-oidc-data")
     if oidc_data:
         try:
             import base64
-            # ALB JWT is base64-encoded, 3 parts separated by dots
+            # Parse user info claims for email
             payload = oidc_data.split('.')[1]
-            # Add padding
             payload += '=' * (4 - len(payload) % 4)
             claims = json.loads(base64.b64decode(payload))
-            groups = claims.get("cognito:groups", [])
             email = claims.get("email", "unknown")
-            logger.info(f"Cognito JWT: email={email}, groups={groups}")
-            # Store email as operator identity
             request.state.cognito_email = email
+
+            # Parse access token for groups
+            groups = []
+            access_token = request.headers.get("x-amzn-oidc-accesstoken", "")
+            if access_token:
+                try:
+                    at_payload = access_token.split('.')[1]
+                    at_payload += '=' * (4 - len(at_payload) % 4)
+                    at_claims = json.loads(base64.b64decode(at_payload))
+                    groups = at_claims.get("cognito:groups", [])
+                except Exception:
+                    pass
+
+            logger.info(f"Cognito auth: email={email}, groups={groups}")
             if "operators" in groups:
                 return "operator"
             elif "viewers" in groups:
