@@ -657,6 +657,9 @@ If your organisation already has an IdP, you don't need to manage users in Cogni
 
 Users are redirected straight to Okta's login page — Cognito's hosted UI is bypassed entirely. Group membership flows through as JWT claims and the backend resolves roles identically.
 
+**AWS IAM Identity Center (recommended for AWS-native orgs):**
+If your organisation uses IAM Identity Center (formerly AWS SSO), you can add it as a SAML identity provider in Cognito. Users authenticate with their existing corporate credentials and MFA — no separate Cognito passwords needed. Map Identity Center groups to Cognito groups (`operators`, `viewers`) via SAML attribute mapping. This is the recommended approach for AWS-centric organisations as it centralises user lifecycle management and leverages existing access governance.
+
 ### Native AWS Audit Capabilities
 
 Before building custom audit infrastructure, consider what AWS already provides:
