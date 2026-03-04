@@ -29,7 +29,7 @@ def load_memory_id() -> str:
     # Try loading from yaml first
     memory_id = None
     try:
-        with open(config_path) as f:
+        with open(config_path, encoding='utf-8') as f:
             config = yaml.safe_load(f)
         default_agent = config.get('default_agent', '')
         memory_id = config['agents'][default_agent]['memory'].get('memory_id')

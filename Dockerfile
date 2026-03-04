@@ -2,7 +2,7 @@
 # Usage: docker build -t patch-automation-ui .
 
 # ── Stage 1: Build frontend ────────────────────────────────────────
-FROM node:20-slim AS frontend-build
+FROM public.ecr.aws/docker/library/node:20-slim AS frontend-build
 WORKDIR /build
 COPY ui/frontend/package.json ui/frontend/package-lock.json ./
 RUN npm ci --silent
@@ -11,7 +11,7 @@ COPY ui/frontend/ ./
 RUN npm run build
 
 # ── Stage 2: Production runtime ────────────────────────────────────
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 WORKDIR /app
 
@@ -41,5 +41,8 @@ ENV PORT=8000
 ENV STATIC_DIR=/app/static
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8000/api/health || exit 1
 
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

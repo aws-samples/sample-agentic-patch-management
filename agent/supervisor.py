@@ -278,7 +278,7 @@ async def agent_invocation(payload, context):
         ]
         for config_path in config_candidates:
             try:
-                with open(config_path) as f:
+                with open(config_path, encoding='utf-8') as f:
                     ac_config = yaml.safe_load(f)
                 default_agent = ac_config.get("default_agent", "")
                 memory_id = ac_config.get("agents", {}).get(default_agent, {}).get("memory", {}).get("memory_id")

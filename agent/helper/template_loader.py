@@ -19,7 +19,7 @@ def _load_templates() -> dict:
         os.path.dirname(os.path.dirname(__file__)), 'config', 'response_templates.yaml'
     )
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             _templates_cache = yaml.safe_load(f) or {}
         logger.info(f"Loaded {len(_templates_cache)} response templates")
     except Exception as e:

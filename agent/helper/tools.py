@@ -510,7 +510,7 @@ def patch_dry_run(instance_ids: List[str], severity_filter: Optional[str] = None
 
         # Wait for scan to complete (max 5 minutes — scans can take a while)
         for _ in range(30):
-            time.sleep(10)
+            time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
             try:
                 cmd_response = ssm_client.list_command_invocations(
                     CommandId=scan_command_id, Details=False
@@ -1195,7 +1195,7 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
             if status_result.get('status') == 'Success':
                 # Wait 2 minutes for CloudWatch alarm evaluation
                 logger.info("Patching complete. Waiting 2 minutes for alarm evaluation...")
-                time.sleep(120)
+                time.sleep(120)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
                 break
             elif status_result.get('status') == 'Failed':
                 return {
@@ -1208,7 +1208,7 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
             # Still in progress
             attempt += 1
             if attempt < max_attempts:
-                time.sleep(10)
+                time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
         
         if attempt >= max_attempts:
             return {
@@ -1380,7 +1380,7 @@ def verify_rollback(command_id: str, instance_ids: List[str],
         # Step 1: Wait for rollback command to complete (max 5 min)
         status_result = None
         for _ in range(30):
-            time.sleep(10)
+            time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
             status_result = get_command_status(command_id, instance_ids)
             if status_result.get('status') in ('Success', 'Failed'):
                 break
@@ -1409,7 +1409,7 @@ def verify_rollback(command_id: str, instance_ids: List[str],
 
                 # Wait for scan (max 3 min)
                 for _ in range(18):
-                    time.sleep(10)
+                    time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
                     try:
                         cmd_resp = ssm_client.list_command_invocations(
                             CommandId=scan_cmd_id, Details=False
