@@ -91,13 +91,18 @@ export class UIStack extends cdk.Stack {
       executionRole,
       taskRole,
     });
+    const containerEnv: Record<string, string> = {
+      'STATIC_DIR': '/app/static',
+      'AWS_DEFAULT_REGION': cdk.Stack.of(this).region,
+    };
+    if (cognitoEnabled && props.cognitoDomainPrefix) {
+      containerEnv['COGNITO_DOMAIN_PREFIX'] = props.cognitoDomainPrefix;
+    }
+
     taskDef.addContainer('ui', {
       image: ecs.ContainerImage.fromDockerImageAsset(image),
       portMappings: [{ containerPort: 8000 }],
-      environment: {
-        'STATIC_DIR': '/app/static',
-        'AWS_DEFAULT_REGION': cdk.Stack.of(this).region,
-      },
+      environment: containerEnv,
       logging: ecs.LogDrivers.awsLogs({ logGroup, streamPrefix: 'ui' }),
       healthCheck: {
         command: ['CMD-SHELL', 'curl -f http://localhost:8000/api/health || exit 1'],

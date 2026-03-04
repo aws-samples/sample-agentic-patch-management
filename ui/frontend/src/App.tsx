@@ -4,6 +4,7 @@ import {
   ChevronDoubleLeftIcon,
   ChevronDoubleRightIcon,
   ArrowTopRightOnSquareIcon,
+  ArrowRightStartOnRectangleIcon,
 } from "@heroicons/react/24/outline";
 import { Menu, MenuButton, MenuItem, MenuItems } from "@headlessui/react";
 import ChatPanel from "./components/ChatPanel";
@@ -11,9 +12,11 @@ import DashboardPanel from "./components/DashboardPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
 import { useRole } from "./hooks/useRole";
+import { useAuth } from "./hooks/useAuth";
 
 export default function App() {
   const { role, setRole } = useRole();
+  const auth = useAuth();
   const { messages, isStreaming, sessionId, sendMessage, stopStreaming, clearMessages } =
     useAgentStream(role);
   const [chatPrefill, setChatPrefill] = useState("");
@@ -35,6 +38,11 @@ export default function App() {
           <span className="font-semibold text-sm">Patchy — Intelligent Patch Automation</span>
         </a>
         <div className="flex items-center gap-3">
+          {auth?.email && (
+            <span className="text-xs text-gray-400 hidden sm:inline">
+              {auth.email}
+            </span>
+          )}
           <span className="text-xs text-gray-400 hidden sm:inline">
             Session: {sessionId.slice(0, 12)}…
           </span>
@@ -58,6 +66,17 @@ export default function App() {
               </MenuItem>
             </MenuItems>
           </Menu>
+
+          {auth?.logoutUrl && (
+            <a
+              href={auth.logoutUrl}
+              className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-gray-800 hover:bg-red-700 transition text-gray-200 no-underline"
+              title="Sign out"
+            >
+              <ArrowRightStartOnRectangleIcon className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Sign out</span>
+            </a>
+          )}
 
           <a
             href="https://github.com/aws-samples"

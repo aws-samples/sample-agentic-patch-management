@@ -370,6 +370,52 @@ async def get_role(request: Request):
     return {"role": role}
 
 
+@app.get("/api/auth/config")
+async def auth_config(request: Request):
+    """Return auth configuration for the frontend (logout URL, user email, etc.).
+
+    When behind an ALB with Cognito, the logout URL points to the Cognito
+    hosted UI /logout endpoint which clears the session and redirects back.
+    """
+    email = getattr(request.state, "cognito_email", None)
+    cognito_domain = os.environ.get("COGNITO_DOMAIN_PREFIX", "")
+    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+
+    # Build logout URL if Cognito is configured
+    logout_url = None
+    if cognito_domain and email:
+        # Extract client_id from the ALB-injected OIDC access token
+        oidc_data = request.headers.get("x-amzn-oidc-data", "")
+        client_id = ""
+        if oidc_data:
+            try:
+                import base64
+                payload = oidc_data.split('.')[1]
+                payload += '=' * (4 - len(payload) % 4)
+                claims = json.loads(base64.b64decode(payload))
+                client_id = claims.get("aud", "") or claims.get("client_id", "")
+            except Exception:
+                pass
+
+        if client_id:
+            # Use the current request's host as the logout redirect target
+            host = request.headers.get("host", "")
+            scheme = request.headers.get("x-forwarded-proto", "https")
+            logout_redirect = f"{scheme}://{host}"
+            cognito_base = f"https://{cognito_domain}.auth.{region}.amazoncognito.com"
+            logout_url = (
+                f"{cognito_base}/logout?"
+                f"client_id={client_id}&"
+                f"logout_uri={logout_redirect}"
+            )
+
+    return {
+        "email": email,
+        "logoutUrl": logout_url,
+        "cognitoEnabled": email is not None,
+    }
+
+
 # ── Dashboard ────────────────────────────────────────────────────────
 
 import asyncio
