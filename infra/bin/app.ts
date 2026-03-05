@@ -49,7 +49,7 @@ if (existingVpcId) {
 new CoreStack(app, 'Patchy-Core', {
   env,
   agentCoreRoleArn: resolvedRoleArn,
-  description: 'Patchy: S3 compliance reports, Config recorder, AgentCore IAM policy',
+  description: 'Patchy: S3 compliance reports bucket and AgentCore IAM policy',
 });
 
 // ── UI (deploy separately with ./deploy.sh ui) ────────────────────

@@ -1,14 +1,6 @@
 # Intelligent Patch Automation
 
-Multi-agent system for automated vulnerability-driven patch management using Strands SDK, Amazon Bedrock AgentCore, and AWS Systems Manager.
-
----
-
-## Why This Matters
-
-Traditional patching: 15 browser tabs, 3 CLI tools, 45 minutes of manual work per CVE.
-
-This approach: natural language query → intelligent decision → automated execution.
+Multi-agent system for automated, vulnerability-driven patch management using Strands SDK, Amazon Bedrock AgentCore, and AWS Systems Manager.
 
 ```
 You: Handle CVE-2025-38477 in dev environment
@@ -17,68 +9,93 @@ Agent: Checking maintenance window... Emergency patching required.
        Complete. Compliance report saved to S3.
 ```
 
-Agents make risk-based decisions using maintenance windows and CVSS scores. Application-layer health monitoring via CloudWatch alarms ensures safe patching. Built entirely on AWS native services.
+Natural language in → risk-based decision → automated execution. No browser tabs, no manual triage.
 
-> **Note:** This implementation targets Amazon Linux 2 (yum-based patching, rollback via `yum history undo`). The architecture, agent patterns, multi-agent routing, SLA enforcement, and compliance reporting are OS-agnostic. To support other operating systems (Ubuntu/Debian, Windows, RHEL, SUSE), adapt the patching and rollback commands in `agent/helper/tools.py` to use the appropriate package manager (`apt`, `zypper`, Windows Update API via SSM `AWS-RunPowerShellScript`). SSM Patch Manager and Inspector findings work across all supported OS types without changes.
+> **OS support**: This implementation targets Amazon Linux 2 (yum-based patching, rollback via `yum history undo`). The agent patterns, SLA enforcement, and compliance reporting are OS-agnostic. To support Ubuntu/Debian, Windows, RHEL, or SUSE, adapt the patching and rollback commands in `agent/helper/tools.py` to use the appropriate package manager (`apt`, `zypper`, Windows Update API via SSM `AWS-RunPowerShellScript`). SSM Patch Manager and Inspector work across all supported OS types without changes.
 
 ---
 
-## What the Solution Does
+## Contents
 
-### Vulnerability Discovery and Fleet-Wide Impact Assessment
+- [Quick Start](#quick-start)
+- [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Deployment](#deployment)
+- [Post-Deployment Setup](#post-deployment-setup)
+- [Configuration](#configuration)
+- [Web UI](#web-ui)
+- [Observability](#observability)
+- [Security](#security)
+- [Production Hardening](#production-hardening)
+- [Extending the Solution](#extending-the-solution)
+- [Troubleshooting](#troubleshooting)
+- [Teardown](#teardown)
+- [Usage Examples](#usage-examples)
 
-The agent queries Amazon Inspector for active vulnerability findings across your fleet. When a CVE is identified, it doesn't just report it — it assesses fleet-wide impact by scanning all environments (dev, test, staging, prod) to determine how many instances are affected, which teams own them, and what compliance frameworks govern their SLA.
+---
+
+## How It Works
+
+### Vulnerability Discovery
+
+The agent queries Amazon Inspector for active CVE findings across your fleet. It doesn't just list them — it assesses fleet-wide impact across all environments to show how many instances are affected, which teams own them, and what SLA applies.
 
 - Query by CVE ID, severity, or environment
 - CVSS score correlation with Inspector findings
 - Instance-level affected resource mapping
-- Cross-environment exposure analysis ("CVE-2025-38477 affects 4 instances in dev, 3 in staging, 0 in prod")
+- Cross-environment exposure: "CVE-2025-38477 affects 4 instances in dev, 3 in staging, 0 in prod"
 
-> **Enterprise integration**: The agent queries Amazon Inspector natively. If your organisation uses third-party vulnerability scanners (Qualys, Tenable, Rapid7), you can either feed their findings into Inspector via the [Inspector SBOM integration](https://docs.aws.amazon.com/inspector/latest/user/sbom-generator.html), or extend the vulnerability analyst's tool set in `agent/helper/tools.py` to query your scanner's API directly. The multi-agent architecture means adding a new data source is a single tool function — no changes to routing or decision logic.
+> **Using a third-party scanner?** Feed findings into Inspector via the [SBOM integration](https://docs.aws.amazon.com/inspector/latest/user/sbom-generator.html), or add a tool in `agent/helper/tools.py` that queries your scanner's API directly. No routing or decision logic changes needed.
 
-### Intelligent Patch Execution
+### Patch Execution Workflow
 
-Every patching operation follows a mandatory safety workflow — the agent enforces this sequence and will not skip steps:
+Every patching operation follows this enforced sequence — the agent will not skip steps:
 
-1. **Discover** affected instances and calculate SLA requirement based on per-instance SLA tags and vulnerability severity
-2. **Maintenance window + patch policy check** — find the next available SSM maintenance window for the target environment AND check whether SSM Patch Policy associations (State Manager) exist for the target instances
-3. **SLA decision**: if the next window is within the SLA deadline → SCHEDULED (register with window). If the window would exceed the SLA → EMERGENCY (patch immediately)
-4. **Dry-run scan** — runs `AWS-RunPatchBaseline` with `Operation: Scan` to show exactly which patches are missing, their severity, and classification. When a severity filter is specified (e.g., "patch HIGH CVEs"), the scan uses a `BaselineOverride` scoped to that severity level. The operator reviews before proceeding. This is programmatically enforced — the agent cannot execute a patch Install without a recent Scan (within 2 hours) on every target instance
-5. **Capture pre-patch state** — snapshot compliance metrics (missing/installed counts per instance) for before/after comparison
-6. **Execute** patching via SSM (`AWS-RunPatchBaseline` with `Operation: Install`)
-7. **Verify** instance health (SSM connectivity) and application health (CloudWatch alarms)
-8. **Capture post-patch state** — snapshot compliance metrics after patching
-9. **Generate compliance report** with before/after delta, SLA assessment, and operator identity (saved to S3)
+| Step | What happens |
+|------|-------------|
+| 1. Discover | Get patch compliance state and SLA requirement for target instances |
+| 2. Check windows + policy | Find next SSM maintenance window; check for existing Patch Policy associations |
+| 3. SLA decision | Window within SLA → **SCHEDULED**. Window exceeds SLA → **EMERGENCY** (patch immediately) |
+| 4. Dry-run scan | Run `AWS-RunPatchBaseline` with `Operation: Scan` — shows exactly what will be installed. Operator reviews before proceeding. Programmatically enforced: no Install without a Scan within the last 2 hours on every target instance |
+| 5. Pre-patch snapshot | Capture compliance metrics (missing/installed counts) per instance for before/after comparison |
+| 6. Execute | Run `AWS-RunPatchBaseline` with `Operation: Install` |
+| 7. Health check | Verify SSM connectivity and CloudWatch alarms |
+| 8. Post-patch snapshot | Capture compliance metrics after patching |
+| 9. Compliance report | Generate JSON report with before/after delta, SLA result, operator identity → saved to S3 |
 
 ### Patch Policy Integration
 
-The agent checks for existing SSM Patch Policy associations (created via Quick Setup or State Manager) on target instances. This determines the execution path:
+The agent checks for existing SSM Patch Policy associations (created via Quick Setup or State Manager) before acting:
 
-| Scenario | Agent behavior |
-|----------|---------------|
-| Scheduled + no severity filter + Install policy exists | Reports: "Your patch policy will handle this during the next window. No action needed." |
+| Scenario | Agent behaviour |
+|----------|----------------|
+| Scheduled + no severity filter + Install policy exists | "Your patch policy will handle this during the next window. No action needed." |
 | Scheduled + no severity filter + no Install policy | Registers a task with the maintenance window |
-| Scheduled + severity filter | Registers a task with `BaselineOverride` (policy baseline may not match requested severity) |
-| Emergency + any | Direct `send_command` with `BaselineOverride` |
+| Scheduled + severity filter | Registers a task with `BaselineOverride` scoped to requested severity |
+| Emergency (any) | Direct `send_command`, with `BaselineOverride` if severity filter set |
 
-If no patch policy exists for an instance, the agent warns the operator: "No patch policy found. Consider creating one for consistent scheduled patching."
+If no patch policy exists, the agent warns: "No patch policy found. Consider creating one for consistent scheduled patching."
 
 ### Severity-Scoped Patching
 
-SSM Patch Manager applies patches based on patch baseline approval rules, not individual CVE IDs. When a user requests patching for a specific CVE or severity level, the agent uses `BaselineOverride` — an S3-hosted JSON file that overrides the default baseline rules at runtime — to scope the operation to the requested severity.
+SSM Patch Manager works on baseline approval rules, not individual CVE IDs. When you request patching for a specific CVE or severity, the agent uses a `BaselineOverride` — an S3-hosted JSON file — to scope the operation.
 
-Pre-generated baseline override files are stored in the compliance reports S3 bucket:
-- `baseline-overrides/critical-only.json` — Critical severity only
-- `baseline-overrides/high-and-above.json` — Critical + Important (High)
-- `baseline-overrides/medium-and-above.json` — Critical + Important + Medium
-- `baseline-overrides/all-severities.json` — All severity levels
+Pre-generated override files in the compliance S3 bucket:
 
-When a user says "Patch CVE-2025-1234 in prod" (a HIGH severity CVE), the agent:
-1. Identifies the CVE's severity (HIGH)
-2. Selects the `high-and-above` baseline override
-3. Runs a dry-run scan with that override — shows only HIGH+ patches
-4. Tells the user: "To remediate CVE-2025-1234, I'll apply the HIGH+ severity baseline. This will install 12 patches including your target CVE. Here's the full list."
-5. User confirms → execute with the same override
+| File | Scope |
+|------|-------|
+| `baseline-overrides/critical-only.json` | Critical only |
+| `baseline-overrides/high-and-above.json` | Critical + Important (High) |
+| `baseline-overrides/medium-and-above.json` | Critical + Important + Medium |
+| `baseline-overrides/all-severities.json` | All severities |
+
+Example: "Patch CVE-2025-1234 in prod" (HIGH severity CVE):
+1. Agent identifies severity: HIGH
+2. Selects `high-and-above` override
+3. Dry-run scan shows all HIGH+ patches that will be installed
+4. "To remediate CVE-2025-1234, I'll apply the HIGH+ severity baseline. This will install 12 patches including your target CVE. Here's the full list."
+5. Operator confirms → executes with the same override
 
 > **Limitation**: SSM cannot install a single CVE's patch in isolation. The `BaselineOverride` approach scopes to severity level, not individual packages. For surgical per-CVE patching, a future enhancement could use the `InstallOverrideList` parameter with CVE → package name mapping from Inspector findings.
 
@@ -86,22 +103,22 @@ When a user says "Patch CVE-2025-1234 in prod" (a HIGH severity CVE), the agent:
 
 ### Patch Impact Preview
 
-Before any patch operation, the agent runs a dry-run scan that shows the full impact of the operation — not just the target CVE, but every package that will be updated. This is the "blast radius" of the patch:
+Before any patch operation, the agent runs a dry-run scan showing the full blast radius — not just the target CVE, but every package that will be updated:
 
 - **Per-CVE patching**: "You asked to patch CVE-2025-1234 (HIGH). The HIGH+ severity baseline will install 12 patches total — here's the full list with package names, severity, and CVE IDs for each."
 - **Per-severity patching**: "Applying all CRITICAL patches will update 3 packages across 5 instances."
 - **Full patching**: "The default baseline will install 47 patches. 5 are security-critical, 12 are important, 30 are medium."
 
-The dry-run results include `cve_ids` for each patch, so the agent can confirm whether the target CVE is included in the patch set. If the target CVE's fix isn't available in the OS repos (common for kernel-level CVEs on Amazon Linux 2), the agent explains this.
+The dry-run results include `cve_ids` for each patch, so the agent can confirm whether the target CVE is included. If the fix isn't available in the OS repos (common for kernel-level CVEs on Amazon Linux 2), the agent explains this.
 
 ### Rollback and Verification
 
-If a patch causes issues, the agent runs `yum history undo` to reverse the last transaction, then verifies the rollback succeeded by:
-- Re-scanning with `AWS-RunPatchBaseline` to confirm patch counts returned to pre-patch levels
-- Checking SSM agent connectivity on all target instances
-- Validating CloudWatch alarms returned to OK state
+If a patch causes issues, the agent runs `yum history undo` to reverse the last transaction, then verifies success via three checks:
+- Re-scan with `AWS-RunPatchBaseline` confirms patch counts returned to pre-patch levels
+- SSM agent connectivity confirmed on all target instances
+- CloudWatch alarms back to OK state
 
-The agent won't report a rollback as successful until all three checks pass.
+The rollback is not reported as successful until all three pass.
 
 ### Compliance Reporting and SLA Enforcement
 
@@ -116,7 +133,7 @@ Every patch operation produces a structured JSON compliance report stored in S3 
 
 The compliance analyst agent can query these reports for trend analysis, SLA breach history, and executive summaries broken down by severity, environment, or team.
 
-> **Enterprise integration**: The S3 compliance reports are structured JSON with consistent schema — they can feed directly into your existing GRC platform (Archer, Drata, Vanta), SIEM (Splunk, Datadog), or BI tools (QuickSight, Tableau) via S3 event notifications, Kinesis Firehose, or scheduled Athena queries. If your organisation already has a compliance data lake, point the agent's S3 bucket at it or add S3 replication to your central audit account.
+> **Integrating with your GRC/SIEM?** The reports use a consistent JSON schema — feed them into Archer, Drata, Vanta, Splunk, or Datadog via S3 event notifications, Kinesis Firehose, or scheduled Athena queries. If your organisation has a compliance data lake, point the agent's S3 bucket at it or add S3 replication to your central audit account.
 
 ### Per-User Audit Trail
 
@@ -137,9 +154,9 @@ Two Cognito groups control what users can do:
 | **operators** | ✅ | ✅ | ✅ | ✅ |
 | **viewers** | ✅ | ❌ | ❌ | ✅ |
 
-Users are assigned to groups via the Cognito CLI or console. The ALB injects the Cognito JWT into request headers, and the backend resolves the user's group membership to determine their role. See [User Management](#user-management) for setup instructions.
+The ALB injects the Cognito JWT into request headers; the backend resolves group membership to determine the role. See [User Management](#user-management) for setup.
 
-> **Enterprise integration**: If your organisation uses AWS IAM Identity Center (SSO) with permission sets and groups, those groups map directly to the operator/viewer roles. Federate Cognito with your Identity Center instance — group membership flows through as JWT claims, and the backend resolves roles without any custom user management.
+> **Using IAM Identity Center (SSO)?** Federate Cognito with your Identity Center instance — group membership flows through as JWT claims, no custom user management needed.
 
 ### Web UI and Operations Console
 
@@ -173,20 +190,32 @@ Browser-based console with two panels:
   (Read-only memory)  (Read-only memory)  (Read-only memory)
 ```
 
-The supervisor routes queries to the right specialist automatically. If a specialist can't handle a query, the supervisor re-routes or falls back to direct AWS API access via `use_aws`.
+The supervisor routes queries to the right specialist automatically. If a specialist can't handle a query, it re-routes or falls back to direct AWS API access via `use_aws`.
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `agent/supervisor.py` | Routing logic, context enrichment, memory integration |
+| `agent/vulnerability_agent.py` | CVE analysis, fleet impact via Inspector |
+| `agent/patch_manager.py` | SLA enforcement, dry-run, patching, rollback |
+| `agent/compliance_analyst.py` | S3 report queries, SLA breach tracking |
+| `agent/helper/tools.py` | All AWS API wrappers |
+| `agent/helper/agent_factory.py` | Agent creation with memory + OTEL |
+| `ui/frontend/src/App.tsx` | React UI — dashboard + chat panels |
+| `infra/lib/` | CDK stacks |
 
 ---
 
 ## Prerequisites
 
+**Tools:**
 - Python 3.11+, Node.js 18+, Docker
 - AWS CLI v2 with a configured named profile
-- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for UI access)
+- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for `connect-ui.sh`)
 - AWS account with Bedrock model access enabled (Claude Sonnet)
 
-### AWS Service Requirements
-
-The following AWS services must be enabled and configured in your account for the solution to work:
+**AWS services — must be enabled before deploying:**
 
 | Service | Required | Purpose | How to verify |
 |---------|----------|---------|---------------|
@@ -195,7 +224,7 @@ The following AWS services must be enabled and configured in your account for th
 | Amazon Inspector | Yes | Vulnerability scanning (CVE discovery) | Console → Inspector → enabled for EC2 scanning |
 | Amazon S3 | Yes | Compliance reports storage | Auto-created by `Patchy-Core` stack |
 
-### Instance Requirements
+### EC2 Instance Requirements
 
 For the agent to manage EC2 instances, they need:
 - SSM Agent installed and running (`aws ssm describe-instance-information` shows the instance as `Online`)
@@ -254,7 +283,7 @@ aws cognito-idp admin-add-user-to-group --user-pool-id $POOL_ID \
 
 ### Environment Variables
 
-All scripts auto-source `.env` from the project root.
+All scripts auto-source `.env` from the project root. Copy `.env.example` to get started.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -322,7 +351,7 @@ The agent reads EC2 tags to determine environment, compliance frameworks, and pa
 
 ## Post-Deployment Setup
 
-The deploy script handles most setup automatically. These sections describe what happens behind the scenes and optional advanced configuration.
+`deploy.sh` handles most setup automatically. These sections describe what happens behind the scenes and optional advanced configuration.
 
 ### User Management
 
@@ -384,7 +413,7 @@ This adds SEMANTIC (fact extraction) and SUMMARY (session summaries) strategies 
 - **Long-term (LTM)**: After each conversation, AgentCore asynchronously extracts semantic facts and session summaries. On the next session, the agent retrieves relevant LTM records and injects them as `<user_context>` before the first model call.
 - **Operator isolation**: The `actor_id` is scoped as `patch-automation/{operator_identity}`, ensuring memory isolation between operators. Invalid characters (like `@`) are automatically sanitized.
 
-**Important**: The AgentCore toolkit automatically injects the memory_id as `BEDROCK_AGENTCORE_MEMORY_ID` into the generated Dockerfile. No custom Dockerfile is needed — the toolkit handles memory_id, OTEL instrumentation, and `PYTHONUNBUFFERED` automatically.
+> **Note**: The AgentCore toolkit automatically injects `BEDROCK_AGENTCORE_MEMORY_ID` into the generated Dockerfile. No custom Dockerfile is needed — the toolkit handles memory_id, OTEL instrumentation, and `PYTHONUNBUFFERED` automatically.
 
 ### Bedrock Guardrails (Optional)
 
@@ -418,52 +447,53 @@ Extend it in the Bedrock console or via API with additional policies for your co
 
 ### SLA Policies
 
-SLA thresholds are read directly from EC2 instance tags. The solution has no built-in knowledge of compliance frameworks — customers define their own SLA hours per instance via tags.
+SLA thresholds come entirely from EC2 instance tags — the solution has no built-in compliance framework knowledge. Set hours per instance:
 
-**Recommended tags** (hours) — falls back to defaults if missing:
-- `SLA-CRITICAL` — e.g., `12` (patch within 12 hours)
-- `SLA-HIGH` — e.g., `48`
-- `SLA-MEDIUM` — e.g., `168`
-- `SLA-LOW` — e.g., `720`
+| Tag | Example | Meaning |
+|-----|---------|---------|
+| `SLA-CRITICAL` | `12` | Patch within 12 hours |
+| `SLA-HIGH` | `48` | Patch within 48 hours |
+| `SLA-MEDIUM` | `168` | Patch within 168 hours |
+| `SLA-LOW` | `720` | Patch within 720 hours |
 
-If an instance is missing SLA tags, the solution falls back to global defaults: 24h critical, 72h high, 168h medium, 720h low.
+Falls back to defaults (24/72/168/720h) if tags are missing.
 
 The `ComplianceFrameworks` tag (e.g., `PCI-DSS,SOC2`) is optional — it's included in compliance reports for audit context (tells auditors *why* the SLA was set) but does not drive SLA calculation.
 
-**Sample environment SLA tags:**
+**Sample environment SLA configuration:**
 
-| Environment | Framework | SLA-CRITICAL | SLA-HIGH | SLA-MEDIUM | SLA-LOW |
-|-------------|-----------|-------------|----------|------------|---------|
+| Environment | Framework | CRITICAL | HIGH | MEDIUM | LOW |
+|-------------|-----------|----------|------|--------|-----|
 | dev (all) | SOC2 | 24h | 72h | 168h | 720h |
 | staging (PCI-DSS) | PCI-DSS | 12h | 48h | 168h | 720h |
 | staging (others) | SOC2 | 24h | 72h | 168h | 720h |
 | prod (PCI-DSS) | PCI-DSS | 6h | 24h | 168h | 720h |
 | prod (others) | SOC2/HIPAA | 24h | 72h | 168h | 720h |
 
-> **Enterprise integration**: Most organisations manage SLA thresholds in their CMDB or GRC platform. Push SLA hours to EC2 tags via AWS Organizations tag policies, Service Catalog, or your CI/CD pipeline. The agent reads them at runtime — no redeployment needed when thresholds change.
+> **Enterprise tip**: Push SLA hours to EC2 tags via AWS Organizations tag policies, Service Catalog, or your CI/CD pipeline. The agent reads them at runtime — no redeployment needed when thresholds change.
 
 ### Maintenance Windows
 
-The agent respects SSM maintenance windows:
-- SCHEDULED: next window is within SLA → wait for it
-- EMERGENCY: next window exceeds SLA → patch immediately
+The agent uses SSM maintenance windows to decide patching mode:
+- **SCHEDULED**: next window is within the SLA deadline → wait for it
+- **EMERGENCY**: next window exceeds the SLA deadline → patch immediately
 
-Sample windows (from `--with-sample-env`): dev daily 1AM UTC, staging Tuesday 2AM UTC, prod 1st of month 2AM UTC.
+Sample windows (from `--with-sample-env`): dev daily 1AM UTC, staging Tuesdays 2AM UTC, prod 1st of month 2AM UTC.
 
-> **Enterprise integration**: If your organisation manages change windows through a change management system (ServiceNow Change Management, Jira change requests, PagerDuty), you can extend the agent to query your change calendar API instead of (or in addition to) SSM maintenance windows. The agent's SLA-vs-window decision logic is in `execute_patch_operation()` — it just needs a "next available window" timestamp, regardless of where that comes from. For organisations using both SSM windows and a change management system, the agent can check both and use the earliest compliant window.
+> **Using a change management system?** Extend the agent to query your change calendar (ServiceNow, Jira, PagerDuty) instead of or alongside SSM windows. The SLA-vs-window logic in `execute_patch_operation()` just needs a "next available window" timestamp — the source doesn't matter. For organisations using both, the agent can check both and use the earliest compliant window.
 
 ---
 
 ## Web UI
 
-Browser-based operations console with dashboard and conversational chat.
+Browser-based operations console with two panels:
 
-- Dashboard: KPI bar, environment status cards, vulnerability table, compliance summary, decision explainability table
-- Chat: streaming responses, specialist indicators, approval buttons for phased rollout
+- **Dashboard**: KPI bar (total instances, vulnerabilities, SLA compliance rate), environment status cards, vulnerability table with pagination, compliance summary by severity/environment/team, decision explainability table with operator attribution
+- **Chat**: Streaming agent responses with specialist routing indicators, approval buttons for phased rollout between environments, session persistence via localStorage
 
 ### Accessing the UI
 
-By default, the UI deploys with Cognito authentication on a public (internet-facing) ALB with HTTPS. After deployment, the URL is printed in the terminal output and available in CloudFormation outputs:
+The URL is printed at the end of `deploy.sh` and available in CloudFormation outputs:
 
 ```bash
 # Get the UI URL
@@ -473,9 +503,9 @@ aws cloudformation describe-stacks --stack-name Patchy-UI \
 
 Open the URL in your browser. You'll be redirected to the Cognito hosted login page. Log in with the credentials you created in [User Management](#user-management).
 
-> **Self-signed certificate warning**: If you used `setup-tls.sh` (the default), your browser will show a certificate warning. This is expected — click through to proceed. For production, replace with an ACM public certificate (free, auto-renewing, no warnings).
+> **Self-signed cert warning**: If you used `setup-tls.sh` (the default), your browser will show a certificate warning. Click through — this is expected. For production, replace with an ACM public certificate (free, auto-renewing, no warnings).
 
-#### Internal ALB mode (no Cognito)
+### Internal ALB Mode (No Cognito)
 
 To deploy without Cognito on an internal ALB (e.g., for VPN-only access), set `COGNITO_ENABLED=false` in `.env`. Access via SSM port forwarding:
 
@@ -508,11 +538,11 @@ cd ui/frontend && npm run dev                                   # Frontend on po
 
 The agent ships with observability via OpenTelemetry auto-instrumentation and CloudWatch.
 
-### Important: Logging Configuration
+### Logging
 
-AgentCore containers run with OTEL auto-instrumentation (`opentelemetry-instrument` via `aws-opentelemetry-distro`). The OTEL log pipeline captures Python `logging` module output — **not** raw `print()` to stderr. All agent code uses `logging.getLogger()` to ensure logs are captured.
+AgentCore containers run with OTEL auto-instrumentation (`opentelemetry-instrument` via `aws-opentelemetry-distro`). The OTEL pipeline captures Python `logging` output — **not** `print()` to stderr.
 
-If you extend the agent with custom code, always use Python's `logging` module:
+If you extend the agent, always use the `logging` module:
 ```python
 import logging
 logger = logging.getLogger(__name__)
@@ -531,9 +561,7 @@ All logs flow to CloudWatch under `/aws/bedrock-agentcore/runtimes/<runtime-id>-
 
 The UI container logs to `/patch-automation/ui` (FastAPI access logs, chat request metadata).
 
-### Finding Your Runtime ID
-
-The runtime ID is needed for log queries. Find it with:
+**Find your runtime ID:**
 ```bash
 # From agentcore CLI
 source venv/bin/activate && cd agent && agentcore status
@@ -543,7 +571,7 @@ aws bedrock-agentcore-control list-agent-runtimes \
   --query 'agentRuntimes[0].agentRuntimeId' --output text
 ```
 
-### Tailing Logs
+**Tail logs:**
 
 ```bash
 # Real-time agent logs (all streams)
@@ -570,9 +598,8 @@ aws logs filter-log-events \
 
 The agent container runs with `opentelemetry-instrument` (via `aws-opentelemetry-distro`), which auto-instruments all Bedrock model calls, tool executions, and memory operations. Every log entry includes `traceId` and `spanId` for correlation.
 
-View traces: `CloudWatch Console → Transaction Search → filter by service name`
-
-View agent metrics: `CloudWatch Console → GenAI Observability → AgentCore` for token usage, latency, session counts, and per-tool execution times.
+- **Traces**: CloudWatch Console → Transaction Search → filter by service name
+- **Agent metrics**: CloudWatch Console → GenAI Observability → AgentCore (token usage, latency, session counts, per-tool execution times)
 
 ### What's Logged
 
@@ -788,11 +815,9 @@ The multi-agent architecture is designed for extensibility. Each specialist agen
 
 ### What the Solution Covers Today
 
-The solution handles the core enterprise patching workflow end-to-end:
-
 - **Vulnerability discovery** — scan your fleet for CVEs, assess severity, and identify which environments and instances are affected
 - **Fleet-wide impact assessment** — understand how widespread a vulnerability is across dev, staging, and prod before deciding how to respond
-- **Patch impact preview** — see exactly which packages will be updated before committing, including packages beyond the target CVE (the "blast radius" of the patch operation)
+- **Patch impact preview** — see exactly which packages will be updated before committing, including packages beyond the target CVE (the "blast radius")
 - **SLA-driven decision making** — automatically determine whether to patch immediately (emergency) or wait for the next maintenance window (scheduled), based on per-instance SLA tags
 - **Patch policy awareness** — detect existing SSM Patch Policies and respect them for scheduled operations instead of creating duplicate patching tasks
 - **Severity-scoped execution** — apply patches at a specific severity level rather than applying everything, with operator confirmation before execution
