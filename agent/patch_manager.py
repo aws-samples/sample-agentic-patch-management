@@ -199,6 +199,8 @@ When the user says "proceed", "patch these", "check status", "verify", or refere
 ERROR HANDLING:
   Follow the category in tool error responses: RETRYABLE=retry once, SKIP=continue with rest, ABORT=stop and report.
   >50% success = report partial. ≤50% = recommend rollback. Always generate compliance report regardless of errors.
+  If execute_patch_operation returns compliance_report_required=True, you MUST call generate_compliance_report
+  for that environment before proceeding to any other environment or returning a final answer.
 
 OUTPUT: Use response templates for structure. Lead with decision, then facts, then action. No conditional language.
 Target <400 words for plans. Save details (rollback procedures, health criteria, risk matrices) for when they're needed during execution."""

@@ -791,7 +791,9 @@ def execute_patch_operation(
                 'next_execution': _format_utc_as_local(str(window_details.get('NextExecutionTime', ''))) if window_details.get('NextExecutionTime') else 'See maintenance window schedule',
                 'instance_count': len(instance_ids),
                 'operator': operator,
-                'message': f'Patching scheduled in maintenance window: {window_details.get("Name")}'
+                'environment': environment,
+                'compliance_report_required': True,
+                'message': f'Patching scheduled in maintenance window: {window_details.get("Name")}. IMPORTANT: call generate_compliance_report for {environment} after patching completes.'
             }
         
         elif execution_mode == "immediate":
@@ -823,7 +825,9 @@ def execute_patch_operation(
                 'command_id': response['Command']['CommandId'],
                 'instance_count': len(instance_ids),
                 'operator': operator,
-                'message': f'Emergency patching initiated for {len(instance_ids)} instances'
+                'environment': environment,
+                'compliance_report_required': True,
+                'message': f'Emergency patching initiated for {len(instance_ids)} instances. IMPORTANT: call generate_compliance_report for {environment} after patching completes.'
             }
         
         else:
