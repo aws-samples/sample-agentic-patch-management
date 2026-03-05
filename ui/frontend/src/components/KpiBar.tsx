@@ -29,11 +29,22 @@ export default function KpiBar({ data }: Props) {
   const totalReports = data.compliance?.total_reports ?? 0;
   const slaBreached = data.compliance?.sla_breached ?? 0;
 
-  // Instance-level compliance: sum success_count / failure_count across all reports
-  const totalInstancesPatched = data.reportDetails.reduce((s, r) => s + (r.success_count ?? 0) + (r.failure_count ?? 0), 0);
-  const compliantInstances = data.reportDetails.reduce((s, r) => s + (r.success_count ?? 0), 0);
-  const nonCompliantInstances = data.reportDetails.reduce((s, r) => s + (r.failure_count ?? 0), 0);
-  const instanceComplianceRate = totalInstancesPatched > 0 ? Math.round((compliantInstances / totalInstancesPatched) * 100 * 10) / 10 : 0;
+  // Instance-level compliance from live SSM patch state (consistent with Patch Manager console)
+  const envCompliance = data.environments.reduce(
+    (acc, e) => {
+      if (e.patch_compliance) {
+        acc.compliant += e.patch_compliance.compliant_instances;
+        acc.scanned += e.patch_compliance.scanned_instances;
+        acc.missing += e.patch_compliance.missing_patches;
+      }
+      return acc;
+    },
+    { compliant: 0, scanned: 0, missing: 0 }
+  );
+  const instanceComplianceRate = envCompliance.scanned > 0
+    ? Math.round((envCompliance.compliant / envCompliance.scanned) * 100 * 10) / 10
+    : 0;
+  const hasComplianceData = envCompliance.scanned > 0;
 
   const scope = data.scopes?.[0];
   const scopeDetail = scope
@@ -41,8 +52,8 @@ export default function KpiBar({ data }: Props) {
     : "unknown";
 
   // Donut data
-  const complianceData = totalInstancesPatched > 0
-    ? [{ value: compliantInstances, color: COLORS.compliant }, { value: nonCompliantInstances, color: COLORS.nonCompliant }]
+  const complianceData = hasComplianceData
+    ? [{ value: envCompliance.compliant, color: COLORS.compliant }, { value: envCompliance.scanned - envCompliance.compliant, color: COLORS.nonCompliant }]
     : [{ value: 1, color: COLORS.empty }];
 
   const criticalData = criticalVulns > 0
@@ -62,13 +73,13 @@ export default function KpiBar({ data }: Props) {
       {/* Donut charts row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <DonutCard
-          title="Compliance Summary"
-          centerValue={totalInstancesPatched > 0 ? `${instanceComplianceRate}%` : "—"}
+          title="Patch Compliance"
+          centerValue={hasComplianceData ? `${instanceComplianceRate}%` : "—"}
           data={complianceData}
-          legend={totalInstancesPatched > 0 ? [
-            { label: `Compliant ${compliantInstances}`, color: COLORS.compliant },
-            { label: `Non-Compliant ${nonCompliantInstances}`, color: COLORS.nonCompliant },
-          ] : [{ label: "No reports yet", color: COLORS.empty }]}
+          legend={hasComplianceData ? [
+            { label: `Compliant ${envCompliance.compliant}`, color: COLORS.compliant },
+            { label: `Non-Compliant ${envCompliance.scanned - envCompliance.compliant}`, color: COLORS.nonCompliant },
+          ] : [{ label: "No scan data", color: COLORS.empty }]}
         />
         <DonutCard
           title="Critical Patches Missing"

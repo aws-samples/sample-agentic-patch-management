@@ -66,6 +66,29 @@ export default function EnvironmentCards({ items, loading, onEnvClick }: Props) 
                 </div>
               </div>
 
+              {/* Patch compliance bar */}
+              {item.patch_compliance && item.patch_compliance.compliance_pct !== null && (
+                <div className="mb-3">
+                  <div className="flex justify-between text-[11px] text-gray-500 mb-1">
+                    <span>Patch Compliance</span>
+                    <span className="font-medium text-gray-700">
+                      {item.patch_compliance.compliance_pct}% ({item.patch_compliance.compliant_instances}/{item.patch_compliance.scanned_instances})
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-1.5">
+                    <div
+                      className={`h-1.5 rounded-full transition-all duration-500 ${item.patch_compliance.compliance_pct === 100 ? "bg-emerald-500" : item.patch_compliance.compliance_pct >= 80 ? "bg-amber-500" : "bg-red-500"}`}
+                      style={{ width: `${item.patch_compliance.compliance_pct}%` }}
+                    />
+                  </div>
+                  {item.patch_compliance.missing_patches > 0 && (
+                    <div className="text-[10px] text-gray-400 mt-0.5">
+                      {item.patch_compliance.missing_patches} missing · {item.patch_compliance.installed_patches} installed
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Vuln summary */}
               <div className="flex gap-1.5">
                 {(item.vulns["CRITICAL"] ?? 0) > 0 && <Badge variant={sevVariant("CRITICAL")}>{item.vulns["CRITICAL"]} Critical</Badge>}

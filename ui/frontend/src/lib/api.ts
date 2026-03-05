@@ -8,6 +8,14 @@ export interface EnvironmentStatus {
   status: "healthy" | "warning" | "error" | "inactive";
   vulns: Record<string, number>;
   vuln_total: number;
+  patch_compliance?: {
+    compliant_instances: number;
+    scanned_instances: number;
+    compliance_pct: number | null;
+    missing_patches: number;
+    installed_patches: number;
+    failed_patches: number;
+  };
 }
 
 export interface VulnerabilityFinding {

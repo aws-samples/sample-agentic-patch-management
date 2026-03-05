@@ -498,10 +498,33 @@ def _fetch_environments():
                 if info.get("PingStatus") == "Online":
                     ssm_online.add(info["InstanceId"])
 
+    # Fetch patch compliance state (same data as SSM Patch Manager console)
+    patch_states: dict[str, dict] = {}
+    if all_ids:
+        try:
+            resp = ssm.describe_instance_patch_states(InstanceIds=all_ids)
+            for state in resp.get("InstancePatchStates", []):
+                patch_states[state["InstanceId"]] = {
+                    "missing": state.get("MissingCount", 0),
+                    "installed": state.get("InstalledCount", 0),
+                    "failed": state.get("FailedCount", 0),
+                }
+        except Exception:
+            pass  # Patch data unavailable — show instance health only
+
     results = []
     for env in sorted(env_instances.keys()):
         ids = env_instances[env]
         online = sum(1 for i in ids if i in ssm_online)
+
+        # Aggregate patch compliance per environment
+        env_missing = sum(patch_states.get(i, {}).get("missing", 0) for i in ids)
+        env_installed = sum(patch_states.get(i, {}).get("installed", 0) for i in ids)
+        env_failed = sum(patch_states.get(i, {}).get("failed", 0) for i in ids)
+        compliant_instances = sum(1 for i in ids if i in patch_states and patch_states[i]["missing"] == 0)
+        scanned_instances = sum(1 for i in ids if i in patch_states)
+        compliance_pct = round(compliant_instances / scanned_instances * 100) if scanned_instances > 0 else None
+
         results.append({
             "environment": env,
             "total": len(ids),
@@ -511,6 +534,14 @@ def _fetch_environments():
                       else "warning" if online > 0
                       else "error" if len(ids) > 0
                       else "inactive",
+            "patch_compliance": {
+                "compliant_instances": compliant_instances,
+                "scanned_instances": scanned_instances,
+                "compliance_pct": compliance_pct,
+                "missing_patches": env_missing,
+                "installed_patches": env_installed,
+                "failed_patches": env_failed,
+            },
         })
     return results
 
