@@ -32,7 +32,7 @@ export class UIStack extends cdk.Stack {
     // ── ECS Cluster ────────────────────────────────────────────────
     const cluster = new ecs.Cluster(this, 'UICluster', {
       vpc: props.vpc,
-      containerInsights: true,
+      containerInsightsV2: ecs.ContainerInsights.ENABLED,
     });
 
     // ── Docker image ───────────────────────────────────────────────
@@ -127,6 +127,7 @@ export class UIStack extends cdk.Stack {
       taskDefinition: taskDef,
       desiredCount: 1,
       assignPublicIp: false,
+      minHealthyPercent: 100,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
     });
     service.connections.allowFrom(alb, ec2.Port.tcp(8000), 'ALB to Fargate');
@@ -187,6 +188,8 @@ export class UIStack extends cdk.Stack {
       const userPoolDomain = userPool.addDomain('CognitoDomain', {
         cognitoDomain: { domainPrefix },
       });
+      // ManagedLoginVersion is set post-deploy via deploy.sh CLI fixup.
+      // CloudFormation rejects updates to this property on existing domains.
 
       // ALB DNS names are mixed-case (e.g., Patchy-UIALB-xYz...) but browsers
       // lowercase them. Cognito compares callback URLs case-sensitively.
