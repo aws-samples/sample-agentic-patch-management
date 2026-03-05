@@ -1,4 +1,5 @@
 /** Typed API client for the single /api/dashboard endpoint. */
+// Build: 2026-03-06
 
 export interface EnvironmentStatus {
   environment: string;
@@ -131,3 +132,4 @@ export async function fetchDashboard(force = false): Promise<DashboardData> {
     errors: raw.errors ?? [],
   };
 }
+// build 1772754702
