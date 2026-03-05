@@ -482,6 +482,21 @@ deploy_ui() {
                 > /dev/null 2>&1
             print_status "Cognito callback URLs updated (added lowercase: ${alb_dns_lower})"
 
+            # Switch domain to managed login v2 (modern branding).
+            # CloudFormation rejects this property on existing domains, so we set it via CLI.
+            # Idempotent — safe to run on every deploy.
+            local domain_prefix
+            domain_prefix=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+                --query 'Stacks[0].Outputs[?OutputKey==`CognitoDomainPrefix`].OutputValue' --output text 2>/dev/null)
+            if [ -n "$domain_prefix" ]; then
+                aws cognito-idp update-user-pool-domain \
+                    --user-pool-id "$pool_id" \
+                    --domain "$domain_prefix" \
+                    --managed-login-version 2 \
+                    > /dev/null 2>&1
+                print_status "Managed login v2 enabled"
+            fi
+
             # Create default managed login branding style if none exists.
             # Required for managed login v2 (ManagedLoginVersion=2 set by CDK).
             # Idempotent — silently skips if branding already exists.

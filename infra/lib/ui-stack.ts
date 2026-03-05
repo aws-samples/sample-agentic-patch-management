@@ -187,8 +187,9 @@ export class UIStack extends cdk.Stack {
 
       const userPoolDomain = userPool.addDomain('CognitoDomain', {
         cognitoDomain: { domainPrefix },
-        managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
       });
+      // ManagedLoginVersion is set post-deploy via deploy.sh CLI fixup.
+      // CloudFormation rejects updates to this property on existing domains.
 
       // ALB DNS names are mixed-case (e.g., Patchy-UIALB-xYz...) but browsers
       // lowercase them. Cognito compares callback URLs case-sensitively.
