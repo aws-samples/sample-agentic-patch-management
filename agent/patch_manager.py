@@ -158,6 +158,15 @@ STEP 7: COMPLIANCE REPORT (always, after execution — do not wait for user)
     Pass them as a flat deduplicated list. This ensures every CVE remediated
     by the patch operation is recorded, not just the triggering CVE.
   Call this IMMEDIATELY after Step 6.7. Do not wait for the user to ask.
+
+  STAGED ROLLOUT — ONE REPORT PER ENVIRONMENT:
+  When patching multiple environments (dev → staging → prod), you MUST call
+  generate_compliance_report once per environment, using that environment's
+  specific command_id, pre_patch_state, and post_patch_state.
+  DO NOT wait until all environments are done before generating reports.
+  The sequence is: complete Steps 1-7 for dev → complete Steps 1-7 for staging
+  → complete Steps 1-7 for prod. Each environment gets its own report written
+  to S3 before you move to the next environment.
   
   Present the delta: "Compliance improved from {before}% → {after}%. {N} patches applied."
 
