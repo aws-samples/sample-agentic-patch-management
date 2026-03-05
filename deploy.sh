@@ -481,6 +481,16 @@ deploy_ui() {
                 --logout-urls "https://${alb_dns}" "https://${alb_dns_lower}" \
                 > /dev/null 2>&1
             print_status "Cognito callback URLs updated (added lowercase: ${alb_dns_lower})"
+
+            # Create default managed login branding style if none exists.
+            # Required for managed login v2 (ManagedLoginVersion=2 set by CDK).
+            # Idempotent — silently skips if branding already exists.
+            aws cognito-idp create-managed-login-branding \
+                --user-pool-id "$pool_id" \
+                --client-id "$client_id" \
+                --use-cognito-provided-values \
+                > /dev/null 2>&1 || true
+            print_status "Managed login branding configured"
         else
             print_warning "Could not fix Cognito callbacks — update manually if login fails"
         fi
