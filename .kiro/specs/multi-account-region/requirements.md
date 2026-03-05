@@ -4,80 +4,65 @@
 
 Patchy currently operates within a single AWS account and region. Enterprise customers manage fleets spanning multiple accounts (dev, staging, prod in separate accounts) and regions. We need to extend Patchy to discover, patch, and report across an AWS Organization without rewriting the agent architecture.
 
-## Guiding Principles
+## Guiding Principle
 
-1. **Leverage AWS native capabilities** — SSM Automation TargetLocations, Inspector delegated admin, and Resource Data Sync handle the multi-account orchestration. Patchy adds intelligence on top, not plumbing underneath.
-2. **Delegated admin model** — Patchy runs in the Organizations delegated admin account. Inspector and SSM inventory/compliance data are already aggregated here. No custom cross-account roles needed for read operations.
-3. **Extensible, not over-engineered** — build the simplest thing that works and is production-extensible. Document more mature options (DynamoDB registry, StackSets enrollment, TargetLocations concurrency tuning) as production hardening.
-4. **Backward compatible** — single-account deployments must continue to work with zero configuration change.
-
-## Deployment Context
-
-Patchy is deployed in the **Organizations delegated admin account**. This means:
-- Inspector findings from all member accounts are automatically aggregated here
-- SSM Resource Data Sync from spoke accounts pushes patch compliance to the hub's S3 bucket
-- The ECS task role needs `ssm:StartAutomationExecution` and `sts:AssumeRole` (for read-only calls to spoke accounts where Organizations-level access is insufficient)
-
-## Prerequisites (not built by Patchy — documented as setup steps)
-
-- Spoke accounts are part of the same AWS Organization
-- Inspector is enabled and delegated admin is configured (hub account)
-- `AWS-SystemsManager-AutomationExecutionRole` exists in each spoke account (standard AWS role for SSM Automation multi-account execution — [AWS docs](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-automation-multiple-accounts-and-regions.html))
-- Resource Data Sync configured in spoke accounts pointing to hub's S3 compliance bucket
-- SSM managed instances in spoke accounts (SSM Agent installed, instance profile with `AmazonSSMManagedInstanceCore`)
+Leverage SSM's native multi-account/region capabilities (Automation TargetLocations, Resource Data Sync, Inspector delegated admin) to minimize custom code. The agents should be account-aware but the heavy lifting stays with AWS services.
 
 ## Requirements
 
 ### R1: Account Registry
-- Operators register spoke accounts (account ID, regions, friendly name, environment tags)
-- Stored in **SSM Parameter Store** (`/patchy/accounts/{account_id}`) — no new infrastructure, already in IAM policy
-- Supervisor agent resolves natural language ("patch prod") to specific accounts/regions via registry lookup
-- Registry is the extensibility point: swap Parameter Store for DynamoDB at scale (documented in production hardening)
+- Operators can register spoke accounts (account ID, regions, execution role ARN, friendly name)
+- Stored in DynamoDB table in the hub account
+- Supervisor agent resolves natural language ("patch prod") to specific accounts/regions
+- API endpoints for CRUD operations on the registry
 
-### R2: Cross-Account Patching via SSM Automation TargetLocations
-- Replace `send_command()` with `start_automation_execution()` + `TargetLocations` for multi-account operations
-- Applies to: `patch_dry_run()`, `execute_patch_operation()`, `rollback_patches()`
-- TargetLocations specifies accounts, regions, and `ExecutionRoleName: AWS-SystemsManager-AutomationExecutionRole`
-- Single-account fast path preserved — if only one account in scope, keep existing `send_command()` for backward compat
-- `MaxConcurrency` and `MaxErrors` configurable (default: 10% concurrency, stop at 1 error)
-- BaselineOverride (severity-scoped patching) passed as Automation parameter — works with TargetLocations
+### R2: Spoke Account IAM Role (CDK Stack)
+- Deployable via StackSets or standalone CDK into each spoke account
+- Grants: SSM RunCommand/Automation, EC2 Describe, CloudWatch Describe, S3 write to central compliance bucket
+- Trust policy: hub account's ECS task role + Automation service role
+- Minimal permissions — scoped to Patchy operations only
 
-### R3: Cross-Account Discovery
-- `get_vulnerability_findings()` — no code change needed (Inspector delegated admin aggregates automatically, resource ARNs include account IDs)
-- `assess_fleet_impact()` — parse account_id from Inspector resource ARNs, group by account in response
-- `get_patch_compliance()` — query aggregated Resource Data Sync data in hub S3 (primary path); assume-role fallback for accounts not yet syncing
+### R3: Cross-Account Vulnerability Discovery
+- Inspector delegated admin in hub account aggregates findings from all member accounts
+- `get_vulnerability_findings()` — no code change needed (Inspector aggregates automatically)
+- `assess_fleet_impact()` — add account_id grouping to response, cross-account EC2 describe via assume-role
 
-### R4: Cross-Account Health & Maintenance Windows
-- `check_instance_health()` — assume-role per account using `account_helper.get_client()`
-- `check_cloudwatch_alarms()` — assume-role per account (document CloudWatch cross-account observability as production hardening)
-- `get_maintenance_windows()` / `create_maintenance_window()` — assume-role per account
+### R4: Cross-Account Patching via SSM Automation
+- Replace `ssm_client.send_command()` with `ssm_client.start_automation_execution()` + `TargetLocations`
+- Applies to: `execute_patch_operation()`, `patch_dry_run()`, `rollback_patches()`
+- TargetLocations specifies accounts, regions, execution role, concurrency limits
+- Dry-run gate and severity-scoped BaselineOverride must work cross-account
 
-### R5: Supervisor Account Awareness
+### R5: Cross-Account Compliance Data
+- Resource Data Sync aggregates patch compliance from spoke accounts to central S3
+- `get_patch_compliance()` queries aggregated data (or assumes role per account as fallback)
+- `capture_patch_state()` works cross-account via Automation
+- Compliance reports include account_id in schema and S3 key prefix
+
+### R6: Cross-Account Health Checks
+- `check_instance_health()` — assume role per account to query SSM instance information
+- `check_cloudwatch_alarms()` — assume role per account OR use CloudWatch cross-account observability
+- Health check results tagged with account_id
+
+### R7: Cross-Account Maintenance Windows
+- `get_maintenance_windows()` — query per spoke account via assume-role
+- `create_maintenance_window()` — create in spoke account via assume-role
+- Aggregate results with account context for the agent
+
+### R8: Supervisor Account Awareness
 - Supervisor resolves user intent to target accounts/regions using the account registry
-- New tool: `list_registered_accounts()` available to supervisor
+- Enriches specialist agent context with account scope
 - Supports: "patch all prod accounts", "patch account 111111111111", "patch us-west-2"
-- Fallback: no accounts registered → single-account mode (zero behavior change)
-- Blast radius confirmation: supervisor explicitly states account scope before cross-account bulk operations
 
-### R6: Compliance Schema Update
-- Add `account_id` field to compliance report JSON schema
-- S3 key prefix: `{account_id}/{region}/{date}/report.json`
-- `query_compliance_reports()` supports account_id filter
+### R9: UI Account/Region Support
+- Account selector dropdown (populated from registry)
+- Region filter
+- Dashboard cards show per-account breakdown
+- Compliance reports filterable by account
+- Chat context includes selected account scope
 
-### R7: Hub IAM Updates
-- ECS task role: add `sts:AssumeRole` (scoped to `AWS-SystemsManager-AutomationExecutionRole` pattern)
-- ECS task role: add `ssm:StartAutomationExecution`, `ssm:GetAutomationExecution`, `ssm:DescribeAutomationExecutions`
-- ECS task role: add `ssm:GetParameter`, `ssm:GetParametersByPath` for account registry
-- S3 bucket policy: allow spoke account writes (for Resource Data Sync)
-
-## Production Hardening (document, don't build)
-
-| Current (built) | Production path |
-|-----------------|-----------------|
-| SSM Parameter Store registry | DynamoDB with TTL, conditional writes, audit via CloudTrail |
-| Manual spoke account registration | StackSets + Organizations auto-enrollment |
-| Default MaxConcurrency/MaxErrors | Configurable per-operation via agent parameters |
-| Assume-role for CW alarms | CloudWatch cross-account observability (Organizations sharing) |
-| Manual Inspector setup | Config conformance pack for auto-enablement |
-| No account health validation | Scheduled Lambda validates assume-role connectivity per account |
-| No audit aggregation | EventBridge cross-account forwarding to central audit log |
+### R10: CDK Hub Stack Updates
+- DynamoDB table for account registry
+- IAM policy additions for STS AssumeRole to spoke accounts
+- SSM Automation service-linked role configuration
+- Resource Data Sync destination bucket policy
