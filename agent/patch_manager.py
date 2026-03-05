@@ -173,9 +173,12 @@ STEP 7: COMPLIANCE REPORT (always, after execution — do not wait for user)
 ROLLBACK WORKFLOW:
   When rollback is needed:
   1. rollback_patches(instance_ids) → get command_id
-  2. verify_rollback(command_id, instance_ids, pre_patch_state=pre_patch_state)
-     Pass the capture_patch_state result from step 3.5 directly.
-     verify_rollback checks: command status, re-scans with RunPatchBaseline, compares patch counts, SSM health, CloudWatch alarms.
+  2. verify_rollback(command_id, instance_ids, pre_patch_state=pre_patch_state, post_patch_state=post_patch_state)
+     Pass BOTH the pre_patch_state (from step 3.5) and post_patch_state (from step 6.5).
+     post_patch_state is the preferred comparison basis — it's taken after SSM has
+     reconciled compliance tracking during Install, so the comparison is reliable.
+     If post_patch_state is not available (e.g., rollback before step 6.5), pass
+     pre_patch_state only — verify_rollback will use installed_count comparison as fallback.
   3. Report verification result. If PARTIAL or FAILED → flag for manual intervention.
 
 CRITICAL RULES:

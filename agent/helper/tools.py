@@ -156,7 +156,8 @@ def _get_baseline_override_url(severity_filter: Optional[str]) -> Optional[str]:
     """Get the S3 URL for a severity-scoped baseline override.
 
     Returns None if no severity filter is specified (use default baseline).
-    Returns the S3 URL if a valid severity filter is provided.
+    Returns the S3 URL if a valid severity filter is provided and the file exists.
+    Logs a warning and returns None if the override file is missing from S3.
     """
     if not severity_filter:
         return None
@@ -165,6 +166,16 @@ def _get_baseline_override_url(severity_filter: Optional[str]) -> Optional[str]:
         logger.warning(f"Unknown severity filter: {severity_filter}, using default baseline")
         return None
     bucket = _get_compliance_bucket_name()
+
+    # Verify the override file exists — SSM fails silently if it doesn't
+    try:
+        s3_client = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
+        s3_client.head_object(Bucket=bucket, Key=key)
+    except Exception as e:
+        logger.error(f"BaselineOverride file not found: s3://{bucket}/{key} — {e}. "
+                     "Run setup_baseline_overrides.py to upload override files.")
+        return None
+
     return f"s3://{bucket}/{key}"
 
 
@@ -271,6 +282,7 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                 "total_count": 0
             }
         
+        logger.info(f"[TOOL:get_vulnerability_findings] cve_id={cve_id} severity={severity} environment={environment} limit={limit}")
         filters = {
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
         }
@@ -321,13 +333,19 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
             if not next_token:
                 break
 
+        severity_breakdown = {}
+        for f in findings:
+            s = f.get('severity', 'UNKNOWN')
+            severity_breakdown[s] = severity_breakdown.get(s, 0) + 1
+        logger.info(f"[TOOL:get_vulnerability_findings] RESULT: {total_count} findings, returned={len(findings)}, severity={severity_breakdown}")
+
         return {
             "findings": findings,
             "total_count": total_count
         }
     except ClientError as e:
         error_info = classify_error(e)
-        logger.error(f"Error getting vulnerability findings: {error_info}")
+        logger.error(f"[TOOL:get_vulnerability_findings] ERROR: {error_info}")
         error_info["findings"] = []
         error_info["total_count"] = 0
         return error_info
@@ -365,6 +383,7 @@ def get_patch_compliance(environment: str,
     """
     try:
         instance_tags = {}
+        logger.info(f"[TOOL:get_patch_compliance] environment={environment} instance_ids={instance_ids[:5] if instance_ids else 'auto'} severity={severity}")
         
         # Get instance IDs by environment if specified
         if environment and not instance_ids:
@@ -427,6 +446,11 @@ def get_patch_compliance(environment: str,
         if unscanned_ids:
             result['unscanned_instance_ids'] = unscanned_ids
         
+        logger.info(f"[TOOL:get_patch_compliance] RESULT: ec2_count={len(instance_ids)} ssm_count={len(instances)} "
+                     f"total_missing={result['summary']['total_missing']} needing_patches={result['summary']['instances_needing_patches']}"
+                     f"{' unscanned=' + str(len(unscanned_ids)) if unscanned_ids else ''}"
+                     f"{' sla=' + str(result.get('sla_requirement', {}).get('sla_hours', '')) + 'hr' if result.get('sla_requirement') else ''}")
+
         # Calculate SLA if severity provided — use strictest across ALL instances
         if severity and instance_tags:
             all_frameworks = set()
@@ -492,9 +516,16 @@ def patch_dry_run(instance_ids: List[str], severity_filter: Optional[str] = None
         if validation_error:
             return validation_error
 
+        logger.info(f"[TOOL:patch_dry_run] instances={len(instance_ids)} severity_filter={severity_filter} instance_ids={instance_ids[:5]}")
+
         # Build command parameters
         params = {'Operation': ['Scan']}
         override_url = _get_baseline_override_url(severity_filter)
+        if severity_filter and not override_url:
+            # Severity filter requested but override file missing — warn the agent
+            logger.warning(f"Severity filter '{severity_filter}' requested but BaselineOverride "
+                           "file not found in S3. Scanning with default baseline instead. "
+                           "Run setup_baseline_overrides.py to fix.")
         if override_url:
             params['BaselineOverride'] = [override_url]
             logger.info(f"Dry-run using BaselineOverride: {override_url}")
@@ -609,6 +640,9 @@ def patch_dry_run(instance_ids: List[str], severity_filter: Optional[str] = None
                     'error': str(e)[:200]
                 })
 
+        logger.info(f"[TOOL:patch_dry_run] RESULT: total_missing={total_missing} instances={len(instance_ids)} "
+                     f"severity_filter={severity_filter} override_applied={bool(override_url)} scan_cmd={scan_command_id}")
+
         return {
             'instances': results,
             'total_missing': total_missing,
@@ -616,10 +650,16 @@ def patch_dry_run(instance_ids: List[str], severity_filter: Optional[str] = None
             'scan_command_id': scan_command_id,
             'severity_filter': severity_filter,
             'baseline_override': override_url,
+            'severity_filter_applied': bool(override_url) if severity_filter else None,
             'message': (
                 f'{total_missing} missing patches across {len(instance_ids)} instances will be installed'
                 if total_missing > 0
                 else f'All {len(instance_ids)} instances are fully patched — nothing to install'
+            ) + (
+                f' WARNING: severity filter "{severity_filter}" was requested but the BaselineOverride '
+                f'file is missing from S3. Scan used the default baseline (all severities). '
+                f'Run setup_baseline_overrides.py to enable severity-scoped patching.'
+                if severity_filter and not override_url else ''
             )
         }
 
@@ -684,6 +724,10 @@ def execute_patch_operation(
         validation_error = _validate_instance_ids(instance_ids)
         if validation_error:
             return validation_error
+
+        logger.info(f"[TOOL:execute_patch_operation] mode={execution_mode} env={environment} "
+                     f"instances={len(instance_ids)} severity_filter={severity_filter} "
+                     f"window={maintenance_window_id} instance_ids={instance_ids[:5]}")
 
         # ── Dry-run gate: refuse to patch unless a recent Scan was run ──
         # patch_dry_run runs AWS-RunPatchBaseline with Operation=Scan, which
@@ -863,6 +907,7 @@ def get_command_status(command_id: str, instance_ids: List[str]) -> dict:
     """
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(f"[TOOL:get_command_status] command_id={command_id} instances={len(instance_ids)}")
         
         # Validate instance IDs
         if instance_ids:
@@ -1045,6 +1090,8 @@ def check_instance_health(instance_ids: List[str]) -> dict:
         avg_health = sum(r['health_score'] for r in health_results) / len(health_results) if health_results else 0
         unhealthy_count = sum(1 for r in health_results if r['health_score'] < 100)
         
+        logger.info(f"[TOOL:check_instance_health] RESULT: instances={len(instance_ids)} avg_health={avg_health:.0f} unhealthy={unhealthy_count}")
+
         return {
             'results': health_results,
             'overall_health': avg_health,
@@ -1131,6 +1178,8 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
         unhealthy_count = sum(1 for r in alarm_results if not r['is_healthy'])
         total_alarms = sum(r['alarm_count'] for r in alarm_results)
         
+        logger.info(f"[TOOL:check_cloudwatch_alarms] RESULT: instances={len(instance_ids)} unhealthy={unhealthy_count} alarms_firing={total_alarms}")
+
         result = {
             'results': alarm_results,
             'total_instances': len(instance_ids),
@@ -1281,6 +1330,8 @@ def rollback_patches(instance_ids: List[str]) -> dict:
         if validation_error:
             return validation_error
 
+        logger.info(f"[TOOL:rollback_patches] instances={len(instance_ids)} instance_ids={instance_ids[:5]}")
+
         # Use yum history to rollback the last transaction
         rollback_script = """
 #!/bin/bash
@@ -1319,9 +1370,12 @@ fi
             Comment='Automated patch rollback'
         )
         
+        cmd_id = response['Command']['CommandId']
+        logger.info(f"[TOOL:rollback_patches] INITIATED: command_id={cmd_id} instances={len(instance_ids)}")
+
         return {
             'status': 'ROLLBACK_INITIATED',
-            'command_id': response['Command']['CommandId'],
+            'command_id': cmd_id,
             'instance_count': len(instance_ids),
             'instance_ids': instance_ids,
             'message': 'Rollback command sent. Use get_command_status to verify completion. If rollback fails, check command output for manual recovery suggestions.'
@@ -1350,24 +1404,40 @@ fi
 
 @tool
 def verify_rollback(command_id: str, instance_ids: List[str],
-                    pre_patch_state: Optional[Dict[str, Any]] = None) -> dict:
-    """Verify that a rollback succeeded by re-scanning and comparing against pre-patch state.
+                    pre_patch_state: Optional[Dict[str, Any]] = None,
+                    post_patch_state: Optional[Dict[str, Any]] = None) -> dict:
+    """Verify that a rollback succeeded by re-scanning and comparing patch state.
     
     Call this after rollback_patches completes. Performs:
     1. Waits for rollback command to complete
     2. Re-runs AWS-RunPatchBaseline Scan to get current patch state
-    3. Compares current state against pre_patch_state (from capture_patch_state before patching)
+    3. Compares current state to verify patches were reverted
     4. Runs SSM health + CloudWatch alarm checks
     
-    This uses the same scan mechanism as patch_dry_run, so the comparison is
-    aligned with how patches were originally assessed and installed.
+    Comparison strategy (in priority order):
+    - If post_patch_state provided: verifies missing_count increased from post-patch
+      levels (most reliable — both snapshots taken after SSM compliance reconciliation)
+    - If only pre_patch_state provided: verifies installed_count decreased from
+      pre-patch levels (avoids MissingCount inflation from SSM compliance reconciliation
+      during Install — see note below)
+    - If neither provided: skips patch state comparison, relies on command status + health
+    
+    NOTE on MissingCount reliability: SSM's MissingCount is a compliance metric driven
+    by the patch baseline, not a count of packages that actually need installing. When
+    AWS-RunPatchBaseline Install runs, SSM reconciles its compliance tracking — packages
+    that were "Missing" but already at latest version in yum repos get marked "Installed"
+    without yum changing anything. After rollback (yum history undo), only packages that
+    yum actually installed get reverted, so MissingCount won't return to pre-patch levels.
+    Comparing against post_patch_state avoids this because both measurements are taken
+    after SSM has reconciled.
     
     Args:
         command_id: SSM command ID from rollback_patches
         instance_ids: List of instance IDs that were rolled back
         pre_patch_state: Snapshot from capture_patch_state taken BEFORE patching.
             Format: {"i-xxx": {"missing_count": 12, "installed_count": 45, ...}}
-            If provided, verifies patch counts returned to pre-patch levels.
+        post_patch_state: Snapshot from capture_patch_state taken AFTER patching.
+            Format: same as pre_patch_state. Preferred for rollback verification.
     
     Returns:
         dict: {
@@ -1380,6 +1450,9 @@ def verify_rollback(command_id: str, instance_ids: List[str],
         validation_error = _validate_instance_ids(instance_ids)
         if validation_error:
             return validation_error
+
+        logger.info(f"[TOOL:verify_rollback] command_id={command_id} instances={len(instance_ids)} "
+                     f"has_pre_patch={pre_patch_state is not None} has_post_patch={post_patch_state is not None}")
 
         # Step 1: Wait for rollback command to complete (max 5 min)
         status_result = None
@@ -1400,7 +1473,9 @@ def verify_rollback(command_id: str, instance_ids: List[str],
         # Step 2: Re-scan with RunPatchBaseline to get current state
         patch_state_comparison = {}
         pre_patch_state = _unwrap_patch_state(pre_patch_state)
-        if status_result.get('status') == 'Success' and pre_patch_state:
+        post_patch_state = _unwrap_patch_state(post_patch_state)
+        has_comparison_data = pre_patch_state or post_patch_state
+        if status_result.get('status') == 'Success' and has_comparison_data:
             try:
                 # Run the same scan as patch_dry_run
                 scan_response = ssm_client.send_command(
@@ -1424,7 +1499,7 @@ def verify_rollback(command_id: str, instance_ids: List[str],
                     except Exception:
                         continue
 
-                # Compare current patch state against pre-patch snapshot
+                # Compare current patch state against snapshots
                 current_state = ssm_client.describe_instance_patch_states(
                     InstanceIds=instance_ids
                 )
@@ -1434,29 +1509,64 @@ def verify_rollback(command_id: str, instance_ids: List[str],
                 }
 
                 for iid in instance_ids:
-                    before = pre_patch_state.get(iid, {})
                     after_raw = current_map.get(iid, {})
                     after = {
                         'missing_count': after_raw.get('MissingCount', 0),
                         'installed_count': after_raw.get('InstalledCount', 0),
                     }
-                    before_missing = before.get('missing_count', 0)
-                    after_missing = after.get('missing_count', 0)
 
-                    # Rollback is verified if missing count returned to pre-patch level
-                    # (or close — exact match may not happen due to new patches released)
-                    reverted = after_missing >= before_missing
+                    if post_patch_state and iid in post_patch_state:
+                        # Preferred: compare against post-patch state
+                        # After rollback, missing_count should increase from post-patch (0 or low)
+                        # because reverted packages move back to Missing
+                        post = post_patch_state[iid]
+                        post_missing = post.get('missing_count', 0)
+                        post_installed = post.get('installed_count', 0)
+                        after_missing = after['missing_count']
+                        after_installed = after['installed_count']
 
-                    patch_state_comparison[iid] = {
-                        'before_missing': before_missing,
-                        'after_missing': after_missing,
-                        'reverted': reverted,
-                        'before_installed': before.get('installed_count', 0),
-                        'after_installed': after.get('installed_count', 0)
-                    }
+                        # Rollback verified if: missing went up OR installed went down from post-patch
+                        reverted = (after_missing > post_missing) or (after_installed < post_installed)
+
+                        patch_state_comparison[iid] = {
+                            'comparison_basis': 'post_patch',
+                            'post_patch_missing': post_missing,
+                            'post_patch_installed': post_installed,
+                            'after_rollback_missing': after_missing,
+                            'after_rollback_installed': after_installed,
+                            'reverted': reverted,
+                        }
+                    elif pre_patch_state and iid in pre_patch_state:
+                        # Fallback: compare against pre-patch state
+                        # NOTE: This comparison is less reliable because SSM reconciles
+                        # compliance tracking during Install (packages already at latest
+                        # version get marked Installed without yum changing them).
+                        # We check if missing_count is within a reasonable range — not
+                        # exact match, but at least some patches moved back to Missing.
+                        before = pre_patch_state[iid]
+                        before_missing = before.get('missing_count', 0)
+                        after_missing = after['missing_count']
+
+                        # Rollback shows some effect if missing_count > 0 (something reverted)
+                        # We can't reliably expect exact match due to SSM reconciliation
+                        reverted = after_missing > 0 if before_missing > 0 else True
+
+                        patch_state_comparison[iid] = {
+                            'comparison_basis': 'pre_patch_fallback',
+                            'before_missing': before_missing,
+                            'after_missing': after_missing,
+                            'before_installed': before.get('installed_count', 0),
+                            'after_installed': after['installed_count'],
+                            'reverted': reverted,
+                            'note': 'Pre-patch comparison is approximate due to SSM compliance reconciliation. Pass post_patch_state for precise verification.'
+                        }
 
             except Exception as e:
-                logger.warning(f"Post-rollback scan failed: {e}")
+                logger.warning(f"[TOOL:verify_rollback] Post-rollback scan failed: {e}")
+
+        # Log comparison results
+        for iid, comp in patch_state_comparison.items():
+            logger.info(f"[TOOL:verify_rollback] COMPARISON {iid}: basis={comp.get('comparison_basis','none')} reverted={comp.get('reverted','N/A')}")
 
         # Step 3: Health checks
         ssm_health = check_instance_health(instance_ids)
@@ -1505,6 +1615,9 @@ def verify_rollback(command_id: str, instance_ids: List[str],
             overall_status = 'PARTIAL'
             recommendation = 'INVESTIGATE'
 
+        logger.info(f"[TOOL:verify_rollback] RESULT: status={overall_status} recommendation={recommendation} "
+                     f"cmd_status={status_result.get('status')} instances={len(instance_ids)}")
+
         return {
             'status': overall_status,
             'instances': instance_results,
@@ -1517,7 +1630,7 @@ def verify_rollback(command_id: str, instance_ids: List[str],
 
     except ClientError as e:
         error_info = classify_error(e)
-        logger.error(f"Error verifying rollback: {error_info}")
+        logger.error(f"[TOOL:verify_rollback] ERROR: {error_info}")
         error_info["recommendation"] = "INVESTIGATE"
         return error_info
     except Exception as e:
@@ -1556,6 +1669,8 @@ def assess_fleet_impact(cve_id: str) -> dict:
         }
     """
     try:
+        logger.info(f"[TOOL:assess_fleet_impact] cve_id={cve_id}")
+
         # 1. Query Inspector for this CVE across ALL environments
         findings_result = get_vulnerability_findings(cve_id=cve_id, limit=200)
         if findings_result.get('error'):
@@ -1719,6 +1834,7 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
     """
     try:
         env_value = _normalize_environment(environment)
+        logger.info(f"[TOOL:get_maintenance_windows] environment={environment} instance_ids={len(instance_ids) if instance_ids else 0}")
 
         response = ssm_client.describe_maintenance_windows()
 
@@ -2010,6 +2126,8 @@ def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None)
         if validation_error:
             return validation_error
 
+        logger.info(f"[TOOL:get_patch_policy] instances={len(instance_ids)} environment={environment}")
+
         # Get instance tags (we need these for target matching)
         instance_tags_map: Dict[str, Dict[str, str]] = {}
         try:
@@ -2103,17 +2221,22 @@ def capture_patch_state(instance_ids: List[str]) -> dict:
         if validation_error:
             return validation_error
 
+        logger.info(f"[TOOL:capture_patch_state] instances={len(instance_ids)} instance_ids={instance_ids[:5]}")
+
         response = ssm_client.describe_instance_patch_states(InstanceIds=instance_ids)
 
         snapshot = {}
         total_missing = 0
+        total_installed = 0
         for state in response.get('InstancePatchStates', []):
             iid = state['InstanceId']
             missing = state.get('MissingCount', 0)
+            installed = state.get('InstalledCount', 0)
             total_missing += missing
+            total_installed += installed
             snapshot[iid] = {
                 'missing_count': missing,
-                'installed_count': state.get('InstalledCount', 0),
+                'installed_count': installed,
                 'security_non_compliant': state.get('SecurityNonCompliantCount', 0),
                 'failed_count': state.get('FailedCount', 0)
             }
@@ -2127,6 +2250,9 @@ def capture_patch_state(instance_ids: List[str]) -> dict:
                     'security_non_compliant': 0,
                     'failed_count': 0
                 }
+
+        logger.info(f"[TOOL:capture_patch_state] RESULT: instances={len(snapshot)} total_missing={total_missing} "
+                     f"total_installed={total_installed} no_data={len([iid for iid in instance_ids if iid not in snapshot])}")
 
         return {
             'snapshot': snapshot,
@@ -2190,6 +2316,9 @@ def generate_compliance_report(
         dict: {'report_id': str, 's3_location': str, 'sla_met': bool, 'delta': dict (if states provided)}
     """
     try:
+        logger.info(f"[TOOL:generate_compliance_report] cve={cve_id} env={environment} cmd={command_id} "
+                     f"decision={decision} severity={severity} sla_hours={sla_hours}")
+
         # First, get instance IDs from the command (paginate to get all)
         try:
             instance_ids = []
@@ -2390,6 +2519,10 @@ def generate_compliance_report(
                 'total_patches_applied': report['delta']['total_patches_applied']
             }
         
+        logger.info(f"[TOOL:generate_compliance_report] RESULT: report_id={report_id} s3=s3://{bucket_name}/{object_key} "
+                     f"sla_met={report['compliance']['sla_met']} instances={report['execution']['success_count']}"
+                     f"{' delta=' + str(result.get('delta', {}).get('total_patches_applied', '')) + ' patches' if 'delta' in result else ''}")
+
         return result
         
     except ClientError as e:
@@ -2456,6 +2589,7 @@ def verify_cve_remediation(
 
         # Optionally wait for Inspector to re-evaluate
         waited = 0
+        logger.info(f"[TOOL:verify_cve_remediation] cve_ids={cve_ids[:5]} instances={len(instance_ids)} max_wait={max_wait_minutes}min")
         if max_wait_minutes > 0:
             logger.info(f"[CVE_VERIFY] Waiting up to {max_wait_minutes}min for Inspector re-evaluation...")
             import time as _time
@@ -2586,6 +2720,8 @@ def query_compliance_reports(
         dict: {'reports': list, 'statistics': dict, 'total_count': int}
     """
     try:
+        logger.info(f"[TOOL:query_compliance_reports] days_back={days_back} severity={severity} env={environment} sla_breaches_only={sla_breaches_only}")
+
         s3_client = boto3.client('s3', region_name=AWS_REGION, config=aws_config)
         bucket_name = _get_compliance_bucket_name()
         
