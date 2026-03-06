@@ -173,6 +173,10 @@ async def auth_middleware(request: Request, call_next):
     # Logout needs ALB headers but not role-based auth
     if request.url.path == "/api/logout":
         return await call_next(request)
+    
+    # Signed-out landing page is unauthenticated (bypassed at ALB level too)
+    if request.url.path == "/signed-out":
+        return await call_next(request)
 
     role = _resolve_role(request)
 
@@ -413,17 +417,16 @@ async def auth_config(request: Request):
 async def logout(request: Request):
     """Clear ALB session cookie and redirect to Cognito logout.
     
-    The ALB Cognito auth uses AWSELBAuthSessionCookie to maintain sessions.
-    Simply redirecting to Cognito /logout doesn't clear this cookie, so the
-    ALB re-authenticates immediately. This endpoint clears the cookie first,
-    then redirects to Cognito /logout which clears the Cognito session and
-    redirects back to the app (where the ALB will force a fresh login).
+    Per AWS docs: set ALB cookie expiry to -1, then redirect to Cognito /logout.
+    The logout_uri must point to an unauthenticated page (not behind ALB auth).
+    We use /signed-out which is bypassed in the ALB listener rules.
     """
     cognito_domain = os.environ.get("COGNITO_DOMAIN_PREFIX", "")
     region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
     host = request.headers.get("host", "")
     scheme = request.headers.get("x-forwarded-proto", "https")
-    redirect_uri = f"{scheme}://{host}"
+    # logout_uri must be an unauthenticated page (bypassed in ALB listener rules)
+    signed_out_uri = f"{scheme}://{host}/signed-out"
 
     # Extract client_id from access token
     client_id = ""
@@ -439,27 +442,34 @@ async def logout(request: Request):
             pass
 
     if cognito_domain and client_id:
-        # Use logout_uri to redirect back to the app after Cognito clears its session.
-        # The ALB session cookie is cleared below, so the ALB will force a fresh
-        # Cognito login when the user hits the app again.
         cognito_logout = (
             f"https://{cognito_domain}.auth.{region}.amazoncognito.com/logout?"
             f"client_id={client_id}&"
-            f"logout_uri={redirect_uri}"
+            f"logout_uri={signed_out_uri}"
         )
     else:
-        # Fallback: just redirect to home (ALB will re-auth)
-        cognito_logout = redirect_uri
+        cognito_logout = signed_out_uri
 
     from starlette.responses import RedirectResponse
     response = RedirectResponse(url=cognito_logout)
-    # Clear ALB session cookies using the same approach as the demo repo:
-    # set to "empty" with negative max_age to expire immediately.
-    # delete_cookie() may not work if the ALB set the cookie with a specific domain.
-    for i in range(10):
-        cookie_name = f"AWSELBAuthSessionCookie-{i}" if i > 0 else "AWSELBAuthSessionCookie-0"
-        response.set_cookie(cookie_name, "empty", max_age=-3600, path="/")
+    # Clear ALB session cookies per AWS docs: set expiry to -1
+    for i in range(4):
+        response.set_cookie(f"AWSELBAuthSessionCookie-{i}", "", max_age=-1, path="/")
     return response
+
+
+@app.get("/signed-out")
+async def signed_out():
+    """Unauthenticated landing page after logout. Must be bypassed in ALB auth rules."""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html><head><title>Signed Out — Patchy</title>
+    <style>body{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f9fafb}
+    .card{text-align:center;padding:3rem;border-radius:12px;background:white;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    a{color:#2563eb;text-decoration:none;font-weight:600}</style></head>
+    <body><div class="card"><h2>👋 Signed out</h2><p>You have been signed out of Patchy.</p><p><a href="/">Sign in again</a></p></div></body></html>
+    """)
 
 
 # ── Dashboard ────────────────────────────────────────────────────────

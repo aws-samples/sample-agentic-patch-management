@@ -220,6 +220,7 @@ export class UIStack extends cdk.Stack {
           ],
           logoutUrls: [
             `https://${albDns}`,
+            `https://${albDns}/signed-out`,
           ],
         },
         supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
@@ -242,6 +243,15 @@ export class UIStack extends cdk.Stack {
       httpsListener.addAction('HealthBypass', {
         priority: 1,
         conditions: [elbv2.ListenerCondition.pathPatterns(['/api/health'])],
+        action: elbv2.ListenerAction.forward([targetGroup]),
+      });
+
+      // Signed-out page must be unauthenticated per AWS docs:
+      // "Client logout landing pages are unauthenticated. This means that they
+      // cannot be behind an Application Load Balancer rule that requires authentication."
+      httpsListener.addAction('SignedOutBypass', {
+        priority: 2,
+        conditions: [elbv2.ListenerCondition.pathPatterns(['/signed-out'])],
         action: elbv2.ListenerAction.forward([targetGroup]),
       });
 
