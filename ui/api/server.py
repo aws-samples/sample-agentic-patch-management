@@ -439,16 +439,13 @@ async def logout(request: Request):
             pass
 
     if cognito_domain and client_id:
-        # Use redirect_uri (not logout_uri) to force Cognito to show the login page.
-        # With logout_uri, Cognito clears its session but if the browser has a cached
-        # session, the user gets auto-logged back in. redirect_uri forces the login prompt.
-        callback_uri = f"{scheme}://{host}/oauth2/idpresponse"
+        # Use logout_uri to redirect back to the app after Cognito clears its session.
+        # The ALB session cookie is cleared below, so the ALB will force a fresh
+        # Cognito login when the user hits the app again.
         cognito_logout = (
             f"https://{cognito_domain}.auth.{region}.amazoncognito.com/logout?"
             f"client_id={client_id}&"
-            f"logout_uri={redirect_uri}&"
-            f"redirect_uri={callback_uri}&"
-            f"response_type=code"
+            f"logout_uri={redirect_uri}"
         )
     else:
         # Fallback: just redirect to home (ALB will re-auth)
@@ -456,10 +453,12 @@ async def logout(request: Request):
 
     from starlette.responses import RedirectResponse
     response = RedirectResponse(url=cognito_logout)
-    # Clear all ALB session cookies (ALB uses numbered cookies for large sessions)
+    # Clear ALB session cookies using the same approach as the demo repo:
+    # set to "empty" with negative max_age to expire immediately.
+    # delete_cookie() may not work if the ALB set the cookie with a specific domain.
     for i in range(10):
         cookie_name = f"AWSELBAuthSessionCookie-{i}" if i > 0 else "AWSELBAuthSessionCookie-0"
-        response.delete_cookie(cookie_name, path="/")
+        response.set_cookie(cookie_name, "empty", max_age=-3600, path="/")
     return response
 
 
