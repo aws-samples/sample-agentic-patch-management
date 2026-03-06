@@ -58,7 +58,8 @@ export class UIStack extends cdk.Stack {
       effect: iam.Effect.ALLOW,
       actions: [
         'ec2:DescribeInstances', 'ec2:DescribeTags',
-        'ssm:DescribeInstanceInformation', 'inspector2:ListFindings',
+        'ssm:DescribeInstanceInformation', 'ssm:DescribeInstancePatchStates',
+        'inspector2:ListFindings',
         'sts:GetCallerIdentity',
       ],
       resources: ['*'],

@@ -509,8 +509,8 @@ def _fetch_environments():
                     "installed": state.get("InstalledCount", 0),
                     "failed": state.get("FailedCount", 0),
                 }
-        except Exception:
-            pass  # Patch data unavailable — show instance health only
+        except Exception as e:
+            logger.warning(f"Could not fetch patch states: {e}")  # Task role may lack ssm:DescribeInstancePatchStates
 
     results = []
     for env in sorted(env_instances.keys()):
