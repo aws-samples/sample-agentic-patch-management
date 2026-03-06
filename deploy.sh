@@ -447,6 +447,8 @@ deploy_ui() {
     if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
         npm ci --silent
     fi
+    # Compile TypeScript before CDK deploy (CDK uses .js files, not .ts)
+    npx tsc
     ensure_cdk_bootstrap
 
     # Clear CDK output cache to ensure fresh Docker image hash.
