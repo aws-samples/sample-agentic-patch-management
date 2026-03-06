@@ -166,8 +166,12 @@ def _resolve_role(request: Request) -> str | None:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    # Health check is always open
+    # Health check is always open (also bypassed at ALB level)
     if request.url.path == "/api/health":
+        return await call_next(request)
+    
+    # Logout needs ALB headers but not role-based auth
+    if request.url.path == "/api/logout":
         return await call_next(request)
 
     role = _resolve_role(request)
@@ -387,62 +391,70 @@ async def get_role(request: Request):
 
 @app.get("/api/auth/config")
 async def auth_config(request: Request):
-    """Return auth configuration for the frontend (logout URL, user email, etc.).
-
-    When behind an ALB with Cognito, the logout URL points to the Cognito
-    hosted UI /logout endpoint which clears the session and redirects back.
-    """
+    """Return auth configuration for the frontend (logout URL, user email)."""
     email = getattr(request.state, "cognito_email", None)
     cognito_domain = os.environ.get("COGNITO_DOMAIN_PREFIX", "")
-    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
 
-    # Build logout URL if Cognito is configured
+    # Build logout URL — points to /api/logout which clears ALB cookie then Cognito session
     logout_url = None
     if cognito_domain and email:
-        # Get client_id from Cognito app client (via access token or env)
-        client_id = ""
-        access_token = request.headers.get("x-amzn-oidc-accesstoken", "")
-        if access_token:
-            try:
-                import base64
-                payload = access_token.split('.')[1]
-                payload += '=' * (4 - len(payload) % 4)
-                claims = json.loads(base64.b64decode(payload))
-                client_id = claims.get("client_id", "")
-            except Exception as e:
-                logger.warning(f"Could not extract client_id from access token: {e}")
+        host = request.headers.get("host", "")
+        scheme = request.headers.get("x-forwarded-proto", "https")
+        logout_url = f"{scheme}://{host}/api/logout"
 
-        if client_id:
-            # Use the current request's host as the logout redirect target
-            host = request.headers.get("host", "")
-            scheme = request.headers.get("x-forwarded-proto", "https")
-            logout_redirect = f"{scheme}://{host}"
-            cognito_base = f"https://{cognito_domain}.auth.{region}.amazoncognito.com"
-            logout_url = (
-                f"{cognito_base}/logout?"
-                f"client_id={client_id}&"
-                f"logout_uri={logout_redirect}"
-            )
-        else:
-            logger.warning(f"Could not build logout URL: client_id empty, access_token present={bool(access_token)}")
-            # Use the current request's host as the logout redirect target
-            host = request.headers.get("host", "")
-            scheme = request.headers.get("x-forwarded-proto", "https")
-            logout_redirect = f"{scheme}://{host}"
-            cognito_base = f"https://{cognito_domain}.auth.{region}.amazoncognito.com"
-            logout_url = (
-                f"{cognito_base}/logout?"
-                f"client_id={client_id}&"
-                f"logout_uri={logout_redirect}"
-            )
-
-    result = {
+    return {
         "email": email,
         "logoutUrl": logout_url,
         "cognitoEnabled": email is not None,
     }
-    logger.info(f"[AUTH_CONFIG] email={email} logoutUrl={'set' if logout_url else 'None'} cognito_domain={cognito_domain}")
-    return result
+
+
+@app.get("/api/logout")
+async def logout(request: Request):
+    """Clear ALB session cookie and redirect to Cognito logout.
+    
+    The ALB Cognito auth uses AWSELBAuthSessionCookie to maintain sessions.
+    Simply redirecting to Cognito /logout doesn't clear this cookie, so the
+    ALB re-authenticates immediately. This endpoint clears the cookie first,
+    then redirects to Cognito /logout which clears the Cognito session and
+    redirects back to the app (where the ALB will force a fresh login).
+    """
+    cognito_domain = os.environ.get("COGNITO_DOMAIN_PREFIX", "")
+    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+    host = request.headers.get("host", "")
+    scheme = request.headers.get("x-forwarded-proto", "https")
+    redirect_uri = f"{scheme}://{host}"
+
+    # Extract client_id from access token
+    client_id = ""
+    access_token = request.headers.get("x-amzn-oidc-accesstoken", "")
+    if access_token:
+        try:
+            import base64
+            payload = access_token.split('.')[1]
+            payload += '=' * (4 - len(payload) % 4)
+            claims = json.loads(base64.b64decode(payload))
+            client_id = claims.get("client_id", "")
+        except Exception:
+            pass
+
+    if cognito_domain and client_id:
+        cognito_logout = (
+            f"https://{cognito_domain}.auth.{region}.amazoncognito.com/logout?"
+            f"client_id={client_id}&"
+            f"logout_uri={redirect_uri}"
+        )
+    else:
+        # Fallback: just redirect to home (ALB will re-auth)
+        cognito_logout = redirect_uri
+
+    from starlette.responses import RedirectResponse
+    response = RedirectResponse(url=cognito_logout)
+    # Clear all ALB session cookies (ALB uses numbered cookies for large sessions)
+    for i in range(10):
+        cookie_name = f"AWSELBAuthSessionCookie-{i}" if i > 0 else "AWSELBAuthSessionCookie-0"
+        response.delete_cookie(cookie_name, path="/")
+    return response
 
 
 # ── Dashboard ────────────────────────────────────────────────────────
