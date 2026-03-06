@@ -399,7 +399,7 @@ async def auth_config(request: Request):
     # Build logout URL if Cognito is configured
     logout_url = None
     if cognito_domain and email:
-        # Extract client_id from the ALB-injected access token
+        # Get client_id from Cognito app client (via access token or env)
         client_id = ""
         access_token = request.headers.get("x-amzn-oidc-accesstoken", "")
         if access_token:
@@ -409,8 +409,8 @@ async def auth_config(request: Request):
                 payload += '=' * (4 - len(payload) % 4)
                 claims = json.loads(base64.b64decode(payload))
                 client_id = claims.get("client_id", "")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not extract client_id from access token: {e}")
 
         if client_id:
             # Use the current request's host as the logout redirect target
@@ -423,12 +423,26 @@ async def auth_config(request: Request):
                 f"client_id={client_id}&"
                 f"logout_uri={logout_redirect}"
             )
+        else:
+            logger.warning(f"Could not build logout URL: client_id empty, access_token present={bool(access_token)}")
+            # Use the current request's host as the logout redirect target
+            host = request.headers.get("host", "")
+            scheme = request.headers.get("x-forwarded-proto", "https")
+            logout_redirect = f"{scheme}://{host}"
+            cognito_base = f"https://{cognito_domain}.auth.{region}.amazoncognito.com"
+            logout_url = (
+                f"{cognito_base}/logout?"
+                f"client_id={client_id}&"
+                f"logout_uri={logout_redirect}"
+            )
 
-    return {
+    result = {
         "email": email,
         "logoutUrl": logout_url,
         "cognitoEnabled": email is not None,
     }
+    logger.info(f"[AUTH_CONFIG] email={email} logoutUrl={'set' if logout_url else 'None'} cognito_domain={cognito_domain}")
+    return result
 
 
 # ── Dashboard ────────────────────────────────────────────────────────
