@@ -1675,7 +1675,10 @@ def assess_fleet_impact(cve_id: str) -> dict:
         logger.info(f"[TOOL:assess_fleet_impact] cve_id={cve_id}")
 
         # 1. Query Inspector for this CVE across ALL environments
-        findings_result = get_vulnerability_findings(cve_id=cve_id, limit=200)
+        # Use a high limit to capture all affected instances. The tool paginates
+        # internally so total_count is always accurate, but the findings list
+        # (and thus instance IDs we can extract) is capped at limit.
+        findings_result = get_vulnerability_findings(cve_id=cve_id, limit=500)
         if findings_result.get('error'):
             return findings_result
 
