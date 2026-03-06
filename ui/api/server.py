@@ -512,6 +512,8 @@ def _fetch_environments():
         except Exception as e:
             logger.warning(f"Could not fetch patch states: {e}")  # Task role may lack ssm:DescribeInstancePatchStates
 
+    logger.info(f"[DASHBOARD] patch_states: {len(patch_states)} instances, all_ids: {len(all_ids)}")
+
     results = []
     for env in sorted(env_instances.keys()):
         ids = env_instances[env]

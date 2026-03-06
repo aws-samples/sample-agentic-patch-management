@@ -449,6 +449,8 @@ deploy_ui() {
     fi
     ensure_cdk_bootstrap
 
+    # Ensure env vars are exported for CDK subprocess
+    export ACM_CERTIFICATE_ARN COGNITO_DOMAIN_PREFIX COGNITO_ENABLED
     npx cdk deploy Patchy-UI \
         --exclusively \
         --require-approval never \
