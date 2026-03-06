@@ -297,6 +297,7 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
         # Paginate through all findings for accurate counts
         findings = []
         total_count = 0
+        severity_counts = {}
         next_token = None
 
         while True:
@@ -315,6 +316,9 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
 
             for finding in response.get('findings', []):
                 total_count += 1
+                # Count severity breakdown from ALL findings (not just truncated list)
+                sev = finding.get('severity', 'UNKNOWN')
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
                 # Only keep up to `limit` findings for the response payload
                 if len(findings) < limit:
                     vuln_details = finding.get('packageVulnerabilityDetails', {})
@@ -333,15 +337,12 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
             if not next_token:
                 break
 
-        severity_breakdown = {}
-        for f in findings:
-            s = f.get('severity', 'UNKNOWN')
-            severity_breakdown[s] = severity_breakdown.get(s, 0) + 1
-        logger.info(f"[TOOL:get_vulnerability_findings] RESULT: {total_count} findings, returned={len(findings)}, severity={severity_breakdown}")
+        logger.info(f"[TOOL:get_vulnerability_findings] RESULT: {total_count} findings, returned={len(findings)}, severity={severity_counts}")
 
         return {
             "findings": findings,
-            "total_count": total_count
+            "total_count": total_count,
+            "severity_counts": severity_counts
         }
     except ClientError as e:
         error_info = classify_error(e)
@@ -408,12 +409,13 @@ def get_patch_compliance(environment: str,
         if not instance_ids:
             return {"instances": [], "total_count": 0, "ec2_instance_ids": []}
         
-        # Single API call to get patch states for all instances
-        response = ssm_client.describe_instance_patch_states(InstanceIds=instance_ids)
-        
+        # Paginate describe_instance_patch_states (max 50 per call)
         instances = []
         ssm_found_ids = set()
-        for state in response.get('InstancePatchStates', []):
+        for i in range(0, len(instance_ids), 50):
+            batch = instance_ids[i:i+50]
+            response = ssm_client.describe_instance_patch_states(InstanceIds=batch)
+            for state in response.get('InstancePatchStates', []):
             ssm_found_ids.add(state['InstanceId'])
             instances.append({
                 'instance_id': state['InstanceId'],
@@ -1185,9 +1187,10 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
             'total_instances': len(instance_ids),
             'unhealthy_instances': unhealthy_count,
             'total_alarms_firing': total_alarms,
-            'recommendation': 'HEALTHY' if unhealthy_count == 0 else 'ROLLBACK_RECOMMENDED',
+            'recommendation': 'HEALTHY' if unhealthy_count == 0 else 'INVESTIGATE',
             'message': (
-                f'{unhealthy_count} instances have alarms firing ({total_alarms} total alarms)' 
+                f'{unhealthy_count} instances have alarms firing ({total_alarms} total alarms). '
+                'Check alarm timestamps — pre-existing alarms may not be related to the current operation.'
                 if unhealthy_count > 0 
                 else 'All instances healthy - no alarms firing'
             )
@@ -2416,6 +2419,7 @@ def generate_compliance_report(
                 "sla_hours": sla_hours,
                 "sla_source": sla_source,
                 "time_to_patch_hours": round(time_to_patch_hours, 2),
+                "time_to_patch_note": "Measures command execution duration, not time from CVE discovery. For accurate SLA tracking, compare CVE first-seen date from Inspector against patched_at.",
                 "sla_met": time_to_patch_hours <= sla_hours if sla_hours else None
             },
             
