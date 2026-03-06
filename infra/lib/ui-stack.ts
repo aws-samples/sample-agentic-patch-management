@@ -36,11 +36,18 @@ export class UIStack extends cdk.Stack {
     });
 
     // ── Docker image ───────────────────────────────────────────────
+    // BUILD_TIMESTAMP build arg ensures CDK always detects a new image hash.
+    // Without this, CDK's content-addressable caching can skip rebuilds when
+    // only server.py or frontend source files change (the Dockerfile itself
+    // hasn't changed, so CDK may reuse the cached image).
     const image = new ecr_assets.DockerImageAsset(this, 'UIImage', {
       directory: path.join(__dirname, '..', '..'),
       file: 'Dockerfile',
       platform: ecr_assets.Platform.LINUX_AMD64,
       exclude: ['infra/node_modules', 'infra/cdk.out', 'venv', '.git', 'node_modules'],
+      buildArgs: {
+        BUILD_TIMESTAMP: new Date().toISOString(),
+      },
     });
 
     // ── IAM roles ──────────────────────────────────────────────────

@@ -449,13 +449,49 @@ deploy_ui() {
     fi
     ensure_cdk_bootstrap
 
+    # Clear CDK output cache to ensure fresh Docker image hash.
+    # CDK's content-addressable caching can skip image rebuilds even when
+    # source files change. The BUILD_TIMESTAMP build arg in ui-stack.ts
+    # ensures a new hash, but stale cdk.out can still cause issues.
+    rm -rf cdk.out 2>/dev/null
+
+    # Guard: verify Cognito env vars are set before deploying.
+    # Running cdk deploy without ACM_CERTIFICATE_ARN will flip cognitoEnabled=false
+    # and tear down the public ALB + Cognito — a destructive, hard-to-recover mistake.
+    if [ "$use_cognito" = true ] && [ -z "$ACM_CERTIFICATE_ARN" ]; then
+        print_error "ACM_CERTIFICATE_ARN is not set but Cognito is enabled. This would destroy the public ALB."
+        print_error "Run ./setup-tls.sh first, or set ACM_CERTIFICATE_ARN in .env"
+        cd ..
+        exit 1
+    fi
+
+    # Capture current task definition revision for post-deploy verification
+    local pre_deploy_taskdef
+    pre_deploy_taskdef=$(aws ecs describe-services \
+        --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --services "$(aws ecs list-services --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" --query 'serviceArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
+
     # Ensure env vars are exported for CDK subprocess
     export ACM_CERTIFICATE_ARN COGNITO_DOMAIN_PREFIX COGNITO_ENABLED
     npx cdk deploy Patchy-UI \
         --exclusively \
         --require-approval never \
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
-    print_status "Web UI deployed"
+
+    # Verify deployment actually updated the task definition
+    local post_deploy_taskdef
+    post_deploy_taskdef=$(aws ecs describe-services \
+        --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --services "$(aws ecs list-services --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" --query 'serviceArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
+
+    if [ "$pre_deploy_taskdef" = "$post_deploy_taskdef" ] && [ "$pre_deploy_taskdef" != "none" ]; then
+        print_warning "Task definition unchanged ($post_deploy_taskdef) — CDK may have skipped the image rebuild."
+        print_warning "If you changed server.py or frontend code, try: rm -rf infra/cdk.out && ./deploy.sh ui"
+    else
+        print_status "Web UI deployed (task definition: $post_deploy_taskdef)"
+    fi
 
     # ── Fix Cognito callback URLs (lowercase ALB DNS) ──────────────
     # ALB DNS names are mixed-case but browsers lowercase them.
