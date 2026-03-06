@@ -468,7 +468,12 @@ async def signed_out():
     <style>body{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f9fafb}
     .card{text-align:center;padding:3rem;border-radius:12px;background:white;box-shadow:0 1px 3px rgba(0,0,0,.1)}
     a{color:#2563eb;text-decoration:none;font-weight:600}</style></head>
-    <body><div class="card"><h2>👋 Signed out</h2><p>You have been signed out of Patchy.</p><p><a href="/" onclick="window.location.replace('/?t='+Date.now());return false;">Sign in again</a></p></div></body></html>
+    <body><div class="card"><h2>👋 Signed out</h2><p>You have been signed out of Patchy.</p><p><a href="/">Sign in again</a></p></div>
+    <script>
+    // Auto-redirect to login after 2 seconds — forces full page load through ALB auth
+    setTimeout(function() { window.location.replace('/'); }, 2000);
+    </script>
+    </body></html>
     """)
 
 
