@@ -588,7 +588,6 @@ def _fetch_vulnerabilities():
     session = _aws_session()
     inspector = session.client("inspector2")
 
-    severity_counts: dict[str, int] = {}
     # Deduplicate: CVE ID → aggregated finding
     cve_map: dict[str, dict] = {}
     next_token = None
@@ -610,7 +609,6 @@ def _fetch_vulnerabilities():
             vuln = f.get("packageVulnerabilityDetails", {})
             sev = f.get("severity", "UNKNOWN")
             cve_id = vuln.get("vulnerabilityId", "N/A")
-            severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
             # Extract environment and resource type
             env = "unknown"
@@ -655,6 +653,12 @@ def _fetch_vulnerabilities():
     # Sort by severity order, then CVSS desc
     sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFORMATIONAL": 4, "UNTRIAGED": 5, "UNKNOWN": 6}
     findings = sorted(cve_map.values(), key=lambda x: (sev_order.get(x["severity"], 9), -(x["cvss_score"] or 0)))
+
+    # Count unique CVEs per severity (not total findings which double-counts per instance)
+    severity_counts = {}
+    for cve in findings:
+        sev = cve["severity"]
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
     return {"findings": findings, "severity_counts": severity_counts}
 

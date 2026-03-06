@@ -180,36 +180,16 @@ function DonutCard({ title, centerValue, data, legend }: {
 /* ── Environment Summary ──────────────────────────────────────── */
 
 function EnvironmentSummary({ environments }: { environments: DashboardData["environments"] }) {
-  const totalInstances = environments.reduce((s, e) => s + e.total, 0);
   const totalVulns = environments.reduce((s, e) => s + e.vuln_total, 0);
-  const maxInstances = Math.max(...environments.map(e => e.total), 1);
   const maxVulns = Math.max(...environments.map(e => e.vuln_total), 1);
 
   return (
     <Card className="hover:shadow-md transition-shadow">
       <CardContent className="p-4">
-        <h3 className="text-sm font-semibold text-gray-700 mb-3">Environment Summary</h3>
-
-        {/* Instance bars */}
-        <p className="text-[11px] text-gray-500 mb-1.5">Total Instances: {totalInstances}</p>
-        <div className="space-y-1.5 mb-4">
-          {environments.map(env => (
-            <div key={env.environment} className="flex items-center gap-2">
-              <span className="text-[11px] text-gray-600 w-14 text-right capitalize">{env.environment}</span>
-              <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-blue-500 flex items-center justify-end pr-1.5 text-[9px] text-white font-medium transition-all"
-                  style={{ width: `${(env.total / maxInstances) * 100}%`, minWidth: env.total > 0 ? '24px' : '0' }}
-                >
-                  {env.total}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <h3 className="text-sm font-semibold text-gray-700 mb-3">Vulnerabilities by Environment</h3>
 
         {/* Vulnerability bars (stacked by severity) */}
-        <p className="text-[11px] text-gray-500 mb-1.5">Vulnerabilities: {totalVulns}</p>
+        <p className="text-[11px] text-gray-500 mb-1.5">Unique CVEs: {totalVulns}</p>
         <div className="space-y-1.5 mb-2">
           {environments.map(env => {
             const c = env.vulns["CRITICAL"] ?? 0;
