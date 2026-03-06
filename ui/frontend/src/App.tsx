@@ -68,14 +68,17 @@ export default function App() {
           </Menu>
 
           {auth?.logoutUrl && (
-            <a
-              href={auth.logoutUrl}
-              className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-gray-800 hover:bg-red-700 transition text-gray-200 no-underline"
+            <button
+              onClick={() => {
+                localStorage.removeItem("session_id");
+                window.location.replace(auth.logoutUrl!);
+              }}
+              className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-gray-800 hover:bg-red-700 transition text-gray-200 cursor-pointer border-0"
               title="Sign out"
             >
               <ArrowRightStartOnRectangleIcon className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Sign out</span>
-            </a>
+            </button>
           )}
 
           <a
