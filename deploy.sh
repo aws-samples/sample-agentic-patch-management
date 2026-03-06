@@ -518,7 +518,7 @@ deploy_ui() {
                 --allowed-o-auth-scopes openid email profile \
                 --allowed-o-auth-flows-user-pool-client \
                 --callback-urls "https://${alb_dns}/oauth2/idpresponse" "https://${alb_dns_lower}/oauth2/idpresponse" \
-                --logout-urls "https://${alb_dns}" "https://${alb_dns_lower}" \
+                --logout-urls "https://${alb_dns}" "https://${alb_dns_lower}" "https://${alb_dns}/signed-out" "https://${alb_dns_lower}/signed-out" \
                 > /dev/null 2>&1
             print_status "Cognito callback URLs updated (added lowercase: ${alb_dns_lower})"
 
