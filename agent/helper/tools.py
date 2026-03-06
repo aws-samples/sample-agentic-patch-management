@@ -1129,36 +1129,25 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
         if validation_error:
             return validation_error
 
-        # Query all alarms in ALARM state with pagination
+        # Fetch all alarms in ALARM state once, then filter by instance ID client-side.
+        # describe_alarms doesn't support dimension filtering, so we fetch all and match.
+        # For accounts with many alarms, consider using describe_alarms with AlarmNamePrefix
+        # if alarm naming follows a convention (e.g., "{instance_id}-*").
         alarms_in_alarm = []
-        next_token = None
-        
-        while True:
-            params = {'StateValue': 'ALARM', 'MaxRecords': 100}
-            if next_token:
-                params['NextToken'] = next_token
-            
-            response = cloudwatch_client.describe_alarms(**params)
-            alarms_in_alarm.extend(response.get('MetricAlarms', []))
-            
-            next_token = response.get('NextToken')
-            if not next_token:
-                break
-        
+        paginator = cloudwatch_client.get_paginator('describe_alarms')
+        for page in paginator.paginate(StateValue='ALARM', MaxRecords=100):
+            alarms_in_alarm.extend(page.get('MetricAlarms', []))
+
         alarm_results = []
         for instance_id in instance_ids:
             instance_alarms = []
-            
             for alarm in alarms_in_alarm:
-                # Check if alarm has InstanceId dimension
                 dimensions = alarm.get('Dimensions', [])
                 has_instance = any(
-                    d['Name'] == 'InstanceId' and d['Value'] == instance_id 
+                    d['Name'] == 'InstanceId' and d['Value'] == instance_id
                     for d in dimensions
                 )
-                
                 if has_instance:
-                    # Apply optional name filter
                     if alarm_name_pattern is None or alarm_name_pattern.lower() in alarm['AlarmName'].lower():
                         instance_alarms.append({
                             'name': alarm['AlarmName'],
@@ -1166,10 +1155,10 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
                             'reason': alarm.get('StateReason', 'Unknown'),
                             'timestamp': str(alarm.get('StateUpdatedTimestamp', 'N/A'))
                         })
-            
+
             # Limit to 5 most recent alarms to avoid token bloat
             instance_alarms = instance_alarms[:5]
-            
+
             alarm_results.append({
                 'instance_id': instance_id,
                 'alarm_count': len(instance_alarms),
@@ -1320,6 +1309,11 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
 @tool
 def rollback_patches(instance_ids: List[str]) -> dict:
     """Rollback patches on EC2 instances using yum history.
+    
+    IMPORTANT: This only undoes the LAST yum transaction on each instance.
+    If AWS-RunPatchBaseline Install split the operation into multiple yum
+    transactions, or if another yum operation ran between patching and rollback,
+    this may not fully revert all changes. Verify with verify_rollback after.
     
     Args:
         instance_ids: List of EC2 instance IDs to rollback patches on
@@ -2441,17 +2435,20 @@ def generate_compliance_report(
         post_patch_state = _unwrap_patch_state(post_patch_state)
         if pre_patch_state and post_patch_state:
             delta_instances = []
-            total_before_missing = 0
-            total_after_missing = 0
+            total_patches_applied = 0
             for iid in instance_ids:
                 before = pre_patch_state.get(iid, {})
                 after = post_patch_state.get(iid, {})
-                before_missing = before.get('missing_count', 0)
-                after_missing = after.get('missing_count', 0)
                 before_installed = before.get('installed_count', 0)
                 after_installed = after.get('installed_count', 0)
-                total_before_missing += before_missing
-                total_after_missing += after_missing
+                before_missing = before.get('missing_count', 0)
+                after_missing = after.get('missing_count', 0)
+                
+                # Use installed_count delta as the reliable measure of patches applied.
+                # MissingCount can be misleading due to SSM compliance reconciliation
+                # (packages already at latest version get reclassified during Install).
+                patches_applied = max(0, after_installed - before_installed)
+                total_patches_applied += patches_applied
                 
                 before_total = before_installed + before_missing
                 after_total = after_installed + after_missing
@@ -2460,9 +2457,11 @@ def generate_compliance_report(
                 
                 delta_instances.append({
                     'instance_id': iid,
+                    'before_installed': before_installed,
+                    'after_installed': after_installed,
                     'before_missing': before_missing,
                     'after_missing': after_missing,
-                    'patches_applied': max(0, before_missing - after_missing),
+                    'patches_applied': patches_applied,
                     'compliance_before_pct': before_pct,
                     'compliance_after_pct': after_pct
                 })
@@ -2474,7 +2473,7 @@ def generate_compliance_report(
             
             report['delta'] = {
                 'instances': delta_instances,
-                'total_patches_applied': total_before_missing - total_after_missing,
+                'total_patches_applied': total_patches_applied,
                 'avg_compliance_before': avg_before,
                 'avg_compliance_after': avg_after,
                 'compliance_improvement': round(avg_after - avg_before, 1)
