@@ -48,6 +48,9 @@ export class UIStack extends cdk.Stack {
       buildArgs: {
         BUILD_TIMESTAMP: new Date().toISOString(),
       },
+      // extraHash forces CDK to compute a new asset hash every deploy,
+      // ensuring the Docker image is always rebuilt with latest source code.
+      extraHash: new Date().toISOString(),
     });
 
     // ── IAM roles ──────────────────────────────────────────────────
