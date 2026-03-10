@@ -353,11 +353,16 @@ deploy_agent() {
     fi
 
     # 3. Upload baseline overrides (idempotent — always runs, just 4 small S3 puts)
+    #    May fail on first deploy before Patchy-Core creates the S3 bucket — that's OK.
     echo -e "${BLUE}Uploading severity-scoped baseline overrides to S3...${NC}"
-    python setup_baseline_overrides.py || print_warning "Baseline overrides upload failed — run manually later: python agent/setup_baseline_overrides.py"
+    if python setup_baseline_overrides.py; then
+        print_status "Baseline overrides uploaded"
+    else
+        print_warning "Baseline overrides upload skipped (S3 bucket may not exist yet — will retry after infra deploy)"
+    fi
 
     # 4. Validate IAM policy grants memory access for the correct memory_id
-    _fix_memory_iam_if_needed "$current_account"
+    _fix_memory_iam_if_needed "$current_account" || true
 
     cd ..
 }
@@ -655,6 +660,12 @@ case "$COMMAND" in
         setup_environment
         deploy_agent
         deploy_infra $INCLUDE_DEMO
+
+        # Retry baseline overrides now that S3 bucket exists (may have failed during deploy_agent)
+        echo -e "${BLUE}Ensuring baseline overrides are uploaded...${NC}"
+        (cd agent && source ../venv/bin/activate && python setup_baseline_overrides.py) || \
+            print_warning "Baseline overrides still failed — run manually: cd agent && python setup_baseline_overrides.py"
+
         deploy_ui
 
         echo ""
