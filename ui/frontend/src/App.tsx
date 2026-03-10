@@ -109,8 +109,7 @@ export default function App() {
         {/* Dashboard panel — collapsible */}
         {dashboardOpen && (
           <div className="w-[72%] min-w-[500px] border-r border-gray-200 overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between px-5 pt-4 pb-2 shrink-0 bg-white">
-              <h2 className="text-lg font-semibold text-gray-900">Dashboard</h2>
+            <div className="flex items-center justify-end px-5 pt-4 pb-2 shrink-0 bg-white">
               <button
                 onClick={() => setDashboardOpen(false)}
                 className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition"

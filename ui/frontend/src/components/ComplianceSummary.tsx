@@ -1,12 +1,24 @@
 import { useMemo, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
-import { Badge, sevVariant, decisionVariant, SlaBadge } from "./ui/Badge";
+import { Badge, sevVariant, SlaBadge } from "./ui/Badge";
 import { Card, CardContent } from "./ui/Card";
 import type { ComplianceSummary as ComplianceData, ReportDetail } from "../lib/api";
 
 /** Parse timestamps that may have a trailing Z after a UTC offset (e.g. +00:00Z) */
 function parseTimestamp(ts: string): Date {
   return new Date(ts.replace(/([+-]\d{2}:\d{2})Z$/, "$1"));
+}
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 interface Props {
@@ -94,7 +106,7 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50/80 border-b border-gray-200">
-              {["When", "CVE", "Env", "Team", "Severity", "Decision", "Framework", "Patch Time", "SLA", "Result"].map((h) => (
+              {["When", "CVE", "Env", "Team", "Product", "Severity", "Patch Time", "SLA", "Result"].map((h) => (
                 <th key={h} scope="col" className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{h}</th>
               ))}
             </tr>
@@ -102,17 +114,14 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
           <tbody className="divide-y divide-gray-100">
             {paged.map((item) => (
               <tr key={item.report_id} className="hover:bg-blue-50/30 transition-colors">
-                <td className="py-2.5 px-3 text-xs text-gray-500">{parseTimestamp(item.timestamp).toLocaleString()}</td>
+                <td className="py-2.5 px-3 text-xs text-gray-500" title={parseTimestamp(item.timestamp).toLocaleString()}>{relativeTime(item.timestamp)}</td>
                 <td className="py-2.5 px-3 text-blue-600 font-medium">{item.cve_id}</td>
                 <td className="py-2.5 px-3 text-gray-700">{item.environment}</td>
                 <td className="py-2.5 px-3 text-gray-700">{item.team}</td>
+                <td className="py-2.5 px-3 text-gray-700 text-xs">{item.product}</td>
                 <td className="py-2.5 px-3">
                   <Badge variant={sevVariant(item.severity)}>{item.severity}</Badge>
                 </td>
-                <td className="py-2.5 px-3">
-                  <Badge variant={decisionVariant(item.decision)}>{item.decision}</Badge>
-                </td>
-                <td className="py-2.5 px-3 text-gray-700 text-xs">{item.sla_source}</td>
                 <td className="py-2.5 px-3 text-gray-700">{item.time_to_patch_hours != null ? `${item.time_to_patch_hours}h` : "—"}</td>
                 <td className="py-2.5 px-3">
                   <SlaBadge met={item.sla_met} />

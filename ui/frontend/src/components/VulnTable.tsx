@@ -87,10 +87,10 @@ export default function VulnTable({ items, severityCounts: _severityCounts, load
                   CVSS <ChevronUpDownIcon className={`w-3 h-3 ${sortByCvss ? "text-blue-600" : ""}`} aria-hidden="true" />
                 </span>
               </th>
-              <Th>Service</Th>
-              <Th>Environments</Th>
               <Th>Instances</Th>
+              <Th>Environments</Th>
               <Th>Fix</Th>
+              <Th>Service</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -108,23 +108,23 @@ export default function VulnTable({ items, severityCounts: _severityCounts, load
                   <Badge variant={sevVariant(item.severity)}>{item.severity}</Badge>
                 </td>
                 <td className="py-2.5 px-3 text-gray-700 font-mono text-xs">{item.cvss_score ?? "—"}</td>
-                <td className="py-2.5 px-3">
-                  <div className="flex gap-1 flex-wrap">
-                    {(item.services ?? []).map((s, j) => (
-                      <span key={j} className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{s}</span>
-                    ))}
-                  </div>
-                </td>
+                <td className="py-2.5 px-3 text-gray-700 font-medium">{(item.instance_count ?? 1).toLocaleString()}</td>
                 <td className="py-2.5 px-3 text-gray-700 text-xs">
                   {(item.environments ?? [item.environment]).join(", ")}
                 </td>
-                <td className="py-2.5 px-3 text-gray-700 font-medium">{item.instance_count ?? 1}</td>
                 <td className="py-2.5 px-3">
                   {item.fix_available === "YES" ? (
                     <Badge variant="success">Available</Badge>
                   ) : (
                     <span className="text-gray-400 text-xs">No</span>
                   )}
+                </td>
+                <td className="py-2.5 px-3">
+                  <div className="flex gap-1 flex-wrap">
+                    {(item.services ?? []).map((s, j) => (
+                      <span key={j} className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{s}</span>
+                    ))}
+                  </div>
                 </td>
               </tr>
             ))}

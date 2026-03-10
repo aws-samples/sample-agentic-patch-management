@@ -3,7 +3,6 @@ import { ArrowPathIcon, ExclamationCircleIcon, XMarkIcon } from "@heroicons/reac
 import KpiBar from "./KpiBar";
 import EnvironmentCards from "./EnvironmentCards";
 import VulnTable from "./VulnTable";
-import ActivityTable from "./ActivityTable";
 import ComplianceSummary from "./ComplianceSummary";
 import ExplainabilityTable from "./ExplainabilityTable";
 import { KpiSkeleton, CardsSkeleton } from "./ui/Skeleton";
@@ -14,18 +13,17 @@ interface Props {
 }
 
 const TABS = [
-  { id: "overview", label: "Environments" },
   { id: "vulnerabilities", label: "Vulnerabilities" },
-  { id: "activity", label: "Activity" },
+  { id: "overview", label: "Environments" },
   { id: "compliance", label: "Compliance" },
-  { id: "explainability", label: "Decisions" },
+  { id: "explainability", label: "Activity & Decisions" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
 
 export default function DashboardPanel({ onChatPrefill }: Props) {
   const { data, loading, error, lastRefreshed, refresh } = useDashboard();
-  const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [activeTab, setActiveTab] = useState<TabId>("vulnerabilities");
   const [dismissedErrors, setDismissedErrors] = useState<Set<number>>(new Set());
 
   if (loading && !data) {
@@ -58,6 +56,16 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
 
   return (
     <div className="space-y-4">
+      {/* Dashboard header with scope */}
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-gray-900">Dashboard</h2>
+        {data.scopes?.[0] && (
+          <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+            {data.scopes[0].accountId} · {data.scopes[0].region}
+          </span>
+        )}
+      </div>
+
       {/* Error alerts */}
       {data.errors.filter((_, i) => !dismissedErrors.has(i)).map((err, i) => (
         <div key={i} className="flex items-start gap-2.5 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800 animate-fade-in">
@@ -70,7 +78,7 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
       ))}
 
       {/* KPI bar */}
-      <KpiBar data={data} />
+      <KpiBar data={data} onTabChange={(tab) => setActiveTab(tab as TabId)} />
 
       {/* Tabs + refresh */}
       <div className="flex items-center justify-between border-b border-gray-200">
@@ -79,8 +87,7 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
             const isActive = activeTab === tab.id;
             let count: number | null = null;
             if (tab.id === "vulnerabilities") count = vulnCount;
-            if (tab.id === "activity") count = data.activities.length;
-            if (tab.id === "explainability") count = data.reportDetails.length;
+            if (tab.id === "explainability") count = data.reportDetails.length || data.activities.length;
             return (
               <button
                 key={tab.id}
@@ -105,7 +112,9 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
         </div>
         <div className="flex items-center gap-2 pb-1">
           {lastRefreshed && (
-            <span className="text-xs text-gray-400">{lastRefreshed.toLocaleTimeString()}</span>
+            <span className="text-xs text-gray-400" title={lastRefreshed.toLocaleTimeString()}>
+              Updated {Math.max(1, Math.round((Date.now() - lastRefreshed.getTime()) / 60000))}m ago
+            </span>
           )}
           <button
             onClick={() => refresh(true)}
@@ -133,13 +142,6 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
             severityCounts={data.severityCounts}
             loading={loading}
             onCveClick={(cve, env) => onChatPrefill?.(`Handle ${cve} in ${env} environment`)}
-          />
-        )}
-        {activeTab === "activity" && (
-          <ActivityTable
-            items={data.activities}
-            loading={loading}
-            onRowClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
           />
         )}
         {activeTab === "compliance" && (

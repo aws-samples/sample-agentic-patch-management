@@ -9,6 +9,18 @@ function parseTimestamp(ts: string): Date {
   return new Date(ts.replace(/([+-]\d{2}:\d{2})Z$/, "$1"));
 }
 
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 interface Props {
   items: ReportDetail[];
   loading: boolean;
@@ -48,7 +60,7 @@ export default function ExplainabilityTable({ items, loading, onCveClick }: Prop
             {paged.map((item) => (
               <>
                 <tr key={item.report_id} className="hover:bg-blue-50/30 transition-colors">
-                  <td className="py-2.5 px-3 text-xs text-gray-500">{parseTimestamp(item.timestamp).toLocaleString()}</td>
+                  <td className="py-2.5 px-3 text-xs text-gray-500" title={parseTimestamp(item.timestamp).toLocaleString()}>{relativeTime(item.timestamp)}</td>
                   <td className="py-2.5 px-3">
                     <button
                       onClick={() => onCveClick?.(item.cve_id, item.environment)}
@@ -59,7 +71,7 @@ export default function ExplainabilityTable({ items, loading, onCveClick }: Prop
                   </td>
                   <td className="py-2.5 px-3 text-gray-700">{item.environment}</td>
                   <td className="py-2.5 px-3 text-gray-700">{item.team}</td>
-                  <td className="py-2.5 px-3 text-xs text-gray-500">{item.operator || "—"}</td>
+                  <td className="py-2.5 px-3 text-xs text-gray-500">{item.operator || <Badge variant="info">Automated</Badge>}</td>
                   <td className="py-2.5 px-3">
                     <Badge variant={decisionVariant(item.decision)}>{item.decision}</Badge>
                   </td>
