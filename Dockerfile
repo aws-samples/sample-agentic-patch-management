@@ -5,7 +5,7 @@
 FROM public.ecr.aws/docker/library/node:20-slim AS frontend-build
 WORKDIR /build
 COPY ui/frontend/package.json ui/frontend/package-lock.json ./
-RUN npm ci --silent
+RUN npm ci
 COPY ui/frontend/ ./
 ARG BUILD_TIMESTAMP
 RUN npm run build

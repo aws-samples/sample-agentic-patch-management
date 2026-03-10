@@ -49,10 +49,10 @@ show_help() {
     echo "  1. cp .env.example .env"
     echo "  2. Edit .env — set AWS_PROFILE and AWS_REGION"
     echo "  3. ./deploy.sh"
-    echo "  4. ./connect-ui.sh  (opens UI via SSM port forwarding)"
+    echo "  4. Open the URL printed at the end (Cognito login)"
     echo ""
     echo "That's it. The script handles agent deployment, role detection,"
-    echo "CDK bootstrap, infrastructure, and UI automatically."
+    echo "CDK bootstrap, TLS, Cognito, and UI automatically."
     echo ""
 }
 
@@ -637,6 +637,12 @@ case "$COMMAND" in
         check_prereqs false true true
         echo -e "${BLUE}Intelligent Patch Automation — Redeploy UI${NC}"
         echo "=================================================="
+        export AWS_PROFILE AWS_DEFAULT_REGION="$AWS_REGION" AWS_DEFAULT_PROFILE="$AWS_PROFILE"
+        if ! aws sts get-caller-identity &> /dev/null; then
+            print_error "AWS credentials not valid. Run: aws configure --profile $AWS_PROFILE"
+            exit 1
+        fi
+        print_status "AWS environment ready (profile: $AWS_PROFILE, region: $AWS_REGION)"
         deploy_ui
         ;;
 
