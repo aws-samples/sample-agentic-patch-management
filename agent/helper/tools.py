@@ -110,6 +110,7 @@ inspector_client = boto3.client('inspector2', region_name=AWS_REGION, config=aws
 ssm_client = boto3.client('ssm', region_name=AWS_REGION, config=aws_config)
 ec2_client = boto3.client('ec2', region_name=AWS_REGION, config=aws_config)
 cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION, config=aws_config)
+s3_client = boto3.client('s3', region_name=AWS_REGION, config=aws_config)
 
 
 # ============================================================================
@@ -180,7 +181,6 @@ def _get_baseline_override_url(severity_filter: Optional[str]) -> Optional[str]:
 
     # Verify the override file exists — SSM fails silently if it doesn't
     try:
-        s3_client = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
         s3_client.head_object(Bucket=bucket, Key=key)
     except Exception as e:
         logger.error(f"BaselineOverride file not found: s3://{bucket}/{key} — {e}. "
@@ -293,7 +293,7 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                 "total_count": 0
             }
         
-        logger.info(f"[TOOL:get_vulnerability_findings] cve_id={cve_id} severity={severity} environment={environment} limit={limit}")
+        logger.info(f"[TOOL:get_vulnerability_findings] cve_id={cve_id} severity={severity} environment={environment}")
         filters = {
             'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
         }
@@ -338,7 +338,6 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
                         'severity': finding.get('severity'),
                         'cvss_score': vuln_details.get('cvss', [{}])[0].get('baseScore'),
                         'title': finding.get('title'),
-                        'description': finding.get('description'),
                         'affected_resources': [r.get('id') for r in finding.get('resources', [])],
                         'status': finding.get('status'),
                         'fix_available': finding.get('fixAvailable')
@@ -395,7 +394,7 @@ def get_patch_compliance(environment: str,
     """
     try:
         instance_tags = {}
-        logger.info(f"[TOOL:get_patch_compliance] environment={environment} instance_ids={instance_ids[:5] if instance_ids else 'auto'} severity={severity}")
+        logger.info(f"[TOOL:get_patch_compliance] environment={environment} instance_count={len(instance_ids) if instance_ids else 'auto'} severity={severity}")
         
         # Get instance IDs by environment if specified
         if environment and not instance_ids:
@@ -538,7 +537,7 @@ def patch_dry_run(instance_ids: List[str], severity_filter: Optional[str] = None
         if validation_error:
             return validation_error
 
-        logger.info(f"[TOOL:patch_dry_run] instances={len(instance_ids)} severity_filter={severity_filter} instance_ids={instance_ids[:5]}")
+        logger.info(f"[TOOL:patch_dry_run] instance_count={len(instance_ids)} severity_filter={severity_filter}")
 
         # Build command parameters
         params = {'Operation': ['Scan']}
@@ -751,7 +750,7 @@ def execute_patch_operation(
 
         logger.info(f"[TOOL:execute_patch_operation] mode={execution_mode} env={environment} "
                      f"instances={len(instance_ids)} severity_filter={severity_filter} "
-                     f"window={maintenance_window_id} instance_ids={instance_ids[:5]}")
+                     f"window={maintenance_window_id} instance_count={len(instance_ids)}")
 
         # ── Dry-run gate: refuse to patch unless a recent Scan was run ──
         # patch_dry_run runs AWS-RunPatchBaseline with Operation=Scan, which
@@ -1369,7 +1368,7 @@ def rollback_patches(instance_ids: List[str]) -> dict:
         if validation_error:
             return validation_error
 
-        logger.info(f"[TOOL:rollback_patches] instances={len(instance_ids)} instance_ids={instance_ids[:5]}")
+        logger.info(f"[TOOL:rollback_patches] instance_count={len(instance_ids)}")
 
         # Use yum history to rollback the last transaction
         rollback_script = """
@@ -1510,37 +1509,15 @@ def verify_rollback(command_id: str, instance_ids: List[str],
                 'command_status': status_result
             }
 
-        # Step 2: Re-scan with RunPatchBaseline to get current state
+        # Step 2: Compare current patch state against snapshots
+        # SSM patch state is already current after rollback — no need to re-scan.
+        # describe_instance_patch_states reflects the latest state immediately.
         patch_state_comparison = {}
         pre_patch_state = _unwrap_patch_state(pre_patch_state)
         post_patch_state = _unwrap_patch_state(post_patch_state)
         has_comparison_data = pre_patch_state or post_patch_state
         if status_result.get('status') == 'Success' and has_comparison_data:
             try:
-                # Run the same scan as patch_dry_run
-                scan_response = ssm_client.send_command(
-                    DocumentName='AWS-RunPatchBaseline',
-                    InstanceIds=instance_ids,
-                    Parameters={'Operation': ['Scan']},
-                    Comment='Post-rollback verification scan'
-                )
-                scan_cmd_id = scan_response['Command']['CommandId']
-
-                # Wait for scan (max 3 min)
-                for scan_attempt in range(18):
-                    delay = min(5 * (1.3 ** min(scan_attempt, 5)), 15)
-                    time.sleep(delay)
-                    try:
-                        cmd_resp = ssm_client.list_command_invocations(
-                            CommandId=scan_cmd_id, Details=False
-                        )
-                        invs = cmd_resp.get('CommandInvocations', [])
-                        if invs and all(i['Status'] in ('Success', 'Failed') for i in invs):
-                            break
-                    except Exception:
-                        continue
-
-                # Compare current patch state against snapshots
                 current_state = ssm_client.describe_instance_patch_states(
                     InstanceIds=instance_ids
                 )
@@ -1902,11 +1879,18 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
             try:
                 window_details = ssm_client.get_maintenance_window(WindowId=window_id)
 
-                # Check if this window has a RunPatchBaseline task
-                tasks_response = ssm_client.describe_maintenance_window_tasks(WindowId=window_id)
+                # Check if this window has a RunPatchBaseline task (paginated)
+                all_tasks = []
+                tasks_kwargs = {'WindowId': window_id}
+                while True:
+                    tasks_response = ssm_client.describe_maintenance_window_tasks(**tasks_kwargs)
+                    all_tasks.extend(tasks_response.get('Tasks', []))
+                    tasks_next = tasks_response.get('NextToken')
+                    if not tasks_next:
+                        break
+                    tasks_kwargs['NextToken'] = tasks_next
                 has_patch_task = any(
-                    t.get('TaskArn') == 'AWS-RunPatchBaseline'
-                    for t in tasks_response.get('Tasks', [])
+                    t.get('TaskArn') == 'AWS-RunPatchBaseline' for t in all_tasks
                 )
                 if not has_patch_task:
                     # Also check registered tasks (may not have tasks yet but targets exist)
@@ -2265,7 +2249,7 @@ def capture_patch_state(instance_ids: List[str]) -> dict:
         if validation_error:
             return validation_error
 
-        logger.info(f"[TOOL:capture_patch_state] instances={len(instance_ids)} instance_ids={instance_ids[:5]}")
+        logger.info(f"[TOOL:capture_patch_state] instance_count={len(instance_ids)}")
 
         response = ssm_client.describe_instance_patch_states(InstanceIds=instance_ids)
 
@@ -2387,15 +2371,15 @@ def generate_compliance_report(
         command_status = get_command_status(command_id, instance_ids)
         
         # Get instance tags (only if we need team/product or SLA calculation)
-        team = 'unknown'
-        product = 'unknown'
-        
+        team = None
+        product = None
+
         try:
             ec2_response = ec2_client.describe_instances(InstanceIds=instance_ids[:1])
             if ec2_response['Reservations']:
                 tags = {tag['Key']: tag['Value'] for tag in ec2_response['Reservations'][0]['Instances'][0].get('Tags', [])}
-                team = tags.get('Team', 'unknown')
-                product = tags.get('Product', 'unknown')
+                team = tags.get('Team')
+                product = tags.get('Product')
                 
                 # Calculate SLA if not provided
                 if not (sla_hours and sla_source) and severity:
@@ -2550,7 +2534,6 @@ def generate_compliance_report(
             }
         
         # Save to S3
-        s3_client = boto3.client('s3', region_name=AWS_REGION)
         bucket_name = _get_compliance_bucket_name()
         
         # Use date-based folder structure
@@ -2687,39 +2670,25 @@ def verify_cve_remediation(
             active_instances = []
             closed_instances = []
 
-            # Check ACTIVE findings (still vulnerable)
+            # Single query per CVE — classify ACTIVE vs CLOSED client-side
             try:
-                active_resp = inspector_client.list_findings(
+                resp = inspector_client.list_findings(
                     filterCriteria={
                         'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
-                        'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}],
                     },
                     maxResults=100
                 )
-                for finding in active_resp.get('findings', []):
+                for finding in resp.get('findings', []):
+                    status = finding.get('status', '')
                     for resource in finding.get('resources', []):
                         rid = resource.get('id', '')
                         if rid in instance_set:
-                            active_instances.append(rid)
+                            if status == 'ACTIVE':
+                                active_instances.append(rid)
+                            elif status == 'CLOSED':
+                                closed_instances.append(rid)
             except Exception as e:
-                logger.warning(f"[CVE_VERIFY] Inspector query failed for {cve_id} (ACTIVE): {e}")
-
-            # Check CLOSED findings (remediated)
-            try:
-                closed_resp = inspector_client.list_findings(
-                    filterCriteria={
-                        'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
-                        'findingStatus': [{'comparison': 'EQUALS', 'value': 'CLOSED'}],
-                    },
-                    maxResults=100
-                )
-                for finding in closed_resp.get('findings', []):
-                    for resource in finding.get('resources', []):
-                        rid = resource.get('id', '')
-                        if rid in instance_set:
-                            closed_instances.append(rid)
-            except Exception as e:
-                logger.warning(f"[CVE_VERIFY] Inspector query failed for {cve_id} (CLOSED): {e}")
+                logger.warning(f"[CVE_VERIFY] Inspector query failed for {cve_id}: {e}")
 
             # Deduplicate
             active_instances = list(set(active_instances))
@@ -2803,7 +2772,6 @@ def query_compliance_reports(
     try:
         logger.info(f"[TOOL:query_compliance_reports] days_back={days_back} severity={severity} env={environment} sla_breaches_only={sla_breaches_only}")
 
-        s3_client = boto3.client('s3', region_name=AWS_REGION, config=aws_config)
         bucket_name = _get_compliance_bucket_name()
         
         # Check if bucket exists

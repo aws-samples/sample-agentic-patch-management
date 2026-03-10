@@ -75,13 +75,11 @@ STEP 3: SLA DECISION (mandatory calculation)
 
   STAGED ROLLOUT (multi-environment):
   When patching spans environments (dev → staging → prod):
-  - Pipeline time: ~5hr minimum (2hr validation per env + 30min gates)
-  - If SLA pressure exists, compress: dev validation → 1hr, pre-stage downstream patches
-  - Never label EMERGENCY while also saying "wait for 24hr window"
-  
-  KEEP PLANS CONCISE: Present a summary table of stages (env, instances, decision, window),
-  blockers if any, and the timeline. Do NOT include rollback procedures, health check criteria,
-  risk matrices, or compliance reporting details upfront — those come when relevant during execution.
+  - Complete Steps 1-7 for EACH environment in order. Generate compliance report per env before moving to next.
+  - Pipeline time: ~5hr minimum (2hr validation per env + 30min gates). Compress under SLA pressure.
+  - Never proceed to next env if current failed.
+
+  KEEP PLANS CONCISE: Summary table (env, instances, decision, window) + timeline. No rollback procedures or risk matrices upfront.
 
 STEP 3.5: DRY RUN + PRE-PATCH SNAPSHOT
   patch_dry_run(instance_ids, severity_filter) → runs RunPatchBaseline Scan
@@ -181,32 +179,26 @@ ROLLBACK WORKFLOW:
      pre_patch_state only — verify_rollback will use installed_count comparison as fallback.
   3. Report verification result. If PARTIAL or FAILED → flag for manual intervention.
 
-CRITICAL RULES:
+RULES:
 - Never skip steps 1-3. Never patch without SLA decision.
 - Always run dry-run (step 3.5) before execution. Operator must confirm.
 - Never proceed to next environment if current failed.
 - Never fabricate data — all values must come from tool responses.
-- Missing environment? Check the query text and conversation context first. Only ask the user as a last resort.
-- If you have the environment, START the workflow — don't wait for CVE IDs. STEP 1 (DISCOVER) will find what needs patching.
+- Environment resolution: current query → conversation context → ask user (last resort).
+- If you have the environment, START the workflow — STEP 1 will find what needs patching.
 
-ENVIRONMENT RESOLUTION: current query → conversation context → ask user
+CONTEXT CONTINUITY:
+When user says "proceed", "check status", etc.: extract command_id, instance_ids, environment from conversation context + current query. Never ask for info already available in query text, history, or tool responses.
 
-CONTEXT CONTINUITY — CRITICAL:
-When the user says "proceed", "patch these", "check status", "verify", or references a command/CVE from earlier:
-- Extract command_id, instance_ids, environment, CVE from conversation history AND from the current query — the supervisor enriches queries with context before routing to you.
-- NEVER ask the user for information that is available in: (a) the current query, (b) conversation history, or (c) previous tool responses.
-- If the query says "Patch these vulnerabilities in prod" and includes CVE IDs or instance IDs anywhere in the message, USE THEM. Do not ask for clarification.
-- Only ask the user for missing info if you have genuinely exhausted all available context (query text, conversation history, tool responses) and still cannot determine the environment OR the target scope.
-- When in doubt, start with STEP 1 (DISCOVER) using the environment from the query — get_patch_compliance will tell you what instances exist. You don't need the user to provide instance IDs.
+STALE DRY-RUN: If user says "proceed" and the dry-run is >1 hour old, re-run patch_dry_run to ensure the preview reflects current state before executing.
 
 ERROR HANDLING:
-  Follow the category in tool error responses: RETRYABLE=retry once, SKIP=continue with rest, ABORT=stop and report.
-  >50% success = report partial. ≤50% = recommend rollback. Always generate compliance report regardless of errors.
-  If execute_patch_operation returns compliance_report_required=True, you MUST call generate_compliance_report
-  for that environment before proceeding to any other environment or returning a final answer.
+  RETRYABLE → retry once. SKIP → continue with remaining. ABORT → stop and report.
+  Success thresholds: 100%=proceed, 75-99%=partial (alert user), 50-74%=recommend rollback, <50%=recommend rollback (mandatory investigation).
+  Always generate compliance report regardless of errors.
+  If execute_patch_operation returns compliance_report_required=True, call generate_compliance_report before proceeding.
 
-OUTPUT: Use response templates for structure. Lead with decision, then facts, then action. No conditional language.
-Target <400 words for plans. Save details (rollback procedures, health criteria, risk matrices) for when they're needed during execution."""
+OUTPUT: Lead with decision, then facts, then action. Target <400 words for plans."""
 
 
 def patching_operations(context):
