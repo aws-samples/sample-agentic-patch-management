@@ -118,7 +118,7 @@ function DonutCard({ title, centerValue, data, legend, onClick }: {
                   <Cell key={i} fill={entry.color} />
                 ))}
               </Pie>
-              <Tooltip formatter={(value: number) => value.toLocaleString()} />
+              <Tooltip formatter={(value) => (typeof value === "number" ? value.toLocaleString() : value)} />
             </PieChart>
           </ResponsiveContainer>
           {/* Center label */}
