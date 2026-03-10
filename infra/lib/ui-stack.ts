@@ -7,6 +7,9 @@ import * as elbv2_actions from 'aws-cdk-lib/aws-elasticloadbalancingv2-actions';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
@@ -37,20 +40,25 @@ export class UIStack extends cdk.Stack {
 
     // ── Docker image ───────────────────────────────────────────────
     // BUILD_TIMESTAMP build arg ensures CDK always detects a new image hash.
-    // Without this, CDK's content-addressable caching can skip rebuilds when
-    // only server.py or frontend source files change (the Dockerfile itself
-    // hasn't changed, so CDK may reuse the cached image).
+    // extraHash uses git commit SHA so rebuilds only happen when source changes,
+    // not on every synth. Falls back to a timestamp if git is unavailable.
+    const { execSync } = require('child_process');
+    let gitHash: string;
+    try {
+      gitHash = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
+    } catch {
+      gitHash = new Date().toISOString();
+    }
+
     const image = new ecr_assets.DockerImageAsset(this, 'UIImage', {
       directory: path.join(__dirname, '..', '..'),
       file: 'Dockerfile',
       platform: ecr_assets.Platform.LINUX_AMD64,
       exclude: ['infra/node_modules', 'infra/cdk.out', 'venv', '.git', 'node_modules'],
       buildArgs: {
-        BUILD_TIMESTAMP: new Date().toISOString(),
+        BUILD_TIMESTAMP: gitHash,
       },
-      // extraHash forces CDK to compute a new asset hash every deploy,
-      // ensuring the Docker image is always rebuilt with latest source code.
-      extraHash: new Date().toISOString(),
+      extraHash: gitHash,
     });
 
     // ── IAM roles ──────────────────────────────────────────────────
@@ -91,7 +99,7 @@ export class UIStack extends cdk.Stack {
     // ── Log group ──────────────────────────────────────────────────
     const logGroup = new logs.LogGroup(this, 'UILogGroup', {
       logGroupName: '/patch-automation/ui',
-      retention: logs.RetentionDays.TWO_WEEKS,
+      retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -142,6 +150,14 @@ export class UIStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
     });
     service.connections.allowFrom(alb, ec2.Port.tcp(8000), 'ALB to Fargate');
+
+    // ── Auto-scaling ──────────────────────────────────────────────
+    const scaling = service.autoScaleTaskCount({ minCapacity: 1, maxCapacity: 4 });
+    scaling.scaleOnCpuUtilization('CpuScaling', {
+      targetUtilizationPercent: 70,
+      scaleInCooldown: cdk.Duration.seconds(120),
+      scaleOutCooldown: cdk.Duration.seconds(60),
+    });
 
     // ── Target group (shared) ──────────────────────────────────────
     // Logical ID includes Cognito flag so switching ALB scheme forces a new TG
@@ -336,5 +352,36 @@ export class UIStack extends cdk.Stack {
       value: logGroup.logGroupName,
       description: 'CloudWatch log group for UI container',
     });
+
+    // ── CloudWatch alarms + SNS ───────────────────────────────────
+    const alertTopic = new sns.Topic(this, 'PatchyAlertTopic', {
+      displayName: 'Patchy Operational Alerts',
+    });
+    new cdk.CfnOutput(this, 'AlertTopicArn', {
+      value: alertTopic.topicArn,
+      description: 'SNS topic ARN for operational alerts — subscribe an email or Slack webhook',
+    });
+
+    // Fargate CPU alarm
+    new cloudwatch.Alarm(this, 'FargateCpuAlarm', {
+      alarmName: 'patchy-ui-cpu-high',
+      alarmDescription: 'Fargate UI service CPU exceeds 80% for 5 minutes',
+      metric: service.metricCpuUtilization({ period: cdk.Duration.minutes(1) }),
+      threshold: 80,
+      evaluationPeriods: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    }).addAlarmAction(new cw_actions.SnsAction(alertTopic));
+
+    // ALB unhealthy targets
+    new cloudwatch.Alarm(this, 'ALBUnhealthyAlarm', {
+      alarmName: 'patchy-ui-unhealthy-targets',
+      alarmDescription: 'All Fargate targets are unhealthy',
+      metric: alb.metrics.httpCodeTarget(elbv2.HttpCodeTarget.TARGET_5XX_COUNT, {
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 10,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    }).addAlarmAction(new cw_actions.SnsAction(alertTopic));
   }
 }

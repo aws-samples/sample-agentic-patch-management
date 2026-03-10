@@ -14,7 +14,7 @@ from strands import tool
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 from croniter import croniter
-from helper.error_handling import classify_error
+from helper.error_handling import classify_error, retry_on_transient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -92,11 +92,14 @@ def _validate_instance_ids(instance_ids: List[str]) -> Optional[dict]:
             }
     return None
 
-# AWS client configuration with retry logic and timeouts
+# AWS client configuration with retry logic and timeouts.
+# Adaptive mode handles throttling with exponential backoff + jitter.
+# 5 attempts covers burst throttling; boto3 retries transparently before
+# the error reaches the tool function's classify_error() handler.
 aws_config = Config(
     retries={
-        'max_attempts': 3,
-        'mode': 'adaptive'  # Adaptive retry mode for better handling of throttling
+        'max_attempts': 5,
+        'mode': 'adaptive'
     },
     read_timeout=180,
     connect_timeout=10
@@ -115,18 +118,26 @@ cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION, config=aw
 
 @functools.lru_cache(maxsize=1)
 def _load_config() -> dict:
-    """Legacy — kept for backward compatibility. Returns empty dict.
-    SLA policies are now read from EC2 tags. Environment aliases are inline."""
-    return {}
+    """Load config.json — single source of truth for default SLA values."""
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'config.json')
+    try:
+        with open(config_path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not load config.json: {e}, using built-in defaults")
+        return {}
 
 
-# Default SLA hours by severity (used when instances don't have SLA tags)
-_DEFAULT_SLA = {
-    'CRITICAL': 24,
-    'HIGH': 72,
-    'MEDIUM': 168,
-    'LOW': 720,
-}
+def _get_default_sla() -> dict:
+    """Default SLA hours by severity, loaded from config.json."""
+    config = _load_config()
+    defaults = config.get('default', {})
+    return {
+        'CRITICAL': defaults.get('CRITICAL', 24),
+        'HIGH': defaults.get('HIGH', 72),
+        'MEDIUM': defaults.get('MEDIUM', 168),
+        'LOW': defaults.get('LOW', 720),
+    }
 
 def _get_compliance_bucket_name() -> str:
     """Get S3 bucket name for compliance reports (cached)."""
@@ -207,8 +218,8 @@ def _calculate_sla_requirement(frameworks: List[str], severity: str,
                 except ValueError:
                     logger.warning(f"Invalid SLA tag value: {tag_key}={tag_val}")
 
-        # Fall back to global defaults
-        sla_hours = _DEFAULT_SLA.get(sev, 24)
+        # Fall back to global defaults from config.json
+        sla_hours = _get_default_sla().get(sev, 24)
         logger.info(f"SLA from default: {sev}={sla_hours} (no {tag_key} tag found)")
         return {"sla_hours": sla_hours, "frameworks": frameworks,
                 "source": "default", "severity": sev}
@@ -416,19 +427,19 @@ def get_patch_compliance(environment: str,
             batch = instance_ids[i:i+50]
             response = ssm_client.describe_instance_patch_states(InstanceIds=batch)
             for state in response.get('InstancePatchStates', []):
-            ssm_found_ids.add(state['InstanceId'])
-            instances.append({
-                'instance_id': state['InstanceId'],
-                'patch_group': state.get('PatchGroup', 'N/A'),
-                'installed_count': state.get('InstalledCount', 0),
-                'missing_count': state.get('MissingCount', 0),
-                'failed_count': state.get('FailedCount', 0),
-                'security_non_compliant_count': state.get('SecurityNonCompliantCount', 0),
-                'operation': state.get('Operation', 'N/A'),
-                'operation_start_time': state.get('OperationStartTime', '').isoformat() if state.get('OperationStartTime') else 'N/A',
-                'operation_end_time': _format_utc_as_local(state.get('OperationEndTime', '').isoformat()) if state.get('OperationEndTime') else 'N/A',
-                'reboot_option': state.get('RebootOption', 'N/A')
-            })
+                ssm_found_ids.add(state['InstanceId'])
+                instances.append({
+                    'instance_id': state['InstanceId'],
+                    'patch_group': state.get('PatchGroup', 'N/A'),
+                    'installed_count': state.get('InstalledCount', 0),
+                    'missing_count': state.get('MissingCount', 0),
+                    'failed_count': state.get('FailedCount', 0),
+                    'security_non_compliant_count': state.get('SecurityNonCompliantCount', 0),
+                    'operation': state.get('Operation', 'N/A'),
+                    'operation_start_time': state.get('OperationStartTime', '').isoformat() if state.get('OperationStartTime') else 'N/A',
+                    'operation_end_time': _format_utc_as_local(state.get('OperationEndTime', '').isoformat()) if state.get('OperationEndTime') else 'N/A',
+                    'reboot_option': state.get('RebootOption', 'N/A')
+                })
         
         # Instances EC2 found but SSM has no patch data for (never scanned)
         unscanned_ids = [iid for iid in instance_ids if iid not in ssm_found_ids]
@@ -453,18 +464,27 @@ def get_patch_compliance(environment: str,
                      f"{' unscanned=' + str(len(unscanned_ids)) if unscanned_ids else ''}"
                      f"{' sla=' + str(result.get('sla_requirement', {}).get('sla_hours', '')) + 'hr' if result.get('sla_requirement') else ''}")
 
-        # Calculate SLA if severity provided — use strictest across ALL instances
+        # Calculate SLA if severity provided — pick the strictest (minimum hours)
+        # across all instances' tags, since different instances may have different
+        # compliance frameworks with different SLA requirements.
         if severity and instance_tags:
             all_frameworks = set()
-            for tags in instance_tags.values():
+            strictest_sla = None
+            for iid, tags in instance_tags.items():
                 frameworks_str = tags.get('ComplianceFrameworks', '')
                 if frameworks_str:
                     all_frameworks.update(f.strip() for f in frameworks_str.split(',') if f.strip())
-            
-            if all_frameworks:
-                sla_req = _calculate_sla_requirement(list(all_frameworks), severity)
-                if sla_req:
-                    result['sla_requirement'] = sla_req
+                sla_req = _calculate_sla_requirement(
+                    [f.strip() for f in frameworks_str.split(',') if f.strip()] if frameworks_str else [],
+                    severity,
+                    instance_tags=tags
+                )
+                if sla_req and (strictest_sla is None or sla_req['sla_hours'] < strictest_sla['sla_hours']):
+                    strictest_sla = sla_req
+
+            if strictest_sla:
+                strictest_sla['frameworks'] = list(all_frameworks)
+                result['sla_requirement'] = strictest_sla
         
         return result
     except ClientError as e:
@@ -542,8 +562,10 @@ def patch_dry_run(instance_ids: List[str], severity_filter: Optional[str] = None
         scan_command_id = response['Command']['CommandId']
 
         # Wait for scan to complete (max 5 minutes — scans can take a while)
-        for _ in range(30):
-            time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
+        for attempt in range(30):
+            # Exponential backoff: 5s, 7s, 10s, then cap at 15s
+            delay = min(5 * (1.3 ** min(attempt, 5)), 15)
+            time.sleep(delay)
             try:
                 cmd_response = ssm_client.list_command_invocations(
                     CommandId=scan_command_id, Details=False
@@ -796,6 +818,10 @@ def execute_patch_operation(
                 'RebootOption': ['NoReboot']
             }
             override_url = _get_baseline_override_url(severity_filter)
+            if severity_filter and not override_url:
+                logger.warning(f"Severity filter '{severity_filter}' requested but BaselineOverride "
+                               "file not found in S3. Patching with default baseline instead. "
+                               "Run setup_baseline_overrides.py to fix.")
             if override_url:
                 run_params['BaselineOverride'] = [override_url]
                 logger.info(f"Scheduled patch using BaselineOverride: {override_url}")
@@ -850,6 +876,10 @@ def execute_patch_operation(
                 'RebootOption': ['NoReboot']
             }
             override_url = _get_baseline_override_url(severity_filter)
+            if severity_filter and not override_url:
+                logger.warning(f"Severity filter '{severity_filter}' requested but BaselineOverride "
+                               "file not found in S3. Patching with default baseline instead. "
+                               "Run setup_baseline_overrides.py to fix.")
             if override_url:
                 cmd_params['BaselineOverride'] = [override_url]
                 logger.info(f"Emergency patch using BaselineOverride: {override_url}")
@@ -1231,16 +1261,27 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
             return validation_error
         
         # Poll command status until complete (max 10 minutes)
-        max_attempts = 60  # 10 min with 10s intervals
+        max_attempts = 60
         attempt = 0
-        
+
         while attempt < max_attempts:
             status_result = get_command_status(command_id, instance_ids)
-            
+
             if status_result.get('status') == 'Success':
-                # Wait 2 minutes for CloudWatch alarm evaluation
-                logger.info("Patching complete. Waiting 2 minutes for alarm evaluation...")
-                time.sleep(120)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
+                # Wait for CloudWatch alarm evaluation — poll every 15s up to 2 min,
+                # breaking early once alarms have had time to evaluate.
+                logger.info("Patching complete. Waiting for CloudWatch alarm evaluation...")
+                for cw_wait in range(8):  # 8 * 15s = 2 min max
+                    time.sleep(15)
+                    try:
+                        alarm_resp = cloudwatch_client.describe_alarms(
+                            StateValue='ALARM', MaxRecords=1
+                        )
+                        # After 60s minimum, alarms have had at least 1 evaluation period
+                        if cw_wait >= 3:
+                            break
+                    except Exception:
+                        pass
                 break
             elif status_result.get('status') == 'Failed':
                 return {
@@ -1249,12 +1290,13 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
                     'reason': 'Patch command failed',
                     'details': status_result
                 }
-            
-            # Still in progress
+
+            # Still in progress — exponential backoff: 5s, 7s, 10s, cap at 15s
             attempt += 1
             if attempt < max_attempts:
-                time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
-        
+                delay = min(5 * (1.3 ** min(attempt, 5)), 15)
+                time.sleep(delay)
+
         if attempt >= max_attempts:
             return {
                 'status': 'TIMEOUT',
@@ -1453,8 +1495,9 @@ def verify_rollback(command_id: str, instance_ids: List[str],
 
         # Step 1: Wait for rollback command to complete (max 5 min)
         status_result = None
-        for _ in range(30):
-            time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
+        for attempt in range(30):
+            delay = min(5 * (1.3 ** min(attempt, 5)), 15)
+            time.sleep(delay)
             status_result = get_command_status(command_id, instance_ids)
             if status_result.get('status') in ('Success', 'Failed'):
                 break
@@ -1484,8 +1527,9 @@ def verify_rollback(command_id: str, instance_ids: List[str],
                 scan_cmd_id = scan_response['Command']['CommandId']
 
                 # Wait for scan (max 3 min)
-                for _ in range(18):
-                    time.sleep(10)  # nosemgrep: python.lang.best-practice.arbitrary-sleep
+                for scan_attempt in range(18):
+                    delay = min(5 * (1.3 ** min(scan_attempt, 5)), 15)
+                    time.sleep(delay)
                     try:
                         cmd_resp = ssm_client.list_command_invocations(
                             CommandId=scan_cmd_id, Details=False
@@ -2387,6 +2431,30 @@ def generate_compliance_report(
             discovered_at = datetime.now(timezone.utc)
             patched_at = datetime.now(timezone.utc)
             time_to_patch_hours = 0
+
+        # Query Inspector for CVE first_observed_at — this is when the vulnerability
+        # was actually discovered, which is the true SLA clock start.
+        cve_first_seen = None
+        actual_time_to_patch_hours = None
+        if cve_id:
+            try:
+                inspector_resp = inspector_client.list_findings(
+                    filterCriteria={
+                        'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
+                    },
+                    maxResults=1
+                )
+                findings = inspector_resp.get('findings', [])
+                if findings:
+                    first_seen = findings[0].get('firstObservedAt')
+                    if first_seen:
+                        if first_seen.tzinfo is None:
+                            first_seen = first_seen.replace(tzinfo=timezone.utc)
+                        cve_first_seen = first_seen
+                        actual_time_to_patch_hours = (patched_at - first_seen).total_seconds() / 3600
+                        logger.info(f"CVE {cve_id} first seen: {first_seen}, actual time-to-patch: {actual_time_to_patch_hours:.1f}h")
+            except Exception as e:
+                logger.warning(f"Could not query Inspector for CVE first_observed_at: {e}")
         
         # Build minimal report
         timestamp = datetime.now(timezone.utc)
@@ -2415,9 +2483,11 @@ def generate_compliance_report(
             "compliance": {
                 "sla_hours": sla_hours,
                 "sla_source": sla_source,
-                "time_to_patch_hours": round(time_to_patch_hours, 2),
-                "time_to_patch_note": "Measures command execution duration, not time from CVE discovery. For accurate SLA tracking, compare CVE first-seen date from Inspector against patched_at.",
-                "sla_met": time_to_patch_hours <= sla_hours if sla_hours else None
+                "command_duration_hours": round(time_to_patch_hours, 2),
+                "cve_first_seen": cve_first_seen.strftime('%Y-%m-%dT%H:%M:%S.%f+00:00') if cve_first_seen else None,
+                "time_to_patch_hours": round(actual_time_to_patch_hours, 2) if actual_time_to_patch_hours is not None else round(time_to_patch_hours, 2),
+                "time_to_patch_source": "inspector_first_observed" if actual_time_to_patch_hours is not None else "command_duration",
+                "sla_met": (actual_time_to_patch_hours if actual_time_to_patch_hours is not None else time_to_patch_hours) <= sla_hours if sla_hours else None
             },
             
             "execution": {
@@ -2597,9 +2667,14 @@ def verify_cve_remediation(
         waited = 0
         logger.info(f"[TOOL:verify_cve_remediation] cve_ids={cve_ids[:5]} instances={len(instance_ids)} max_wait={max_wait_minutes}min")
         if max_wait_minutes > 0:
-            logger.info(f"[CVE_VERIFY] Waiting up to {max_wait_minutes}min for Inspector re-evaluation...")
-            import time as _time
-            _time.sleep(min(max_wait_minutes, 5) * 60)  # Wait up to 5 min initially
+            # Progressive wait: check every 30s up to max_wait, instead of sleeping the full duration
+            wait_seconds = min(max_wait_minutes, 5) * 60
+            logger.info(f"[CVE_VERIFY] Waiting up to {wait_seconds}s for Inspector re-evaluation...")
+            elapsed = 0
+            while elapsed < wait_seconds:
+                step = min(30, wait_seconds - elapsed)
+                time.sleep(step)
+                elapsed += step
             waited = min(max_wait_minutes, 5)
 
         # Build instance ID set for fast lookup

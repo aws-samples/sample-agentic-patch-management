@@ -95,7 +95,7 @@ export default function ComplianceSummary({ data, reports, loading }: Props) {
           <thead>
             <tr className="bg-gray-50/80 border-b border-gray-200">
               {["When", "CVE", "Env", "Team", "Severity", "Decision", "Framework", "Patch Time", "SLA", "Result"].map((h) => (
-                <th key={h} className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{h}</th>
+                <th key={h} scope="col" className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{h}</th>
               ))}
             </tr>
           </thead>
@@ -158,6 +158,7 @@ function FilterSelect({ label, value, options, onChange }: { label: string; valu
     <select
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value || null)}
+      aria-label={`Filter by ${label.replace(/^All /, '')}`}
       className="text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm hover:border-gray-300 transition min-w-[140px]"
     >
       <option value="">{label}</option>

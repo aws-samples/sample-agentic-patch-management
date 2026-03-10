@@ -21,8 +21,8 @@ export default function MessageBubble({ message, isStreaming, onAction }: Props)
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4 animate-fade-in`}>
       {/* Agent avatar */}
       {!isUser && (
-        <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center text-sm shrink-0 mr-2 mt-0.5 shadow-sm">
-          🤖
+        <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center text-sm shrink-0 mr-2 mt-0.5 shadow-sm" role="img" aria-label="AI Assistant">
+          <span aria-hidden="true">{"\uD83E\uDD16"}</span>
         </div>
       )}
 

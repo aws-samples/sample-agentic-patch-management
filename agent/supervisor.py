@@ -256,14 +256,18 @@ async def agent_invocation(payload, context):
     request_start = time.time()
     
     user_message = payload.get("prompt", "Hello! I'm ready to help with intelligent patch automation.")
-    operator_identity = payload.get("operator", "unknown")
+    operator_identity = payload.get("operator", "").strip() or "unknown"
     user_timezone = payload.get("timezone", "UTC")
-    
+
+    if operator_identity == "unknown":
+        logger.warning("[SUPERVISOR] Operator identity not provided — audit trail will show 'unknown'. "
+                       "Ensure the UI/API sends an authenticated operator identity.")
+
     # Set operator identity and timezone in request-scoped context
     from helper.tools import set_operator, set_timezone
     set_operator(operator_identity)
     set_timezone(user_timezone)
-    
+
     logger.info(f"[SUPERVISOR] New request: operator={operator_identity} session={context.session_id}")
     logger.info(f"[SUPERVISOR] Message: {user_message[:100]}")
     

@@ -24,7 +24,7 @@ const TABS = [
 type TabId = (typeof TABS)[number]["id"];
 
 export default function DashboardPanel({ onChatPrefill }: Props) {
-  const { data, loading, lastRefreshed, refresh } = useDashboard();
+  const { data, loading, error, lastRefreshed, refresh } = useDashboard();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [dismissedErrors, setDismissedErrors] = useState<Set<number>>(new Set());
 
@@ -33,6 +33,21 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
       <div className="space-y-4 pt-1">
         <KpiSkeleton />
         <CardsSkeleton count={4} />
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="flex items-start gap-2.5 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800 mt-2">
+        <ExclamationCircleIcon className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+        <div>
+          <p className="font-medium">Dashboard failed to load</p>
+          <p className="text-xs text-red-600 mt-1">{error}</p>
+          <button onClick={() => refresh(true)} className="text-xs text-blue-600 hover:text-blue-800 mt-2 transition">
+            Try again
+          </button>
+        </div>
       </div>
     );
   }

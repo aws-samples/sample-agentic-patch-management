@@ -5,6 +5,8 @@ import { Construct } from 'constructs';
 
 export interface CoreStackProps extends cdk.StackProps {
   agentCoreRoleArn?: string;
+  /** Set to true for production deployments to use RETAIN removal policy on compliance data. */
+  production?: boolean;
 }
 
 /**
@@ -16,15 +18,14 @@ export class CoreStack extends cdk.Stack {
     super(scope, id, props);
 
     // ── S3 compliance reports bucket ───────────────────────────────
-    // NOTE: removalPolicy is DESTROY for clean teardown. For production,
-    // change to RETAIN and remove autoDeleteObjects to preserve audit data.
+    const isProduction = props?.production ?? false;
     const complianceReportsBucket = new s3.Bucket(this, 'ComplianceReportsBucket', {
       bucketName: `patch-compliance-reports-${this.account}`,
       versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
+      removalPolicy: isProduction ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: isProduction ? false : true,
       lifecycleRules: [{ expiration: cdk.Duration.days(365) }],
     });
 
@@ -38,6 +39,7 @@ export class CoreStack extends cdk.Stack {
       managedPolicyName: 'PatchyAgentCorePolicy',
       description: 'IAM permissions for Patchy AgentCore runtime',
       statements: [
+        // EC2 Describe actions do not support resource-level permissions
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [
@@ -47,21 +49,43 @@ export class CoreStack extends cdk.Stack {
           ],
           resources: ['*'],
         }),
+        // SSM read-only actions (Describe/List/Get do not support resource-level permissions)
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [
             'ssm:DescribeInstanceInformation', 'ssm:ListComplianceItems',
-            'ssm:SendCommand', 'ssm:GetCommandInvocation', 'ssm:ListCommandInvocations',
-            'ssm:ListCommands',
+            'ssm:GetCommandInvocation', 'ssm:ListCommandInvocations', 'ssm:ListCommands',
             'ssm:DescribeInstancePatches', 'ssm:DescribeInstancePatchStates',
             'ssm:DescribeMaintenanceWindows', 'ssm:GetMaintenanceWindow',
-            'ssm:DescribeMaintenanceWindowTargets', 'ssm:RegisterTaskWithMaintenanceWindow',
-            'ssm:DescribeMaintenanceWindowTasks', 'ssm:DescribePatchBaselines',
-            'ssm:GetPatchBaseline', 'ssm:CreatePatchBaseline', 'ssm:UpdatePatchBaseline',
-            'ssm:DeletePatchBaseline', 'ssm:ListInventoryEntries',
-            'ssm:ListAssociations', 'ssm:DescribeAssociation',
+            'ssm:DescribeMaintenanceWindowTargets', 'ssm:DescribeMaintenanceWindowTasks',
+            'ssm:DescribePatchBaselines', 'ssm:GetPatchBaseline',
+            'ssm:ListInventoryEntries', 'ssm:ListAssociations', 'ssm:DescribeAssociation',
           ],
           resources: ['*'],
+        }),
+        // SSM write actions — scoped to this account
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['ssm:SendCommand'],
+          resources: [
+            `arn:aws:ec2:*:${this.account}:instance/*`,
+            'arn:aws:ssm:*::document/AWS-RunPatchBaseline',
+          ],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'ssm:CreatePatchBaseline', 'ssm:UpdatePatchBaseline', 'ssm:DeletePatchBaseline',
+          ],
+          resources: [`arn:aws:ssm:*:${this.account}:patchbaseline/*`],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['ssm:RegisterTaskWithMaintenanceWindow'],
+          resources: [
+            `arn:aws:ssm:*:${this.account}:maintenancewindow/*`,
+            `arn:aws:ssm:*:${this.account}:windowtask/*`,
+          ],
         }),
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,

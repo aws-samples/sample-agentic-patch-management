@@ -14,22 +14,31 @@ interface AuthConfig {
  */
 export function useAuth() {
   const [auth, setAuth] = useState<AuthConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchAuth = () =>
       fetch("/api/auth/config")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => data ?? { email: null, logoutUrl: null, cognitoEnabled: false })
-        .catch(() => ({ email: null, logoutUrl: null, cognitoEnabled: false } as AuthConfig));
+        .then((r) => {
+          if (!r.ok) throw new Error(`Auth config failed: ${r.status}`);
+          return r.json();
+        })
+        .then((data) => data ?? { email: null, logoutUrl: null, cognitoEnabled: false });
 
-    fetchAuth().then((data) => {
-      setAuth(data);
-      // Retry once if logoutUrl is missing (ALB headers may not be ready yet)
-      if (data.email && !data.logoutUrl) {
-        setTimeout(() => fetchAuth().then(setAuth), 1500);
-      }
-    });
+    fetchAuth()
+      .then((data) => {
+        setAuth(data);
+        setError(null);
+        // Retry once if logoutUrl is missing (ALB headers may not be ready yet)
+        if (data.email && !data.logoutUrl) {
+          setTimeout(() => fetchAuth().then(setAuth).catch(() => {}), 1500);
+        }
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Auth unavailable");
+        setAuth({ email: null, logoutUrl: null, cognitoEnabled: false });
+      });
   }, []);
 
-  return auth;
+  return { auth, authError: error };
 }

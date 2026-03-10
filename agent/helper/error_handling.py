@@ -146,3 +146,38 @@ def classify_error(error: Exception) -> Dict[str, Any]:
         "suggestion": "Unexpected error. Report to user with error details.",
         "retryable": False,
     }
+
+
+def retry_on_transient(max_retries: int = 2, base_delay: float = 1.0):
+    """Decorator that retries a function on transient AWS errors.
+
+    Only retries when classify_error() returns category=RETRYABLE.
+    Uses exponential backoff with jitter. Intended for @tool functions
+    that make AWS API calls — boto3's built-in retry handles most
+    throttling, but this catches cases where the built-in retry is exhausted.
+
+    Usage:
+        @tool
+        @retry_on_transient(max_retries=2)
+        def my_tool(...):
+            ...
+    """
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except (ClientError, EndpointConnectionError, ReadTimeoutError) as e:
+                    last_error = e
+                    error_info = classify_error(e)
+                    if error_info["category"] != "RETRYABLE" or attempt == max_retries:
+                        raise
+                    delay = base_delay * (2 ** attempt) + (time.monotonic() % 0.5)
+                    logger.warning(f"[RETRY] {func.__name__} attempt {attempt + 1}/{max_retries} "
+                                   f"after {error_info['error_code']}, waiting {delay:.1f}s")
+                    time.sleep(delay)
+            raise last_error  # unreachable but satisfies type checker
+        return wrapper
+    return decorator

@@ -40,7 +40,7 @@ export default function ExplainabilityTable({ items, loading, onCveClick }: Prop
           <thead>
             <tr className="bg-gray-50/80 border-b border-gray-200">
               {["When", "CVE", "Env", "Team", "Operator", "Decision", "SLA", ""].map((h) => (
-                <th key={h} className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{h}</th>
+                <th key={h} scope="col" className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{h}</th>
               ))}
             </tr>
           </thead>

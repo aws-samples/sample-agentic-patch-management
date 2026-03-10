@@ -282,30 +282,57 @@ def _parse_agentcore_stream(event_stream, session_id: str = ""):
     # Use read1() on the underlying urllib3 stream for immediate delivery.
     # read1(N) returns up to N bytes already in the socket buffer — no
     # blocking wait to fill the buffer like read(N) does.
+    # Fallback uses iter_content() which is more efficient than read(1).
     raw_stream = getattr(event_stream, "_raw_stream", None)
 
     try:
-        while True:
-            if raw_stream and hasattr(raw_stream, "read1"):
+        if raw_stream and hasattr(raw_stream, "read1"):
+            # Fast path: non-blocking read from urllib3 raw stream
+            while True:
                 chunk = raw_stream.read1(8192)
-            else:
-                chunk = event_stream.read(1)
-
-            if not chunk:
-                break
-
-            try:
-                text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            except UnicodeDecodeError:
-                continue
-
-            line_buffer += text
-
-            while "\n" in line_buffer:
-                line, line_buffer = line_buffer.split("\n", 1)
-                result = _process_sse_line(line)
-                if result:
-                    yield result
+                if not chunk:
+                    break
+                try:
+                    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+                except UnicodeDecodeError:
+                    continue
+                line_buffer += text
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
+                    result = _process_sse_line(line)
+                    if result:
+                        yield result
+        elif hasattr(event_stream, "iter_content"):
+            # Fallback: use iter_content with reasonable chunk size
+            for chunk in event_stream.iter_content(chunk_size=4096):
+                if not chunk:
+                    continue
+                try:
+                    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+                except UnicodeDecodeError:
+                    continue
+                line_buffer += text
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
+                    result = _process_sse_line(line)
+                    if result:
+                        yield result
+        else:
+            # Last resort: read in larger chunks instead of byte-by-byte
+            while True:
+                chunk = event_stream.read(4096)
+                if not chunk:
+                    break
+                try:
+                    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+                except UnicodeDecodeError:
+                    continue
+                line_buffer += text
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
+                    result = _process_sse_line(line)
+                    if result:
+                        yield result
 
     except Exception as e:
         logger.error(f"Stream parse error: {e}")
@@ -361,9 +388,10 @@ async def chat(req: ChatRequest, request: Request):
         )
     except Exception as e:
         logger.error(f"invoke_agent_runtime failed: {e}")
+        error_msg = str(e)
 
         def error_stream():
-            yield _sse_event("error", message=str(e))
+            yield _sse_event("error", message=error_msg)
             yield _sse_event("done", duration_ms=0)
 
         return StreamingResponse(error_stream(), media_type="text/event-stream")

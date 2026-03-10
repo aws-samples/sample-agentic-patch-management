@@ -78,11 +78,13 @@ export default function VulnTable({ items, severityCounts: _severityCounts, load
               <Th>CVE ID</Th>
               <Th>Severity</Th>
               <th
+                scope="col"
                 onClick={() => { setSortByCvss((v) => !v); setCurrentPage(1); }}
                 className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3 cursor-pointer hover:text-gray-700 select-none transition"
+                aria-label={sortByCvss ? "CVSS score, sorted descending" : "CVSS score, click to sort"}
               >
                 <span className="inline-flex items-center gap-1">
-                  CVSS <ChevronUpDownIcon className={`w-3 h-3 ${sortByCvss ? "text-blue-600" : ""}`} />
+                  CVSS <ChevronUpDownIcon className={`w-3 h-3 ${sortByCvss ? "text-blue-600" : ""}`} aria-hidden="true" />
                 </span>
               </th>
               <Th>Service</Th>
@@ -150,7 +152,7 @@ export default function VulnTable({ items, severityCounts: _severityCounts, load
 }
 
 function Th({ children }: { children: React.ReactNode }) {
-  return <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{children}</th>;
+  return <th scope="col" className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{children}</th>;
 }
 
 function PagBtn({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled: boolean }) {

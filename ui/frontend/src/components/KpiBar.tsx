@@ -160,7 +160,7 @@ function DonutCard({ title, centerValue, data, legend }: {
           </ResponsiveContainer>
           {/* Center label */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-3xl font-bold text-gray-900">{centerValue}</span>
+            <span className="text-3xl font-bold text-gray-900" aria-label={`${title}: ${centerValue}`}>{centerValue}</span>
           </div>
         </div>
         {/* Legend */}
