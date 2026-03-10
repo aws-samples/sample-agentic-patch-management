@@ -143,16 +143,27 @@ function DonutCard({ title, centerValue, data, legend, onClick }: {
 /* ── SLA Breaches Card ────────────────────────────────────────── */
 
 function SlaBreachesCard({ breached, totalReports, onClick }: { breached: number; totalReports: number; onClick?: () => void }) {
+  const hasBreach = breached > 0;
   return (
-    <Card className={`hover:shadow-md transition-shadow ${breached > 0 ? "border-l-4 border-l-red-500" : ""} ${onClick ? "cursor-pointer" : ""}`} onClick={onClick}>
-      <CardContent className="p-4 flex flex-col items-center justify-center h-full">
-        <h3 className="text-sm font-semibold text-gray-700 mb-2">SLA Breaches (30 days)</h3>
-        <div className={`text-6xl font-bold ${breached > 0 ? "text-red-600" : "text-emerald-600"}`}>
+    <Card
+      className={`hover:shadow-md transition-shadow ${onClick ? "cursor-pointer" : ""} ${
+        hasBreach ? "border-l-4 border-l-red-500 bg-red-50/40 ring-1 ring-red-200" : ""
+      }`}
+      onClick={onClick}
+    >
+      <CardContent className="p-4 flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700">SLA Breaches (30 days)</h3>
+          <p className={`text-sm mt-1 ${hasBreach ? "text-red-500" : "text-emerald-500"}`}>
+            {hasBreach ? "Requires attention" : totalReports > 0 ? "All SLAs met" : "No reports yet"}
+          </p>
+          {onClick && hasBreach && (
+            <span className="text-xs text-red-600 font-medium mt-1 inline-block">View details →</span>
+          )}
+        </div>
+        <div className={`text-5xl font-bold ${hasBreach ? "text-red-600 animate-pulse" : "text-emerald-600"}`}>
           {breached}
         </div>
-        <p className={`text-sm mt-2 ${breached > 0 ? "text-red-500" : "text-emerald-500"}`}>
-          {breached > 0 ? "Requires attention" : totalReports > 0 ? "All SLAs met" : "No reports yet"}
-        </p>
       </CardContent>
     </Card>
   );

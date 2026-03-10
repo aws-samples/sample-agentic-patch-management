@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { ArrowPathIcon, ExclamationCircleIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import KpiBar from "./KpiBar";
 import EnvironmentCards from "./EnvironmentCards";
@@ -24,7 +24,28 @@ type TabId = (typeof TABS)[number]["id"];
 export default function DashboardPanel({ onChatPrefill }: Props) {
   const { data, loading, error, lastRefreshed, refresh } = useDashboard();
   const [activeTab, setActiveTab] = useState<TabId>("vulnerabilities");
+  const [envFilter, setEnvFilter] = useState<string | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<Set<number>>(new Set());
+
+  // Environment filter — applied to all downstream views
+  const envOptions = useMemo(
+    () => (data?.environments ?? []).map((e) => e.environment).sort(),
+    [data?.environments]
+  );
+
+  const filteredData = useMemo(() => {
+    if (!data || !envFilter) return data;
+    return {
+      ...data,
+      environments: data.environments.filter((e) => e.environment === envFilter),
+      findings: data.findings.filter((f) => (f.environments ?? [f.environment]).includes(envFilter)),
+      severityCounts: data.findings
+        .filter((f) => (f.environments ?? [f.environment]).includes(envFilter))
+        .reduce<Record<string, number>>((acc, f) => { acc[f.severity] = (acc[f.severity] ?? 0) + 1; return acc; }, {}),
+      activities: data.activities.filter((a) => a.environment === envFilter),
+      reportDetails: data.reportDetails.filter((r) => r.environment === envFilter),
+    };
+  }, [data, envFilter]);
 
   if (loading && !data) {
     return (
@@ -52,17 +73,40 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
 
   if (!data) return null;
 
-  const vulnCount = Object.values(data.severityCounts).reduce((s, n) => s + n, 0);
+  const fd = filteredData ?? data;
+  const vulnCount = Object.values(fd.severityCounts).reduce((s, n) => s + n, 0);
 
   return (
     <div className="space-y-4">
-      {/* Dashboard header with scope */}
-      <div className="flex items-center gap-2">
-        <h2 className="text-lg font-semibold text-gray-900">Dashboard</h2>
-        {data.scopes?.[0] && (
-          <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
-            {data.scopes[0].accountId} · {data.scopes[0].region}
-          </span>
+      {/* Dashboard header with scope + environment filter */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-semibold text-gray-900">Dashboard</h2>
+          {data.scopes?.[0] && (
+            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+              {data.scopes[0].accountId} · {data.scopes[0].region}
+            </span>
+          )}
+        </div>
+        {envOptions.length > 1 && (
+          <div className="flex items-center gap-1.5">
+            <select
+              value={envFilter ?? ""}
+              onChange={(e) => setEnvFilter(e.target.value || null)}
+              aria-label="Filter by environment"
+              className="text-sm border border-gray-200 rounded-lg px-2.5 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm hover:border-gray-300 transition"
+            >
+              <option value="">All environments</option>
+              {envOptions.map((env) => (
+                <option key={env} value={env}>{env.charAt(0).toUpperCase() + env.slice(1)}</option>
+              ))}
+            </select>
+            {envFilter && (
+              <button onClick={() => setEnvFilter(null)} className="text-xs text-blue-600 hover:text-blue-800 transition">
+                Clear
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -78,7 +122,7 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
       ))}
 
       {/* KPI bar */}
-      <KpiBar data={data} onTabChange={(tab) => setActiveTab(tab as TabId)} />
+      <KpiBar data={fd} onTabChange={(tab) => setActiveTab(tab as TabId)} />
 
       {/* Tabs + refresh */}
       <div className="flex items-center justify-between border-b border-gray-200">
@@ -87,7 +131,7 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
             const isActive = activeTab === tab.id;
             let count: number | null = null;
             if (tab.id === "vulnerabilities") count = vulnCount;
-            if (tab.id === "explainability") count = data.reportDetails.length || data.activities.length;
+            if (tab.id === "explainability") count = fd.reportDetails.length || fd.activities.length;
             return (
               <button
                 key={tab.id}
@@ -131,25 +175,25 @@ export default function DashboardPanel({ onChatPrefill }: Props) {
       <div className="pt-1">
         {activeTab === "overview" && (
           <EnvironmentCards
-            items={data.environments}
+            items={fd.environments}
             loading={loading}
             onEnvClick={(env) => onChatPrefill?.(`Show instances in ${env} environment`)}
           />
         )}
         {activeTab === "vulnerabilities" && (
           <VulnTable
-            items={data.findings}
-            severityCounts={data.severityCounts}
+            items={fd.findings}
+            severityCounts={fd.severityCounts}
             loading={loading}
             onCveClick={(cve, env) => onChatPrefill?.(`Handle ${cve} in ${env} environment`)}
           />
         )}
         {activeTab === "compliance" && (
-          <ComplianceSummary data={data.compliance} reports={data.reportDetails} loading={loading} />
+          <ComplianceSummary data={envFilter ? null : data.compliance} reports={fd.reportDetails} loading={loading} />
         )}
         {activeTab === "explainability" && (
           <ExplainabilityTable
-            items={data.reportDetails}
+            items={fd.reportDetails}
             loading={loading}
             onCveClick={(cve, env) => onChatPrefill?.(`Query compliance reports for ${cve} in ${env}`)}
           />
