@@ -284,7 +284,8 @@ def get_vulnerability_findings(cve_id: Optional[str] = None,
         
         logger.info(f"[TOOL:get_vulnerability_findings] cve_id={cve_id} severity={severity} environment={environment} limit={limit}")
         filters = {
-            'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}]
+            'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}],
+            'resourceType': [{'comparison': 'EQUALS', 'value': 'AWS_EC2_INSTANCE'}]
         }
         if cve_id:
             filters['vulnerabilityId'] = [{'comparison': 'EQUALS', 'value': cve_id}]
