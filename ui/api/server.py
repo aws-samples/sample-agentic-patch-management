@@ -608,9 +608,17 @@ def _fetch_vulnerabilities():
     next_token = None
 
     while True:
+        # Apply the same resource type filter as the agent tools
+        resource_types_str = os.environ.get("INSPECTOR_RESOURCE_TYPES", "EC2")
+        type_map = {"EC2": "AWS_EC2_INSTANCE", "ECR": "AWS_ECR_CONTAINER_IMAGE", "LAMBDA": "AWS_LAMBDA_FUNCTION"}
+        resource_filters = [
+            {"comparison": "EQUALS", "value": type_map.get(t.strip().upper(), t.strip())}
+            for t in resource_types_str.split(",") if t.strip()
+        ]
         kwargs: dict = {
             "filterCriteria": {
                 "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
+                "resourceType": resource_filters,
             },
             "sortCriteria": {"field": "SEVERITY", "sortOrder": "DESC"},
             "maxResults": 100,
