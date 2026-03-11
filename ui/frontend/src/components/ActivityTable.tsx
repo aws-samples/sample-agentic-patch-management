@@ -77,5 +77,5 @@ export default function ActivityTable({ items, loading, onRowClick }: Props) {
 }
 
 function Th({ children }: { children: React.ReactNode }) {
-  return <th scope="col" className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{children}</th>;
+  return <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wide py-2.5 px-3">{children}</th>;
 }

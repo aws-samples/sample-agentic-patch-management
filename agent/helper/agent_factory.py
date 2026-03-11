@@ -127,7 +127,7 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     return Agent(
         name=name,
         model=BedrockModel(
-            model_id=os.environ.get('BEDROCK_MODEL_ID', 'us.anthropic.claude-sonnet-4-6-v1:0'),
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             region_name=os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')),
             temperature=0.1,
             max_tokens=max_tokens,

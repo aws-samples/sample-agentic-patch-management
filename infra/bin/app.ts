@@ -46,12 +46,9 @@ if (existingVpcId) {
 
 // ── Core (always deployed) ─────────────────────────────────────────
 // S3 compliance bucket, AWS Config recorder, AgentCore IAM policy
-// Pass -c production=true to use RETAIN removal policy on compliance data.
-const isProduction = app.node.tryGetContext('production') === 'true' || app.node.tryGetContext('production') === true;
 new CoreStack(app, 'Patchy-Core', {
   env,
   agentCoreRoleArn: resolvedRoleArn,
-  production: isProduction,
   description: 'Patchy: S3 compliance reports bucket and AgentCore IAM policy',
 });
 

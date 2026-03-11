@@ -8,16 +8,13 @@
     "deploy": "cdk deploy --all --require-approval never",
     "destroy": "cdk destroy --all --force"
   },
-  "engines": {
-    "node": ">=20.0.0"
-  },
   "devDependencies": {
     "@types/node": "22.x",
     "aws-cdk": "2.1109.0",
     "typescript": "~5.6.0"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.241.0",
+    "aws-cdk-lib": "2.241.0",
     "constructs": "^10.0.0"
   }
 }

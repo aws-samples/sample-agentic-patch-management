@@ -30,8 +30,8 @@ infra/cdk.out/
 infra/cdk.context.json
 infra/bin/*.js
 infra/bin/*.d.ts
-infra/lib/**/*.js
-infra/lib/**/*.d.ts
+infra/lib/*.js
+infra/lib/*.d.ts
 .cdk.staging/
 
 # Frontend build

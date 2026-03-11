@@ -1,4 +1,4 @@
-import { useState, useCallback, lazy, Suspense } from "react";
+import { useState, useCallback } from "react";
 import {
   ShieldCheckIcon,
   ChevronDoubleLeftIcon,
@@ -7,21 +7,16 @@ import {
   ArrowRightStartOnRectangleIcon,
 } from "@heroicons/react/24/outline";
 import { Menu, MenuButton, MenuItem, MenuItems } from "@headlessui/react";
+import ChatPanel from "./components/ChatPanel";
+import DashboardPanel from "./components/DashboardPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
 import { useRole } from "./hooks/useRole";
 import { useAuth } from "./hooks/useAuth";
 
-const ChatPanel = lazy(() => import("./components/ChatPanel"));
-const DashboardPanel = lazy(() => import("./components/DashboardPanel"));
-
-function PanelFallback() {
-  return <div className="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div>;
-}
-
 export default function App() {
   const { role, setRole } = useRole();
-  const { auth, authError } = useAuth();
+  const auth = useAuth();
   const { messages, isStreaming, sessionId, sendMessage, stopStreaming, clearMessages } =
     useAgentStream(role);
   const [chatPrefill, setChatPrefill] = useState("");
@@ -48,31 +43,25 @@ export default function App() {
               {auth.email}
             </span>
           )}
-          {authError && (
-            <span className="text-xs text-red-400 hidden sm:inline" title={authError}>
-              Auth error
-            </span>
-          )}
-          <span className="text-xs text-gray-400 hidden md:inline">
+          <span className="text-xs text-gray-400 hidden sm:inline">
             Session: {sessionId.slice(0, 12)}…
           </span>
 
           {/* Role switcher */}
           <Menu as="div" className="relative">
             <MenuButton className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-gray-800 hover:bg-gray-700 transition text-gray-200 cursor-pointer border-0">
-              <span aria-hidden="true">{role === "operator" ? "\uD83D\uDC64" : "\uD83D\uDC41\uFE0F"}</span>
-              {" "}{role === "operator" ? "Operator" : "Viewer"}
+              {role === "operator" ? "👤 Operator" : "👁️ Viewer"}
               <svg className="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
             </MenuButton>
             <MenuItems className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg ring-1 ring-black/5 py-1 z-50">
               <MenuItem>
                 <button onClick={() => setRole("operator")} className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${role === "operator" ? "text-blue-600 font-medium" : "text-gray-700"}`}>
-                  <span aria-hidden="true">{"\uD83D\uDC64"}</span> Operator — full access
+                  👤 Operator — full access
                 </button>
               </MenuItem>
               <MenuItem>
                 <button onClick={() => setRole("viewer")} className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${role === "viewer" ? "text-blue-600 font-medium" : "text-gray-700"}`}>
-                  <span aria-hidden="true">{"\uD83D\uDC41\uFE0F"}</span> Viewer — read-only
+                  👁️ Viewer — read-only
                 </button>
               </MenuItem>
             </MenuItems>
@@ -109,7 +98,8 @@ export default function App() {
         {/* Dashboard panel — collapsible */}
         {dashboardOpen && (
           <div className="w-[72%] min-w-[500px] border-r border-gray-200 overflow-hidden flex flex-col">
-            <div className="flex items-center justify-end px-5 pt-4 pb-2 shrink-0 bg-white">
+            <div className="flex items-center justify-between px-5 pt-4 pb-2 shrink-0 bg-white">
+              <h2 className="text-lg font-semibold text-gray-900">Dashboard</h2>
               <button
                 onClick={() => setDashboardOpen(false)}
                 className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition"
@@ -120,9 +110,7 @@ export default function App() {
             </div>
             <div className="flex-1 overflow-y-auto px-5 pb-4 bg-gray-50/60 custom-scrollbar">
               <ErrorBoundary>
-                <Suspense fallback={<PanelFallback />}>
-                  <DashboardPanel onChatPrefill={handleChatPrefill} />
-                </Suspense>
+                <DashboardPanel onChatPrefill={handleChatPrefill} />
               </ErrorBoundary>
             </div>
           </div>
@@ -141,25 +129,23 @@ export default function App() {
                 <ChevronDoubleRightIcon className="w-4 h-4" />
               </button>
             )}
-            <span className="font-bold text-base" aria-label="Patchy AI Assistant"><span aria-hidden="true">{"\uD83E\uDD16"}</span> Patchy</span>
+            <span className="font-bold text-base">🤖 Patchy</span>
           </div>
 
           {/* Chat content */}
           <div className="flex-1 overflow-hidden">
             <ErrorBoundary>
-              <Suspense fallback={<PanelFallback />}>
-                <ChatPanel
-                  messages={messages}
-                  isStreaming={isStreaming}
-                  onSend={sendMessage}
-                  onStop={stopStreaming}
-                  onClear={clearMessages}
-                  sessionId={sessionId}
-                  prefillText={chatPrefill}
-                  onPrefillConsumed={() => setChatPrefill("")}
-                  role={role}
-                />
-              </Suspense>
+              <ChatPanel
+                messages={messages}
+                isStreaming={isStreaming}
+                onSend={sendMessage}
+                onStop={stopStreaming}
+                onClear={clearMessages}
+                sessionId={sessionId}
+                prefillText={chatPrefill}
+                onPrefillConsumed={() => setChatPrefill("")}
+                role={role}
+              />
             </ErrorBoundary>
           </div>
         </div>

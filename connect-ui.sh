@@ -37,7 +37,7 @@ if ! command -v session-manager-plugin &> /dev/null; then
 fi
 
 # Get ALB DNS from CloudFormation
-echo "Looking up UI endpoint..."
+echo "Looking up internal ALB..."
 ALB_DNS=$(aws cloudformation describe-stacks \
     --stack-name Patchy-UI \
     --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' \
@@ -46,19 +46,6 @@ ALB_DNS=$(aws cloudformation describe-stacks \
 if [ -z "$ALB_DNS" ] || [ "$ALB_DNS" = "None" ]; then
     echo -e "${RED}UI stack not found. Deploy first: ./deploy.sh ui${NC}"
     exit 1
-fi
-
-# Check if Cognito is enabled (public ALB — no tunnel needed)
-COGNITO_POOL=$(aws cloudformation describe-stacks \
-    --stack-name Patchy-UI \
-    --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' \
-    --output text 2>/dev/null)
-if [ -n "$COGNITO_POOL" ] && [ "$COGNITO_POOL" != "None" ]; then
-    echo -e "${GREEN}Cognito is enabled — the UI is publicly accessible.${NC}"
-    echo -e "Open directly: ${BLUE}${ALB_DNS}${NC}"
-    echo ""
-    echo "SSM port forwarding is only needed for internal ALB mode (COGNITO_ENABLED=false)."
-    exit 0
 fi
 
 # Determine port based on protocol

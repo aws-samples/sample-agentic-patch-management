@@ -24,8 +24,8 @@ infra/cdk.context.json
 # Build artifacts
 infra/bin/*.js
 infra/bin/*.d.ts
-infra/lib/**/*.js
-infra/lib/**/*.d.ts
+infra/lib/*.js
+infra/lib/*.d.ts
 dist/
 
 # IDE

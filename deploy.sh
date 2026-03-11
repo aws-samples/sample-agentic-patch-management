@@ -27,39 +27,6 @@ print_status() { echo -e "${GREEN}✅ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_error() { echo -e "${RED}❌ $1${NC}"; }
 
-# ── Shared AWS setup ──────────────────────────────────────────────
-# Exports AWS env vars and validates credentials. Called by all commands.
-ensure_aws_env() {
-    export AWS_PROFILE AWS_DEFAULT_REGION="$AWS_REGION" AWS_DEFAULT_PROFILE="$AWS_PROFILE"
-    if ! aws sts get-caller-identity &> /dev/null; then
-        print_error "AWS credentials not valid. Run: aws configure --profile $AWS_PROFILE"
-        exit 1
-    fi
-    local account_id
-    account_id=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
-    echo ""
-    echo -e "  Account:  ${BLUE}${account_id}${NC}"
-    echo -e "  Profile:  ${BLUE}${AWS_PROFILE}${NC}"
-    echo -e "  Region:   ${BLUE}${AWS_REGION}${NC}"
-    echo ""
-    echo -e "  Deploying in 3 seconds... (Ctrl+C to abort)"
-    sleep 3
-}
-
-# ── Stale CDK context detection ───────────────────────────────────
-# If the account in cdk.context.json doesn't match the current account,
-# clear it to force fresh VPC/subnet lookups.
-clear_stale_cdk_context() {
-    local context_file="infra/cdk.context.json"
-    if [ ! -f "$context_file" ]; then return 0; fi
-    local current_account
-    current_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
-    if [ -n "$current_account" ] && ! grep -q "$current_account" "$context_file" 2>/dev/null; then
-        print_warning "Stale cdk.context.json detected (wrong account) — clearing for fresh lookups"
-        rm -f "$context_file"
-    fi
-}
-
 # ── Help ────────────────────────────────────────────────────────────
 
 show_help() {
@@ -72,7 +39,6 @@ show_help() {
     echo "  ${GREEN}(no args)${NC}         Deploy full solution (infra + agent + UI)"
     echo "  ${GREEN}--with-sample-env${NC}  Deploy full solution + sample EC2 environment"
     echo "  ${GREEN}agent${NC}             Redeploy agent only (after code changes)"
-    echo "  ${GREEN}infra${NC}             Redeploy infrastructure only (CDK stacks)"
     echo "  ${GREEN}ui${NC}               Redeploy UI only (after code changes)"
     echo ""
     echo "Cleanup:"
@@ -83,10 +49,10 @@ show_help() {
     echo "  1. cp .env.example .env"
     echo "  2. Edit .env — set AWS_PROFILE and AWS_REGION"
     echo "  3. ./deploy.sh"
-    echo "  4. Open the URL printed at the end (Cognito login)"
+    echo "  4. ./connect-ui.sh  (opens UI via SSM port forwarding)"
     echo ""
     echo "That's it. The script handles agent deployment, role detection,"
-    echo "CDK bootstrap, TLS, Cognito, and UI automatically."
+    echo "CDK bootstrap, infrastructure, and UI automatically."
     echo ""
 }
 
@@ -162,7 +128,14 @@ setup_environment() {
     else
         print_status "Dependencies already installed"
     fi
-    print_status "Python environment ready"
+    export AWS_PROFILE=$AWS_PROFILE
+    export AWS_DEFAULT_REGION=$AWS_REGION
+    export AWS_DEFAULT_PROFILE=$AWS_PROFILE
+    if ! aws sts get-caller-identity &> /dev/null; then
+        print_error "AWS credentials not valid. Run: aws configure --profile $AWS_PROFILE"
+        exit 1
+    fi
+    print_status "AWS environment ready (profile: $AWS_PROFILE, region: $AWS_REGION)"
 }
 
 # ── CDK bootstrap ──────────────────────────────────────────────────
@@ -353,16 +326,11 @@ deploy_agent() {
     fi
 
     # 3. Upload baseline overrides (idempotent — always runs, just 4 small S3 puts)
-    #    May fail on first deploy before Patchy-Core creates the S3 bucket — that's OK.
     echo -e "${BLUE}Uploading severity-scoped baseline overrides to S3...${NC}"
-    if python setup_baseline_overrides.py; then
-        print_status "Baseline overrides uploaded"
-    else
-        print_warning "Baseline overrides upload skipped (S3 bucket may not exist yet — will retry after infra deploy)"
-    fi
+    python setup_baseline_overrides.py || print_warning "Baseline overrides upload failed — run manually later: python agent/setup_baseline_overrides.py"
 
-    # 4. Validate IAM policy grants memory access for the correct memory_id
-    _fix_memory_iam_if_needed "$current_account" || true
+    # 3. Validate IAM policy grants memory access for the correct memory_id
+    _fix_memory_iam_if_needed "$current_account"
 
     cd ..
 }
@@ -371,7 +339,6 @@ deploy_infra() {
     local include_demo=${1:-false}
 
     resolve_agentcore_role
-    clear_stale_cdk_context
 
     cd infra
     if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
@@ -464,7 +431,7 @@ deploy_ui() {
             COGNITO_DOMAIN_PREFIX="patchy-${account_id}"
             echo -e "${BLUE}Auto-derived Cognito domain prefix: ${COGNITO_DOMAIN_PREFIX}${NC}"
             # Persist to .env for future deploys
-            if [ -f ".env" ] && ! grep -q "^COGNITO_DOMAIN_PREFIX=" .env; then
+            if [ -f ".env" ] && ! grep -q "COGNITO_DOMAIN_PREFIX" .env; then
                 echo "" >> .env
                 echo "# Cognito hosted UI domain (auto-generated)" >> .env
                 echo "COGNITO_DOMAIN_PREFIX=${COGNITO_DOMAIN_PREFIX}" >> .env
@@ -475,7 +442,6 @@ deploy_ui() {
     fi
 
     resolve_agentcore_role
-    clear_stale_cdk_context
 
     cd infra
     if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
@@ -502,18 +468,11 @@ deploy_ui() {
     fi
 
     # Capture current task definition revision for post-deploy verification
-    # Find the Patchy ECS cluster specifically (not just the first cluster in the account)
-    local patchy_cluster
-    patchy_cluster=$(aws ecs list-clusters --query 'clusterArns[?contains(@,`Patchy`)] | [0]' --output text 2>/dev/null | sed 's|.*/||')
-    local pre_deploy_taskdef="none"
-    if [ -n "$patchy_cluster" ] && [ "$patchy_cluster" != "None" ]; then
-        local patchy_service
-        patchy_service=$(aws ecs list-services --cluster "$patchy_cluster" --query 'serviceArns[0]' --output text 2>/dev/null | sed 's|.*/||')
-        if [ -n "$patchy_service" ] && [ "$patchy_service" != "None" ]; then
-            pre_deploy_taskdef=$(aws ecs describe-services --cluster "$patchy_cluster" --services "$patchy_service" \
-                --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
-        fi
-    fi
+    local pre_deploy_taskdef
+    pre_deploy_taskdef=$(aws ecs describe-services \
+        --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --services "$(aws ecs list-services --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" --query 'serviceArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
 
     # Ensure env vars are exported for CDK subprocess
     export ACM_CERTIFICATE_ARN COGNITO_DOMAIN_PREFIX COGNITO_ENABLED
@@ -523,11 +482,11 @@ deploy_ui() {
         -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
 
     # Verify deployment actually updated the task definition
-    local post_deploy_taskdef="none"
-    if [ -n "$patchy_cluster" ] && [ "$patchy_cluster" != "None" ] && [ -n "$patchy_service" ] && [ "$patchy_service" != "None" ]; then
-        post_deploy_taskdef=$(aws ecs describe-services --cluster "$patchy_cluster" --services "$patchy_service" \
-            --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
-    fi
+    local post_deploy_taskdef
+    post_deploy_taskdef=$(aws ecs describe-services \
+        --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --services "$(aws ecs list-services --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" --query 'serviceArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
+        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
 
     if [ "$pre_deploy_taskdef" = "$post_deploy_taskdef" ] && [ "$pre_deploy_taskdef" != "none" ]; then
         print_warning "Task definition unchanged ($post_deploy_taskdef) — CDK may have skipped the image rebuild."
@@ -655,17 +614,10 @@ case "$COMMAND" in
         check_prereqs true true true
         echo -e "${BLUE}Intelligent Patch Automation — Full Deploy${NC}"
         echo "=================================================="
-        ensure_aws_env
 
         setup_environment
         deploy_agent
         deploy_infra $INCLUDE_DEMO
-
-        # Retry baseline overrides now that S3 bucket exists (may have failed during deploy_agent)
-        echo -e "${BLUE}Ensuring baseline overrides are uploaded...${NC}"
-        (cd agent && source ../venv/bin/activate && python setup_baseline_overrides.py) || \
-            print_warning "Baseline overrides still failed — run manually: cd agent && python setup_baseline_overrides.py"
-
         deploy_ui
 
         echo ""
@@ -677,30 +629,19 @@ case "$COMMAND" in
         check_prereqs true false
         echo -e "${BLUE}Intelligent Patch Automation — Redeploy Agent${NC}"
         echo "=================================================="
-        ensure_aws_env
         setup_environment
         deploy_agent
-        ;;
-
-    "infra")
-        check_prereqs false true false
-        echo -e "${BLUE}Intelligent Patch Automation — Redeploy Infrastructure${NC}"
-        echo "=================================================="
-        ensure_aws_env
-        deploy_infra false
         ;;
 
     "ui")
         check_prereqs false true true
         echo -e "${BLUE}Intelligent Patch Automation — Redeploy UI${NC}"
         echo "=================================================="
-        ensure_aws_env
         deploy_ui
         ;;
 
     "destroy")
         check_prereqs false true
-        ensure_aws_env
         if [ "$FLAG" = "--sample-only" ]; then
             destroy true
         else

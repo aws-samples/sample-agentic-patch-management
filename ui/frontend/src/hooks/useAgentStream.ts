@@ -124,48 +124,6 @@ export function useAgentStream(role: string = "operator") {
         const decoder = new TextDecoder();
         let partial = "";
 
-        // Batch SSE events to avoid per-event re-renders.
-        // Accumulate text deltas and flush via requestAnimationFrame.
-        let pendingText = "";
-        let pendingTools: string[] = [];
-        let pendingDone: number | null = null;
-        let pendingError: string | null = null;
-        let rafId: number | null = null;
-
-        const flushBatch = () => {
-          rafId = null;
-          const textChunk = pendingText;
-          const tools = pendingTools;
-          const doneMs = pendingDone;
-          const errorMsg = pendingError;
-          pendingText = "";
-          pendingTools = [];
-          pendingDone = null;
-          pendingError = null;
-
-          if (!textChunk && !tools.length && doneMs === null && errorMsg === null) return;
-
-          setState((prev) => ({
-            ...prev,
-            messages: prev.messages.map((m) => {
-              if (m.id !== assistantId) return m;
-              let updated = m;
-              if (textChunk) updated = { ...updated, content: updated.content + textChunk };
-              if (tools.length) {
-                const newTools = tools.filter((t) => !updated.tools.includes(t));
-                if (newTools.length) updated = { ...updated, tools: [...updated.tools, ...newTools] };
-              }
-              if (doneMs !== null) updated = { ...updated, durationMs: doneMs };
-              if (errorMsg !== null) updated = { ...updated, error: errorMsg };
-              return updated;
-            }),
-          }));
-        };
-
-        const scheduleBatch = () => {
-          if (rafId === null) rafId = requestAnimationFrame(flushBatch);
-        };
-
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -182,28 +140,49 @@ export function useAgentStream(role: string = "operator") {
               const event = JSON.parse(trimmed.slice(6));
 
               if (event.type === "text") {
-                pendingText += event.content;
-                scheduleBatch();
+                setState((prev) => ({
+                  ...prev,
+                  messages: prev.messages.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: m.content + event.content }
+                      : m
+                  ),
+                }));
               } else if (event.type === "tool_start") {
-                const label = TOOL_LABELS[event.tool] ?? `🔧 ${event.tool}`;
-                pendingTools.push(label);
-                scheduleBatch();
+                const label =
+                  TOOL_LABELS[event.tool] ?? `🔧 ${event.tool}`;
+                setState((prev) => ({
+                  ...prev,
+                  messages: prev.messages.map((m) =>
+                    m.id === assistantId && !m.tools.includes(label)
+                      ? { ...m, tools: [...m.tools, label] }
+                      : m
+                  ),
+                }));
               } else if (event.type === "done") {
-                pendingDone = event.duration_ms;
-                scheduleBatch();
+                setState((prev) => ({
+                  ...prev,
+                  messages: prev.messages.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, durationMs: event.duration_ms }
+                      : m
+                  ),
+                }));
               } else if (event.type === "error") {
-                pendingError = event.message;
-                scheduleBatch();
+                setState((prev) => ({
+                  ...prev,
+                  messages: prev.messages.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, error: event.message }
+                      : m
+                  ),
+                }));
               }
             } catch {
               // skip malformed SSE lines
             }
           }
         }
-
-        // Flush any remaining batched events
-        if (rafId !== null) cancelAnimationFrame(rafId);
-        flushBatch();
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         const message = err instanceof Error ? err.message : "Unknown error";

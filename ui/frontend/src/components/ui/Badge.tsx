@@ -59,6 +59,6 @@ export function SlaBadge({ met }: { met: boolean | null | string }) {
   const isTrue = met === true || met === "True";
   const isFalse = met === false || met === "False";
   if (isTrue) return <Badge variant="success">✓ Met</Badge>;
-  if (isFalse) return <Badge variant="destructive" className="animate-pulse">✗ Breached</Badge>;
+  if (isFalse) return <Badge variant="destructive">✗ Breached</Badge>;
   return <span className="text-gray-400 text-xs">—</span>;
 }

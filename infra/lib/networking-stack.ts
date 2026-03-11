@@ -40,29 +40,6 @@ export class NetworkingStack extends cdk.Stack {
       natGateways: 2,
     });
 
-    // ── VPC Endpoints ──────────────────────────────────────────────
-    // S3 Gateway endpoint — free, avoids NAT charges for S3 traffic
-    this.vpc.addGatewayEndpoint('S3Endpoint', {
-      service: ec2.GatewayVpcEndpointAwsService.S3,
-      subnets: [{ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }],
-    });
-
-    // SSM Interface endpoints — required for private instances to reach
-    // Systems Manager without NAT. Each costs ~$7/month but eliminates
-    // NAT data transfer charges for SSM traffic.
-    this.vpc.addInterfaceEndpoint('SSMEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.SSM,
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
-    this.vpc.addInterfaceEndpoint('SSMMessagesEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.SSM_MESSAGES,
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
-    this.vpc.addInterfaceEndpoint('EC2MessagesEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.EC2_MESSAGES,
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
-
     // Add VPC Flow Logs for security monitoring
     new ec2.FlowLog(this, 'VPCFlowLog', {
       resourceType: ec2.FlowLogResourceType.fromVpc(this.vpc),
