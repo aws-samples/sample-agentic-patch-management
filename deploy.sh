@@ -286,6 +286,21 @@ deploy_agent() {
         fi
     fi
 
+    # Validate AgentCore resources still exist (may be gone after destroy/recreate).
+    # Rather than checking each resource individually, verify the agent runtime is
+    # reachable. If it's not, the entire config is stale and needs reconfiguration.
+    if [ -f ".bedrock_agentcore.yaml" ]; then
+        local agent_id
+        agent_id=$(grep "agent_id:" .bedrock_agentcore.yaml 2>/dev/null | head -1 | awk '{print $2}' | tr -d "'\"")
+        if [ -n "$agent_id" ] && [ "$agent_id" != "null" ]; then
+            if ! agentcore status &> /dev/null; then
+                print_warning "AgentCore resources no longer reachable (runtime: $agent_id)"
+                print_warning "Removing stale config — agentcore configure will create fresh resources."
+                rm -f .bedrock_agentcore.yaml
+            fi
+        fi
+    fi
+
     # First-time setup: generate .bedrock_agentcore.yaml + Dockerfile if they don't exist.
     # agentcore configure creates the memory resource, IAM role, ECR repo, and writes
     # the config yaml + generated Dockerfile. On subsequent deploys, agentcore launch
