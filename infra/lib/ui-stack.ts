@@ -35,7 +35,7 @@ export class UIStack extends cdk.Stack {
     // ── ECS Cluster ────────────────────────────────────────────────
     const cluster = new ecs.Cluster(this, 'UICluster', {
       vpc: props.vpc,
-      containerInsightsV2: ecs.ContainerInsights.ENABLED,
+      containerInsights: true,
     });
 
     // ── Docker image ───────────────────────────────────────────────
