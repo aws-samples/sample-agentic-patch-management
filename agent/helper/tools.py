@@ -416,19 +416,19 @@ def get_patch_compliance(environment: str,
             batch = instance_ids[i:i+50]
             response = ssm_client.describe_instance_patch_states(InstanceIds=batch)
             for state in response.get('InstancePatchStates', []):
-            ssm_found_ids.add(state['InstanceId'])
-            instances.append({
-                'instance_id': state['InstanceId'],
-                'patch_group': state.get('PatchGroup', 'N/A'),
-                'installed_count': state.get('InstalledCount', 0),
-                'missing_count': state.get('MissingCount', 0),
-                'failed_count': state.get('FailedCount', 0),
-                'security_non_compliant_count': state.get('SecurityNonCompliantCount', 0),
-                'operation': state.get('Operation', 'N/A'),
-                'operation_start_time': state.get('OperationStartTime', '').isoformat() if state.get('OperationStartTime') else 'N/A',
-                'operation_end_time': _format_utc_as_local(state.get('OperationEndTime', '').isoformat()) if state.get('OperationEndTime') else 'N/A',
-                'reboot_option': state.get('RebootOption', 'N/A')
-            })
+                ssm_found_ids.add(state['InstanceId'])
+                instances.append({
+                    'instance_id': state['InstanceId'],
+                    'patch_group': state.get('PatchGroup', 'N/A'),
+                    'installed_count': state.get('InstalledCount', 0),
+                    'missing_count': state.get('MissingCount', 0),
+                    'failed_count': state.get('FailedCount', 0),
+                    'security_non_compliant_count': state.get('SecurityNonCompliantCount', 0),
+                    'operation': state.get('Operation', 'N/A'),
+                    'operation_start_time': state.get('OperationStartTime', '').isoformat() if state.get('OperationStartTime') else 'N/A',
+                    'operation_end_time': _format_utc_as_local(state.get('OperationEndTime', '').isoformat()) if state.get('OperationEndTime') else 'N/A',
+                    'reboot_option': state.get('RebootOption', 'N/A')
+                })
         
         # Instances EC2 found but SSM has no patch data for (never scanned)
         unscanned_ids = [iid for iid in instance_ids if iid not in ssm_found_ids]
