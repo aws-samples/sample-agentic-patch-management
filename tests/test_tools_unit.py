@@ -80,7 +80,7 @@ class TestCalculateSlaRequirement:
         result = self.calc(['SOC2'], 'HIGH')
         assert result is not None
         assert result['source'] == 'default'
-        assert result['sla_hours'] == 72  # default from config.json
+        assert result['sla_hours'] == 72  # default from _DEFAULT_SLA
 
     def test_invalid_tag_value_falls_to_default(self):
         tags = {'SLA-CRITICAL': 'not-a-number'}
@@ -154,20 +154,24 @@ class TestFormatUtcAsLocal:
 
 
 # ---------------------------------------------------------------------------
-# _get_default_sla (loads from config.json)
+# _DEFAULT_SLA (module-level dict with fallback SLA hours)
 # ---------------------------------------------------------------------------
 
-class TestGetDefaultSla:
-    def test_loads_from_config(self):
-        from helper.tools import _get_default_sla
-        sla = _get_default_sla()
-        assert isinstance(sla, dict)
-        assert 'CRITICAL' in sla
-        assert 'HIGH' in sla
-        assert 'MEDIUM' in sla
-        assert 'LOW' in sla
-        assert sla['CRITICAL'] == 24
-        assert sla['HIGH'] == 72
+class TestDefaultSla:
+    def test_has_all_severities(self):
+        from helper.tools import _DEFAULT_SLA
+        assert isinstance(_DEFAULT_SLA, dict)
+        assert 'CRITICAL' in _DEFAULT_SLA
+        assert 'HIGH' in _DEFAULT_SLA
+        assert 'MEDIUM' in _DEFAULT_SLA
+        assert 'LOW' in _DEFAULT_SLA
+
+    def test_default_values(self):
+        from helper.tools import _DEFAULT_SLA
+        assert _DEFAULT_SLA['CRITICAL'] == 24
+        assert _DEFAULT_SLA['HIGH'] == 72
+        assert _DEFAULT_SLA['MEDIUM'] == 168
+        assert _DEFAULT_SLA['LOW'] == 720
 
 
 # ---------------------------------------------------------------------------
@@ -221,58 +225,24 @@ class TestClassifyError:
 
 
 # ---------------------------------------------------------------------------
-# retry_on_transient decorator
+# classify_error — additional edge cases
 # ---------------------------------------------------------------------------
 
-class TestRetryOnTransient:
-    def test_retries_on_throttling(self):
-        from helper.error_handling import retry_on_transient
+class TestClassifyErrorEdgeCases:
+    def setup_method(self):
+        from helper.error_handling import classify_error
+        self.classify = classify_error
 
-        call_count = 0
+    def test_endpoint_connection_error(self):
+        from botocore.exceptions import EndpointConnectionError
+        err = EndpointConnectionError(endpoint_url='https://ssm.us-east-1.amazonaws.com')
+        result = self.classify(err)
+        assert result['category'] == 'RETRYABLE'
+        assert result['retryable'] is True
 
-        @retry_on_transient(max_retries=2, base_delay=0.01)
-        def flaky_fn():
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                raise ClientError(
-                    {'Error': {'Code': 'ThrottlingException', 'Message': 'slow down'}},
-                    'Test'
-                )
-            return "ok"
-
-        assert flaky_fn() == "ok"
-        assert call_count == 3
-
-    def test_no_retry_on_abort(self):
-        from helper.error_handling import retry_on_transient
-
-        call_count = 0
-
-        @retry_on_transient(max_retries=2, base_delay=0.01)
-        def failing_fn():
-            nonlocal call_count
-            call_count += 1
-            raise ClientError(
-                {'Error': {'Code': 'AccessDeniedException', 'Message': 'no'}},
-                'Test'
-            )
-
-        with pytest.raises(ClientError):
-            failing_fn()
-        assert call_count == 1  # No retry for ABORT errors
-
-
-# ---------------------------------------------------------------------------
-# _load_config
-# ---------------------------------------------------------------------------
-
-class TestLoadConfig:
-    def test_config_has_frameworks(self):
-        from helper.tools import _load_config
-        # Clear lru_cache to force reload
-        _load_config.cache_clear()
-        config = _load_config()
-        assert 'frameworks' in config
-        assert 'PCI-DSS' in config['frameworks']
-        assert 'default' in config
+    def test_read_timeout_is_retryable(self):
+        from botocore.exceptions import ReadTimeoutError
+        err = ReadTimeoutError(endpoint_url='https://ssm.us-east-1.amazonaws.com')
+        result = self.classify(err)
+        assert result['category'] == 'RETRYABLE'
+        assert result['retryable'] is True

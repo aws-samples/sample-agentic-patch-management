@@ -485,9 +485,6 @@ from datetime import datetime, timedelta
 
 ENVIRONMENTS = None  # Discovered dynamically from EC2 Environment tags
 
-# Cache account ID — never changes during a server session
-_cached_account_id: str | None = None
-
 
 def _aws_session():
     """Create a boto3 session using .env config."""
@@ -496,15 +493,6 @@ def _aws_session():
     if profile:
         return boto3.Session(profile_name=profile, region_name=region)
     return boto3.Session(region_name=region)
-
-
-def _get_account_id() -> str:
-    """Cached STS get_caller_identity — avoids 3 redundant calls per refresh."""
-    global _cached_account_id
-    if not _cached_account_id:
-        session = _aws_session()
-        _cached_account_id = session.client("sts").get_caller_identity()["Account"]
-    return _cached_account_id
 
 
 def _fetch_environments():

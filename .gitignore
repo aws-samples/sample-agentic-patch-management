@@ -63,5 +63,8 @@ agent/.bedrock_agentcore.yaml
 # Conversations (local testing artifacts)
 conversations/
 
+# Internal documents (assessments, reviews — not part of the solution)
+internal-docs/
+
 # Kiro IDE files (specs, prompts — not part of the solution)
 .kiro/

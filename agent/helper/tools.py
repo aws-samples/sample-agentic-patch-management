@@ -4,7 +4,6 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import contextvars
-import functools
 import json
 import logging
 import re
@@ -112,13 +111,6 @@ cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION, config=aw
 # ============================================================================
 # PRIVATE HELPER FUNCTIONS
 # ============================================================================
-
-@functools.lru_cache(maxsize=1)
-def _load_config() -> dict:
-    """Legacy — kept for backward compatibility. Returns empty dict.
-    SLA policies are now read from EC2 tags. Environment aliases are inline."""
-    return {}
-
 
 # Default SLA hours by severity (used when instances don't have SLA tags)
 _DEFAULT_SLA = {

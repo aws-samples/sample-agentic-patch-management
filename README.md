@@ -1,4 +1,4 @@
-# Intelligent Patch Automation
+# Intelligent Patch Automation for AWS — AI-Driven Vulnerability Response
 
 Multi-agent system for automated, vulnerability-driven patch management using Strands SDK, Amazon Bedrock AgentCore, and AWS Systems Manager.
 
@@ -9,188 +9,201 @@ Agent: Checking maintenance window... Emergency patching required.
        Complete. Compliance report saved to S3.
 ```
 
-Natural language in → risk-based decision → automated execution. No browser tabs, no manual triage.
-
-> **OS support**: This implementation targets Amazon Linux 2 (yum-based patching, rollback via `yum history undo`). The agent patterns, SLA enforcement, and compliance reporting are OS-agnostic. To support Ubuntu/Debian, Windows, RHEL, or SUSE, adapt the patching and rollback commands in `agent/helper/tools.py` to use the appropriate package manager (`apt`, `zypper`, Windows Update API via SSM `AWS-RunPowerShellScript`). SSM Patch Manager and Inspector work across all supported OS types without changes.
+Natural language in -> risk-based decision -> automated execution. No browser tabs, no manual triage.
 
 ---
 
-## Contents
+## Quick Start
 
-- [Quick Start](#quick-start)
-- [How It Works](#how-it-works)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Deployment](#deployment)
-- [Post-Deployment Setup](#post-deployment-setup)
-- [Configuration](#configuration)
-- [Web UI](#web-ui)
-- [Observability](#observability)
-- [Security](#security)
-- [Production Hardening](#production-hardening)
-- [Extending the Solution](#extending-the-solution)
-- [Troubleshooting](#troubleshooting)
-- [Teardown](#teardown)
-- [Usage Examples](#usage-examples)
+```bash
+# 1. Configure
+cp .env.example .env
+# Edit .env -- set AWS_PROFILE and AWS_REGION
+
+# 2. Deploy everything (with sample EC2 instances)
+./deploy.sh --with-sample-env
+# Takes ~20-30 minutes on first run (CDK bootstrap, Docker build, Fargate startup)
+
+# 3. Create a Cognito user
+POOL_ID=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+  --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text)
+
+aws cognito-idp admin-create-user --user-pool-id $POOL_ID \
+  --username your-email@example.com \
+  --user-attributes Name=email,Value=your-email@example.com Name=email_verified,Value=true \
+  --temporary-password 'TempPass1!' --message-action SUPPRESS
+
+# Set a permanent password (bypasses Cognito's force-change-on-first-login flow)
+aws cognito-idp admin-set-user-password --user-pool-id $POOL_ID \
+  --username your-email@example.com --password 'YourSecurePass1!' --permanent
+
+# Grant operator access (full dashboard + chat + patching)
+aws cognito-idp admin-add-user-to-group --user-pool-id $POOL_ID \
+  --username your-email@example.com --group-name operators
+
+# 4. Verify deployment
+UI_URL=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+  --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text)
+echo "UI URL: $UI_URL"
+curl -sk "$UI_URL/api/health"   # Should return: {"status":"ok"}
+
+# 5. Open the URL in your browser and log in
+#    (You will see a self-signed cert warning -- click through. This is expected.)
+```
+
+`deploy.sh` handles the full sequence automatically: Python venv -> agent deployment -> role detection -> CDK bootstrap -> infrastructure (4 stacks) -> TLS certificate -> Cognito -> Docker build -> Fargate deployment.
 
 ---
 
-## How It Works
+## What It Looks Like
 
-### Vulnerability Discovery
+```
+You: What critical vulnerabilities do we have in dev?
 
-The agent queries Amazon Inspector for active CVE findings across your fleet. It doesn't just list them — it assesses fleet-wide impact across all environments to show how many instances are affected, which teams own them, and what SLA applies.
+Agent: [Consulting Vulnerability Analyst]
 
-- Query by CVE ID, severity, or environment
-- CVSS score correlation with Inspector findings
-- Instance-level affected resource mapping
-- Cross-environment exposure: "CVE-2025-38477 affects 4 instances in dev, 3 in staging, 0 in prod"
+      CRITICAL  2 vulnerabilities across 5 instances in dev
 
-> **Using a third-party scanner?** Feed findings into Inspector via the [SBOM integration](https://docs.aws.amazon.com/inspector/latest/user/sbom-generator.html), or add a tool in `agent/helper/tools.py` that queries your scanner's API directly. No routing or decision logic changes needed.
+      CRITICAL: 2 | HIGH: 0 | MEDIUM: 0 | LOW: 0
 
-### Patch Execution Workflow
+      | CVE ID            | CVSS | Severity | Instances | Fix Available |
+      |-------------------|------|----------|-----------|---------------|
+      | CVE-2025-38477    | 9.8  | CRITICAL | 5         | YES           |
+      | CVE-2025-21001    | 9.1  | CRITICAL | 3         | YES           |
 
-Every patching operation follows this enforced sequence — the agent will not skip steps:
+      Fleet Impact (CVE-2025-38477):
+      | Environment | Instances | SLA (tag) | Next Window    | Hours Until |
+      |-------------|-----------|-----------|----------------|-------------|
+      | dev         | 5         | 24hr      | dev-daily 1AM  | 6hr         |
+      | staging     | 3         | 24hr      | staging Tue 2AM| 52hr        |
 
-| Step | What happens |
-|------|-------------|
-| 1. Discover | Get patch compliance state and SLA requirement for target instances |
-| 2. Check windows + policy | Find next SSM maintenance window; check for existing Patch Policy associations |
-| 3. SLA decision | Window within SLA → **SCHEDULED**. Window exceeds SLA → **EMERGENCY** (patch immediately) |
-| 4. Dry-run scan | Run `AWS-RunPatchBaseline` with `Operation: Scan` — shows exactly what will be installed. Operator reviews before proceeding. Programmatically enforced: no Install without a Scan within the last 2 hours on every target instance |
-| 5. Pre-patch snapshot | Capture compliance metrics (missing/installed counts) per instance for before/after comparison |
-| 6. Execute | Run `AWS-RunPatchBaseline` with `Operation: Install` |
-| 7. Health check | Verify SSM connectivity and CloudWatch alarms |
-| 8. Post-patch snapshot | Capture compliance metrics after patching |
-| 9. Compliance report | Generate JSON report with before/after delta, SLA result, operator identity → saved to S3 |
+      Recommended rollout: dev -> staging
 
-### Patch Policy Integration
+      ## Next Steps
+      1. Preview patches for dev -- 5 instances, 2 critical CVEs
+      2. Check if prod is also affected
+      3. Build remediation plan across dev and staging
+```
 
-The agent checks for existing SSM Patch Policy associations (created via Quick Setup or State Manager) before acting:
+```
+You: Preview patches for dev
 
-| Scenario | Agent behaviour |
-|----------|----------------|
-| Scheduled + no severity filter + Install policy exists | "Your patch policy will handle this during the next window. No action needed." |
-| Scheduled + no severity filter + no Install policy | Registers a task with the maintenance window |
-| Scheduled + severity filter | Registers a task with `BaselineOverride` scoped to requested severity |
-| Emergency (any) | Direct `send_command`, with `BaselineOverride` if severity filter set |
+Agent: [Consulting Patch Manager]
 
-If no patch policy exists, the agent warns: "No patch policy found. Consider creating one for consistent scheduled patching."
+      SLA: 24hr (tag:SLA-CRITICAL) | Window: 6hr | Decision: SCHEDULED
 
-### Severity-Scoped Patching
+      Dry-run complete -- 12 missing patches across 5 instances
 
-SSM Patch Manager works on baseline approval rules, not individual CVE IDs. When you request patching for a specific CVE or severity, the agent uses a `BaselineOverride` — an S3-hosted JSON file — to scope the operation.
+      | Instance ID         | Missing | Installed | Failed | Status  |
+      |---------------------|---------|-----------|--------|---------|
+      | i-0a1b2c3d4e5f67890 | 3       | 145       | 0      | Success |
+      | i-0b2c3d4e5f678901a | 2       | 148       | 0      | Success |
+      | i-0c3d4e5f6789012ab | 3       | 141       | 0      | Success |
+      | i-0d4e5f67890123abc | 2       | 150       | 0      | Success |
+      | i-0e5f678901234abcd | 2       | 147       | 0      | Success |
 
-Pre-generated override files in the compliance S3 bucket:
+      Review the changes above. Say 'proceed' to execute patching or 'cancel'.
 
-| File | Scope |
-|------|-------|
-| `baseline-overrides/critical-only.json` | Critical only |
-| `baseline-overrides/high-and-above.json` | Critical + Important (High) |
-| `baseline-overrides/medium-and-above.json` | Critical + Important + Medium |
-| `baseline-overrides/all-severities.json` | All severities |
+      ## Next Steps
+      1. Start patching dev -- 5 instances (CRITICAL CVEs)
+      2. Generate compliance report for dev
+      3. Check if staging is also affected
+```
 
-Example: "Patch CVE-2025-1234 in prod" (HIGH severity CVE):
-1. Agent identifies severity: HIGH
-2. Selects `high-and-above` override
-3. Dry-run scan shows all HIGH+ patches that will be installed
-4. "To remediate CVE-2025-1234, I'll apply the HIGH+ severity baseline. This will install 12 patches including your target CVE. Here's the full list."
-5. Operator confirms → executes with the same override
+More example prompts:
 
-> **Limitation**: SSM cannot install a single CVE's patch in isolation. The `BaselineOverride` approach scopes to severity level, not individual packages. For surgical per-CVE patching, a future enhancement could use the `InstallOverrideList` parameter with CVE → package name mapping from Inspector findings.
+```
+How widespread is CVE-2025-38477 across our fleet?
+Patch all critical CVEs in staging
+Run a dry-run scan on prod to preview missing patches
+Show SLA breaches this week
+Roll back dev patches
+Who patched prod last week?
+Generate a compliance report for PCI-DSS in staging
+```
 
-> **OS support**: The pre-generated baseline overrides target Amazon Linux 2. For other operating systems (Ubuntu, RHEL, Windows), create equivalent override files with the appropriate `OperatingSystem` field. The override JSON schema is documented in the [AWS Systems Manager User Guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/patch-manager-about-baselineoverride.html).
+---
 
-### Patch Impact Preview
+## Known Limitations
 
-Before any patch operation, the agent runs a dry-run scan showing the full blast radius — not just the target CVE, but every package that will be updated:
+Read these before deciding to adopt -- they define the current scope:
 
-- **Per-CVE patching**: "You asked to patch CVE-2025-1234 (HIGH). The HIGH+ severity baseline will install 12 patches total — here's the full list with package names, severity, and CVE IDs for each."
-- **Per-severity patching**: "Applying all CRITICAL patches will update 3 packages across 5 instances."
-- **Full patching**: "The default baseline will install 47 patches. 5 are security-critical, 12 are important, 30 are medium."
-
-The dry-run results include `cve_ids` for each patch, so the agent can confirm whether the target CVE is included. If the fix isn't available in the OS repos (common for kernel-level CVEs on Amazon Linux 2), the agent explains this.
-
-### Rollback and Verification
-
-If a patch causes issues, the agent runs `yum history undo` to reverse the last transaction, then verifies success via three checks:
-- Re-scan with `AWS-RunPatchBaseline` confirms patch counts returned to pre-patch levels
-- SSM agent connectivity confirmed on all target instances
-- CloudWatch alarms back to OK state
-
-The rollback is not reported as successful until all three pass.
-
-### Compliance Reporting and SLA Enforcement
-
-Every patch operation produces a structured JSON compliance report stored in S3 with date-partitioned keys (`YYYY/MM/DD/report-id.json`). Reports include:
-
-- Vulnerability details (CVE ID, severity, CVSS score)
-- Scope (environment, team, product, instance count)
-- SLA assessment (framework, required hours, actual time-to-patch, met/breached)
-- Execution details (decision type, command ID, success/failure counts)
-- Before/after compliance delta (missing patches reduced from X to Y, compliance improved from N% to M%)
-- Operator identity (who initiated the patch operation)
-
-The compliance analyst agent can query these reports for trend analysis, SLA breach history, and executive summaries broken down by severity, environment, or team.
-
-> **Integrating with your GRC/SIEM?** The reports use a consistent JSON schema — feed them into Archer, Drata, Vanta, Splunk, or Datadog via S3 event notifications, Kinesis Firehose, or scheduled Athena queries. If your organisation has a compliance data lake, point the agent's S3 bucket at it or add S3 replication to your central audit account.
-
-### Per-User Audit Trail
-
-Every patch operation records who initiated it. The operator's email from the Cognito JWT is injected into the agent payload and recorded in compliance reports, SSM command Comments, S3 object metadata, and CloudWatch logs.
-
-The audit trail is queryable from multiple surfaces:
-- S3 compliance reports (JSON `operator` field + S3 object metadata)
-- SSM command history (`Comment` field includes operator identity)
-- CloudWatch Logs (`PATCH_SCHEDULED:` / `PATCH_EXECUTED:` log entries include operator)
-- Web UI Decision Audit Trail table (Operator column)
-
-### Role-Based Access Control
-
-Two Cognito groups control what users can do:
-
-| Role | Dashboard | Chat | Patch Execution | Reports |
-|------|-----------|------|-----------------|---------|
-| **operators** | ✅ | ✅ | ✅ | ✅ |
-| **viewers** | ✅ | ❌ | ❌ | ✅ |
-
-The ALB injects the Cognito JWT into request headers; the backend resolves group membership to determine the role. See [User Management](#user-management) for setup.
-
-> **Using IAM Identity Center (SSO)?** Federate Cognito with your Identity Center instance — group membership flows through as JWT claims, no custom user management needed.
-
-### Web UI and Operations Console
-
-Browser-based console with two panels:
-
-- **Dashboard**: KPI bar (total instances, vulnerabilities, SLA compliance rate), environment status cards, vulnerability table with pagination, compliance summary by severity/environment/team, decision explainability table with operator attribution
-- **Chat**: Streaming agent responses with specialist routing indicators, approval buttons for phased rollout between environments, session persistence via localStorage
+- **Amazon Linux 2 only** for patching and rollback. Rollback uses `yum history undo` which does not work on Ubuntu/Debian/Windows. SSM Patch Manager and Inspector are OS-agnostic -- only the rollback command needs adaptation for other OS types. See [Extending the Solution](docs/extending.md).
+- **Single AWS account and region.** Multi-account/region extension is planned.
+- **Severity-level patching, not per-CVE.** SSM Patch Manager cannot install a single CVE's patch in isolation. The agent scopes to severity level (e.g., all CRITICAL patches) using BaselineOverride files.
+- **Manual approval required** between environments in staged rollout. The agent asks the operator before proceeding to the next environment.
+- **Self-signed TLS certificate** by default. Browser shows a warning. Replace with an ACM public certificate for production. See [Security](docs/security.md).
+- **CloudWatch alarms must be pre-configured** for application-layer health checks. The agent checks existing alarms but does not create them.
+- **Baseline overrides are Amazon Linux 2 only.** Other OS types need equivalent override JSON files.
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                 Patch Automation Supervisor                  │
-│         (Intelligent routing + memory + fallback)           │
-│         AgentCoreMemorySessionManager (STM + LTM)           │
-├──────────────┬───────────────────┬───────────────────────────┤
-│ Vulnerability│   Patch Manager   │   Compliance Analyst      │
-│ Analyst      │                   │                           │
-│ • CVE        │ • Patch Compliance│ • Report Queries          │
-│   Analysis   │ • Dry-Run Preview │ • SLA Tracking            │
-│ • Fleet-Wide │ • Patch Execution │ • Audit Trails            │
-│   Impact     │ • Health Checks   │ • Executive Reporting     │
-│ • Rollout    │ • Rollback +      │ • Trend Analysis          │
-│   Planning   │   Verification    │                           │
-│              │ • Compliance Delta│                           │
-│              │ • Maintenance     │                           │
-│              │   Windows         │                           │
-└──────────────┴───────────────────┴───────────────────────────┘
-  (Read-only memory)  (Read-only memory)  (Read-only memory)
+                                  +---------------------------+
+                                  |       Web Browser         |
+                                  +-------------+-------------+
+                                                |
+                                  +-------------v-------------+
+                                  |     ALB (Cognito Auth)    |
+                                  +-------------+-------------+
+                                                |
+                        +----------------------------------------------+
+                        |              ECS Fargate                     |
+                        |   React Frontend + FastAPI API Proxy         |
+                        +---------------------+------------------------+
+                                              |
+                                    SSE streaming via
+                                  invoke_agent_runtime
+                                              |
+                        +---------------------v------------------------+
+                        |         Amazon Bedrock AgentCore             |
+                        |      (Runtime + Memory STM/LTM + OTEL)      |
+                        +---------------------+------------------------+
+                                              |
+              +-------------------------------+-------------------------------+
+              |                               |                               |
++-------------v-----------+   +---------------v-----------+   +---------------v-----------+
+| Supervisor Agent        |   |                           |   |                           |
+| - Routes queries        |   |  Amazon Inspector         |   |  AWS Systems Manager      |
+| - Enriches context      |   |  (Vulnerability findings) |   |  (Patch, commands, windows)|
+| - Memory read/write     |   |                           |   |                           |
++---+--------+--------+--+   +---------------------------+   +---------------------------+
+    |        |        |
+    v        v        v                                       +---------------------------+
+ Vuln     Patch   Compliance                                  |  Amazon S3                |
+ Analyst  Manager  Analyst                                    |  (Compliance reports,     |
+                                                              |   baseline overrides,     |
+                                                              |   decision audit trail)   |
+                                                              +---------------------------+
 ```
 
-The supervisor routes queries to the right specialist automatically. If a specialist can't handle a query, it re-routes or falls back to direct AWS API access via `use_aws`.
+**Agent hierarchy:**
+
+| Agent | Role | Memory | Tools |
+|-------|------|--------|-------|
+| Supervisor | Routes queries, enriches context, manages conversation | Read/Write (STM + LTM) | `consult_vulnerability_analyst`, `consult_patch_manager`, `consult_compliance_analyst`, `use_aws` |
+| Vulnerability Analyst | CVE analysis, fleet impact assessment | Read-only | `get_vulnerability_findings`, `assess_fleet_impact` |
+| Patch Manager | SLA enforcement, dry-run, patching, rollback, compliance reports | Read-only | 14 tools covering full lifecycle |
+| Compliance Analyst | S3 report queries, SLA breach tracking, trend analysis | Read-only | `query_compliance_reports` |
+
+**Patch execution workflow** (enforced sequence -- the agent will not skip steps):
+
+| Step | What happens |
+|------|-------------|
+| 1. Discover | Get patch compliance state and SLA requirement for target instances |
+| 2. Check windows + policy | Find next SSM maintenance window; check for existing Patch Policy associations |
+| 3. SLA decision | Window within SLA -> SCHEDULED. Window exceeds SLA -> EMERGENCY (patch now) |
+| 4. Dry-run scan | `AWS-RunPatchBaseline` with `Operation: Scan`. Operator reviews before proceeding. **Code-enforced: no Install without a Scan within the last 2 hours** |
+| 5. Pre-patch snapshot | Capture compliance metrics per instance for before/after comparison |
+| 6. Execute | `AWS-RunPatchBaseline` with `Operation: Install` |
+| 7. Health check | Verify SSM connectivity and CloudWatch alarms |
+| 8. Post-patch snapshot | Capture compliance metrics after patching |
+| 9. CVE verification | Query Inspector to confirm CVEs are remediated |
+| 10. Compliance report | JSON report with before/after delta, SLA result, operator identity -> S3 |
+
+For detailed architecture documentation (memory model, SLA decision flow, severity-scoped patching, rollback verification, patch policy integration), see [Architecture](docs/architecture.md).
 
 **Key files:**
 
@@ -200,10 +213,11 @@ The supervisor routes queries to the right specialist automatically. If a specia
 | `agent/vulnerability_agent.py` | CVE analysis, fleet impact via Inspector |
 | `agent/patch_manager.py` | SLA enforcement, dry-run, patching, rollback |
 | `agent/compliance_analyst.py` | S3 report queries, SLA breach tracking |
-| `agent/helper/tools.py` | All AWS API wrappers |
-| `agent/helper/agent_factory.py` | Agent creation with memory + OTEL |
-| `ui/frontend/src/App.tsx` | React UI — dashboard + chat panels |
-| `infra/lib/` | CDK stacks |
+| `agent/helper/tools.py` | All AWS API wrappers (17 tools) |
+| `agent/helper/agent_factory.py` | Agent creation with memory + guardrails |
+| `ui/api/server.py` | FastAPI proxy, dashboard API, auth middleware |
+| `ui/frontend/src/App.tsx` | React UI -- dashboard + chat panels |
+| `infra/lib/` | CDK stacks (Network, Core, UI, SampleEnv) |
 
 ---
 
@@ -212,635 +226,163 @@ The supervisor routes queries to the right specialist automatically. If a specia
 **Tools:**
 - Python 3.11+, Node.js 18+, Docker
 - AWS CLI v2 with a configured named profile
-- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for `connect-ui.sh`)
-- AWS account with Bedrock model access enabled (Claude Sonnet)
+- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for `connect-ui.sh`, only needed if using internal ALB mode)
+- Amazon Bedrock AgentCore access in your target region
 
-**AWS services — must be enabled before deploying:**
+**AWS services -- must be enabled before deploying:**
 
-| Service | Required | Purpose | How to verify |
-|---------|----------|---------|---------------|
-| Amazon Bedrock | Yes | LLM for agent reasoning | Console → Bedrock → Model access → Claude Sonnet enabled |
-| AWS Systems Manager | Yes | Patch management, command execution, maintenance windows | `aws ssm describe-instance-information` returns your instances |
-| Amazon Inspector | Yes | Vulnerability scanning (CVE discovery) | Console → Inspector → enabled for EC2 scanning |
-| Amazon S3 | Yes | Compliance reports storage | Auto-created by `Patchy-Core` stack |
+| Service | Purpose | How to verify |
+|---------|---------|---------------|
+| Amazon Bedrock | LLM for agent reasoning | Console -> Bedrock -> Model access -> Claude Sonnet enabled |
+| Amazon Bedrock AgentCore | Agent hosting, memory, observability | Available in your target region |
+| AWS Systems Manager | Patch management, command execution | `aws ssm describe-instance-information` returns instances |
+| Amazon Inspector | Vulnerability scanning (CVE discovery) | Console -> Inspector -> enabled for EC2 scanning |
+| Amazon S3 | Compliance reports storage | Auto-created by `Patchy-Core` stack |
+
+**Estimated monthly cost (pilot):**
+
+| Component | Approximate Cost | Notes |
+|-----------|-----------------|-------|
+| NAT Gateways (2) | ~$64/month | Required for private subnet egress |
+| ECS Fargate (1 task, 256 CPU / 512 MB) | ~$10/month | UI container |
+| Application Load Balancer | ~$16/month + data transfer | Public or internal |
+| Bedrock (Claude Sonnet) | Variable | ~$3/1M input tokens, ~$15/1M output tokens |
+| Inspector | Per-instance | ~$1.25/instance/month for EC2 scanning |
+| Sample EC2 instances (15x t3.micro) | ~$75/month | Only if using `--with-sample-env` |
+| **Total (pilot with sample env)** | **~$170-200/month** | Bedrock usage depends on conversation volume |
+
+Costs scale with fleet size (Inspector) and usage (Bedrock tokens). Monitor via AWS Cost Explorer with `Project=patch-automation` tag.
 
 ### EC2 Instance Requirements
 
-For the agent to manage EC2 instances, they need:
-- SSM Agent installed and running (`aws ssm describe-instance-information` shows the instance as `Online`)
+For the agent to manage your EC2 instances, they need:
+
+**Required:**
+- SSM Agent installed and running (`aws ssm describe-instance-information` shows `Online`)
 - IAM instance profile with `AmazonSSMManagedInstanceCore` managed policy
-- IAM instance profile must also allow `s3:GetObject` on `s3://patch-compliance-reports-<account-id>/baseline-overrides/*` for severity-scoped patching (the sample environment configures this automatically)
-- Tag: `Environment` (e.g., `dev`, `staging`, `prod`) — used for environment-based routing
-- Tag: `PatchGroup` (e.g., `dev-patch-group`) — used by SSM Patch Manager for baseline mapping
-- Tag: `ComplianceFrameworks` (optional, e.g., `PCI-DSS,SOC2`) — included in compliance reports for audit context
-- Tags: `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` (recommended, hours) — drives SLA enforcement. Falls back to defaults (24/72/168/720h) if missing.
+- Tag: `Environment` (e.g., `dev`, `staging`, `prod`) -- used for environment-based routing
+- Tag: `PatchGroup` (e.g., `dev-patch-group`) -- used by SSM Patch Manager
 
-### Patch Policy Setup (Recommended)
+**Recommended:**
+- Tags: `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` (hours) -- drives SLA enforcement. Falls back to defaults (24/72/168/720h) if missing.
+- IAM instance profile allows `s3:GetObject` on `s3://patch-compliance-reports-<account-id>/baseline-overrides/*` for severity-scoped patching (the sample environment configures this automatically)
 
-For scheduled patching, the agent checks for existing SSM Patch Policy associations (State Manager). If your instances don't have patch policies configured:
-- The agent will warn: "No patch policy found for these instances"
-- On-demand patching still works via direct `send_command`
-- To set up patch policies: Console → Systems Manager → Quick Setup → Patch Policy, or create State Manager associations targeting your instances with `AWS-RunPatchBaseline`
-
-The sample environment (`--with-sample-env`) creates maintenance windows but not patch policy associations. In production, configure patch policies via [Quick Setup](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-patch-manager.html) for consistent scheduled patching.
-
----
-
-## Quick Start
-
-```bash
-# 1. Configure
-cp .env.example .env
-# Edit .env — set AWS_PROFILE and AWS_REGION
-
-# 2. Deploy everything (with sample EC2 instances)
-./deploy.sh --with-sample-env
-
-# 3. Create Cognito users (URL and Pool ID are printed at the end of deploy)
-POOL_ID=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
-  --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text)
-
-# Create an operator user
-aws cognito-idp admin-create-user --user-pool-id $POOL_ID \
-  --username operator@patchy.com \
-  --user-attributes Name=email,Value=operator@patchy.com Name=email_verified,Value=true \
-  --temporary-password 'TempPass1' --message-action SUPPRESS
-
-aws cognito-idp admin-set-user-password --user-pool-id $POOL_ID \
-  --username operator@patchy.com --password 'YourPassword1' --permanent
-
-aws cognito-idp admin-add-user-to-group --user-pool-id $POOL_ID \
-  --username operator@patchy.com --group-name operators
-
-# 4. Open the URL printed at the end of deploy and log in
-```
-
-`deploy.sh` handles the full sequence: Python venv → agent → role detection → CDK bootstrap → infrastructure → TLS certificate (auto-generated) → Cognito user pool → Docker build → Fargate UI.
+**Optional (audit context):**
+- Tag: `ComplianceFrameworks` (e.g., `PCI-DSS,SOC2`) -- included in compliance reports
+- Tags: `Team`, `Product`, `Owner` -- included in compliance reports for attribution
 
 ---
 
 ## Deployment
 
-### Environment Variables
+### Required Environment Variables
 
 All scripts auto-source `.env` from the project root. Copy `.env.example` to get started.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `AWS_PROFILE` | Yes | AWS CLI named profile |
-| `AWS_REGION` | Yes | Defaults to `us-east-1` |
-| `AGENT_NAME` | No | AgentCore agent name. Defaults to `intelligent-patch-automation` |
-| `AGENTCORE_ROLE_ARN` | No | Auto-detected after agent deploy |
-| `EXISTING_VPC_ID` | No | Use an existing VPC instead of creating one. Creates `Patchy-VpcLookup` instead of `Patchy-Network`. |
-| `ACM_CERTIFICATE_ARN` | No | Enables HTTPS. Auto-generated by `deploy.sh` via `setup-tls.sh` if not set. |
-| `COGNITO_DOMAIN_PREFIX` | No | Cognito hosted UI domain prefix. Auto-derived as `patchy-<account_id>` if not set. |
-| `COGNITO_ENABLED` | No | Set to `false` to disable Cognito and use internal ALB. Defaults to `true`. |
-| `BYPASS_TOOL_CONSENT` | No | Set to `true` to skip Strands tool consent prompts. Defaults to `true`. |
-| `API_KEY` | No | Enables `X-API-Key` header auth (only relevant when `COGNITO_ENABLED=false`) |
-| `API_KEY_OPERATOR` | No | Explicit operator key — full access (only relevant when `COGNITO_ENABLED=false`) |
-| `API_KEY_VIEWER` | No | Viewer key — read-only (only relevant when `COGNITO_ENABLED=false`) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AWS_PROFILE` | `default` | AWS CLI named profile |
+| `AWS_REGION` | `us-east-1` | Target AWS region |
+
+### Optional Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EXISTING_VPC_ID` | (none) | Use your own VPC instead of creating one |
+| `ACM_CERTIFICATE_ARN` | (auto-generated) | TLS certificate. Auto-created via `setup-tls.sh` if not set |
+| `COGNITO_ENABLED` | `true` | Set to `false` for internal ALB mode (no public access) |
+| `COGNITO_DOMAIN_PREFIX` | `patchy-<account_id>` | Cognito hosted UI domain prefix |
+| `AGENTCORE_ROLE_ARN` | (auto-detected) | Only set manually if multiple AgentCore roles exist |
+| `BYPASS_TOOL_CONSENT` | `true` | Strands SDK tool consent. When `true`, the agent executes tools without interactive CLI prompts. **This does not bypass operator approval** -- the agent's workflow still requires human confirmation before patching (enforced by system prompt and the code-level dry-run gate). |
+| `INSPECTOR_RESOURCE_TYPES` | `EC2` | Comma-separated: `EC2`, `ECR`, `LAMBDA`. Set to `EC2,ECR` for container workloads. |
+| `API_KEY` / `API_KEY_OPERATOR` / `API_KEY_VIEWER` | (none) | Header-based auth (only when `COGNITO_ENABLED=false`) |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | Override the default model |
 
 ### Commands
 
-| Command | What it does |
-|---------|-------------|
-| `./deploy.sh` | Full deploy: infra + agent + UI |
-| `./deploy.sh --with-sample-env` | Full deploy + 15 sample EC2 instances |
-| `./deploy.sh agent` | Redeploy agent only |
-| `./deploy.sh ui` | Redeploy UI only |
-| `./connect-ui.sh` | SSM port forward to the internal ALB |
-| `./setup-tls.sh` | Generate self-signed cert + import to ACM |
-| `./deploy.sh destroy` | Destroy ALL infrastructure |
-| `./deploy.sh destroy --sample-only` | Destroy sample environment only |
+| Command | What it does | Time |
+|---------|-------------|------|
+| `./deploy.sh` | Full deploy: agent + infra + UI | ~20-30 min (first run) |
+| `./deploy.sh --with-sample-env` | Full deploy + 15 sample EC2 instances | ~25-35 min (first run) |
+| `./deploy.sh agent` | Redeploy agent only (after code changes) | ~5 min |
+| `./deploy.sh ui` | Redeploy UI only (after code changes) | ~10 min |
+| `./connect-ui.sh` | SSM port forward to internal ALB | Instant |
+| `./deploy.sh destroy` | Destroy ALL infrastructure | ~10 min |
+| `./deploy.sh destroy --sample-only` | Destroy sample environment only | ~5 min |
 
 ### Infrastructure Stacks
 
-| Stack | Purpose |
-|-------|---------|
-| `Patchy-Network` | VPC, subnets, NAT gateways (created when `EXISTING_VPC_ID` is not set) |
-| `Patchy-VpcLookup` | Thin lookup stack used when `EXISTING_VPC_ID` is set — imports your existing VPC |
-| `Patchy-Core` | S3 compliance reports bucket, AgentCore IAM policy |
-| `Patchy-UI` | ECS Fargate, ALB (public with Cognito or internal), Cognito User Pool, CloudWatch logs |
-| `Patchy-SampleEnv` | Sample environment: 15 EC2 instances, SG, IAM role, maintenance windows (deploy with `--with-sample-env`) |
+| Stack | Purpose | Always Deployed? |
+|-------|---------|------------------|
+| `Patchy-Network` | VPC, subnets, NAT gateways, flow logs | Yes (or `Patchy-VpcLookup` if `EXISTING_VPC_ID` set) |
+| `Patchy-Core` | S3 compliance reports bucket, AgentCore IAM policy | Yes |
+| `Patchy-UI` | ECS Fargate, ALB, Cognito, bastion (internal mode) | Yes |
+| `Patchy-SampleEnv` | 15 EC2 instances, maintenance windows, ALBs, patch baselines | Only with `--with-sample-env` |
 
-The sample environment is fully self-contained — it creates its own security group, instance role, and instance profile. It deploys and destroys independently: `./deploy.sh destroy --sample-only`.
-
-> ⚠️ **Production Warning — S3 Bucket Retention**: The compliance reports S3 bucket defaults to `DESTROY` with `autoDeleteObjects` for clean teardown. For production, change `removalPolicy` to `RETAIN` in `infra/lib/core-stack.ts` to preserve compliance reports if the stack is deleted. See [Production Hardening → Data and Compliance](#data-and-compliance) for details.
+> [!WARNING]
+> The compliance reports S3 bucket defaults to `DESTROY` with `autoDeleteObjects` for clean teardown. **For production, change `removalPolicy` to `RETAIN` in `infra/lib/core-stack.ts`** to preserve audit data if the stack is deleted.
 
 ### Using an Existing VPC
 
-If you already have a VPC with the required subnet types, set `EXISTING_VPC_ID` in `.env`:
+Set `EXISTING_VPC_ID` in `.env` to skip VPC creation:
 
 ```bash
 EXISTING_VPC_ID=vpc-0123456789abcdef0
 ```
 
-Requirements for the existing VPC:
-- Private subnets with egress (NAT gateway) for Fargate tasks
-- DNS hostnames and DNS support enabled
-
-When set, the `Patchy-Network` stack is not created. Instead, a thin `Patchy-VpcLookup` stack is created that imports your existing VPC. CDK looks up the VPC at synth time using your AWS credentials.
+Requirements: private subnets with egress (NAT gateway), DNS hostnames and DNS support enabled.
 
 ### Tagging Convention
 
-The agent reads EC2 tags to determine environment, compliance frameworks, and patch group membership. See [Prerequisites → Instance Requirements](#instance-requirements) for the full list.
-
-> **Enterprise integration**: Most organisations already maintain environment and compliance metadata in their CMDB (ServiceNow, Device42, Jira Assets). If your CMDB drives EC2 tagging through AWS Organizations tag policies, Service Catalog, or a CI/CD pipeline, the agent picks up your existing taxonomy automatically — no manual tag mapping needed.
-
----
-
-## Post-Deployment Setup
-
-`deploy.sh` handles most setup automatically. These sections describe what happens behind the scenes and optional advanced configuration.
-
-### User Management
-
-The UI uses Cognito for authentication. After deployment, create users and assign them to groups.
-
-**Get the User Pool ID:**
-```bash
-POOL_ID=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
-  --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text)
-```
-
-**Create a user:**
-```bash
-aws cognito-idp admin-create-user --user-pool-id $POOL_ID \
-  --username user@example.com \
-  --user-attributes Name=email,Value=user@example.com Name=email_verified,Value=true \
-  --temporary-password 'TempPass1' --message-action SUPPRESS
-
-# Set a permanent password (skips the forced change on first login)
-aws cognito-idp admin-set-user-password --user-pool-id $POOL_ID \
-  --username user@example.com --password 'YourSecurePassword1' --permanent
-```
-
-**Assign to a group:**
-```bash
-# Full access (dashboard + chat + patching)
-aws cognito-idp admin-add-user-to-group --user-pool-id $POOL_ID \
-  --username user@example.com --group-name operators
-
-# Read-only access (dashboard only, no chat or patching)
-aws cognito-idp admin-add-user-to-group --user-pool-id $POOL_ID \
-  --username user@example.com --group-name viewers
-```
-
-Two groups are created automatically by the CDK stack:
-- `operators` — full access: dashboard, chat, patch execution, compliance reports
-- `viewers` — read-only: dashboard and compliance reports only
-
-> **Note**: If the Cognito User Pool is recreated (e.g., after a CDK change that replaces the pool resource), all users are lost. The Pool ID is in the CloudFormation outputs — always verify it before creating users. To federate with your corporate IdP instead of managing users manually, see [Production Hardening → Federating with Okta, Ping, or Azure AD](#federating-with-okta-ping-or-azure-ad).
-
-### Long-Term Memory (Automatic)
-
-Long-term memory is configured automatically during `./deploy.sh`. The script:
-1. Upgrades memory mode from `STM_ONLY` to `STM_AND_LTM`
-2. Adds SEMANTIC and SUMMARY extraction strategies
-3. Validates the runtime role's IAM policy references the correct memory resource
-
-If you need to re-run memory setup manually (e.g., after recreating the memory resource):
-```bash
-source venv/bin/activate
-python agent/setup_memory_strategies.py
-```
-
-This adds SEMANTIC (fact extraction) and SUMMARY (session summaries) strategies to the existing memory resource. Memories are automatically scoped per operator via `actor_id` — Operator A's extracted facts are invisible to Operator B.
-
-**How memory works:**
-
-- **Short-term (STM)**: Conversation turns are persisted to AgentCore Memory via `AgentCoreMemorySessionManager` (the official Strands integration). Sessions survive page refreshes — the frontend stores the `session_id` in localStorage.
-- **Long-term (LTM)**: After each conversation, AgentCore asynchronously extracts semantic facts and session summaries. On the next session, the agent retrieves relevant LTM records and injects them as `<user_context>` before the first model call.
-- **Operator isolation**: The `actor_id` is scoped as `patch-automation/{operator_identity}`, ensuring memory isolation between operators. Invalid characters (like `@`) are automatically sanitized.
-
-> **Note**: The AgentCore toolkit automatically injects `BEDROCK_AGENTCORE_MEMORY_ID` into the generated Dockerfile. No custom Dockerfile is needed — the toolkit handles memory_id, OTEL instrumentation, and `PYTHONUNBUFFERED` automatically.
-
-### Bedrock Guardrails (Optional)
-
-Creates a sample guardrail with topic filtering, content safety, and sensitive data masking.
-
-```bash
-source venv/bin/activate
-python agent/setup_guardrail.py
-```
-
-Then add the output values to your deployment environment:
-```bash
-# In .env or container environment
-GUARDRAIL_ID=<guardrail-id-from-output>
-GUARDRAIL_VERSION=<version-from-output>
-```
-
-Redeploy the agent to pick up the guardrail: `./deploy.sh agent`
-
-The sample guardrail includes:
-- Denied topic: non-patching queries (general knowledge, unrelated AWS services)
-- Content filters: blocks harmful content at HIGH threshold
-- Sensitive data: anonymizes AWS account IDs and IP addresses in responses
-- Prompt attack detection: blocks prompt injection attempts
-
-Extend it in the Bedrock console or via API with additional policies for your compliance requirements (PII redaction, custom word filters, additional denied topics).
-
----
-
-## Configuration
-
-### SLA Policies
-
-SLA thresholds come entirely from EC2 instance tags — the solution has no built-in compliance framework knowledge. Set hours per instance:
-
-| Tag | Example | Meaning |
-|-----|---------|---------|
-| `SLA-CRITICAL` | `12` | Patch within 12 hours |
-| `SLA-HIGH` | `48` | Patch within 48 hours |
-| `SLA-MEDIUM` | `168` | Patch within 168 hours |
-| `SLA-LOW` | `720` | Patch within 720 hours |
-
-Falls back to defaults (24/72/168/720h) if tags are missing.
-
-The `ComplianceFrameworks` tag (e.g., `PCI-DSS,SOC2`) is optional — it's included in compliance reports for audit context (tells auditors *why* the SLA was set) but does not drive SLA calculation.
-
-**Sample environment SLA configuration:**
-
-| Environment | Framework | CRITICAL | HIGH | MEDIUM | LOW |
-|-------------|-----------|----------|------|--------|-----|
-| dev (all) | SOC2 | 24h | 72h | 168h | 720h |
-| staging (PCI-DSS) | PCI-DSS | 12h | 48h | 168h | 720h |
-| staging (others) | SOC2 | 24h | 72h | 168h | 720h |
-| prod (PCI-DSS) | PCI-DSS | 6h | 24h | 168h | 720h |
-| prod (others) | SOC2/HIPAA | 24h | 72h | 168h | 720h |
-
-> **Enterprise tip**: Push SLA hours to EC2 tags via AWS Organizations tag policies, Service Catalog, or your CI/CD pipeline. The agent reads them at runtime — no redeployment needed when thresholds change.
-
-### Maintenance Windows
-
-The agent uses SSM maintenance windows to decide patching mode:
-- **SCHEDULED**: next window is within the SLA deadline → wait for it
-- **EMERGENCY**: next window exceeds the SLA deadline → patch immediately
-
-Sample windows (from `--with-sample-env`): dev daily 1AM UTC, staging Tuesdays 2AM UTC, prod 1st of month 2AM UTC.
-
-> **Using a change management system?** Extend the agent to query your change calendar (ServiceNow, Jira, PagerDuty) instead of or alongside SSM windows. The SLA-vs-window logic in `execute_patch_operation()` just needs a "next available window" timestamp — the source doesn't matter. For organisations using both, the agent can check both and use the earliest compliant window.
-
----
-
-## Web UI
-
-Browser-based operations console with two panels:
-
-- **Dashboard**: KPI bar (total instances, vulnerabilities, SLA compliance rate), environment status cards, vulnerability table with pagination, compliance summary by severity/environment/team, decision explainability table with operator attribution
-- **Chat**: Streaming agent responses with specialist routing indicators, approval buttons for phased rollout between environments, session persistence via localStorage
-
-### Accessing the UI
-
-The URL is printed at the end of `deploy.sh` and available in CloudFormation outputs:
-
-```bash
-# Get the UI URL
-aws cloudformation describe-stacks --stack-name Patchy-UI \
-  --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text
-```
-
-Open the URL in your browser. You'll be redirected to the Cognito hosted login page. Log in with the credentials you created in [User Management](#user-management).
-
-> **Self-signed cert warning**: If you used `setup-tls.sh` (the default), your browser will show a certificate warning. Click through — this is expected. For production, replace with an ACM public certificate (free, auto-renewing, no warnings).
-
-### Internal ALB Mode (No Cognito)
-
-To deploy without Cognito on an internal ALB (e.g., for VPN-only access), set `COGNITO_ENABLED=false` in `.env`. Access via SSM port forwarding:
-
-```bash
-./connect-ui.sh       # Start tunnel, then open https://localhost:8443
-```
-
-`connect-ui.sh` looks up the `BastionInstanceId` output from the `Patchy-UI` stack first. If no bastion is found, it falls back to any SSM-managed instance running in the ALB's VPC. Requires the AWS CLI Session Manager plugin.
-
-### TLS / HTTPS
-
-| Approach | When to use |
-|----------|-------------|
-| `./setup-tls.sh` | Quick start / pilot. Auto-run by `deploy.sh`. Browser shows cert warning (self-signed). |
-| ACM public certificate | Production. Set ARN in `.env`. Free, auto-renewing, no warnings. |
-| No certificate + `COGNITO_ENABLED=false` | Internal ALB only. ALB serves HTTP on port 80. |
-
-> **Note**: Cognito requires HTTPS. If `ACM_CERTIFICATE_ARN` is not set, `deploy.sh` automatically runs `setup-tls.sh` to generate a self-signed certificate.
-
-### Local Development
-
-```bash
-cd ui/api && uvicorn server:app --host 0.0.0.0 --port 8000   # Backend on port 8000
-cd ui/frontend && npm run dev                                   # Frontend on port 5173
-```
-
----
-
-## Observability
-
-Patchy provides four layers of observability, each serving a different debugging need. They work together — start with the layer that matches your question, then drill deeper as needed.
-
-| Layer | What it captures | Where it lives | When to use |
-|---|---|---|---|
-| **1. GenAI Dashboard & Traces** | Execution graph: which tools were called, in what order, how long, success/fail, token usage | CloudWatch GenAI Observability, Transaction Search (`aws/spans`) | "What did the agent do?" — trace a session, find slow tools, spot errors |
-| **2. Tool Summaries** | Structured data points: input params, result counts, decisions, comparison outcomes | CloudWatch runtime-logs (`[TOOL:<name>]` prefix) | "What data drove the decision?" — find specific counts, statuses, SLA calculations |
-| **3. Full Conversation** | Complete model responses including all tool data and agent analysis | CloudWatch runtime-logs (`[runtime-logs]` streams) | "What exactly did the agent say/see?" — full context, complete tool payloads |
-| **4. SSM & S3 Records** | Ground truth: SSM commands with parameters/targets/output, S3 compliance reports, S3 routing decisions | SSM Command History, S3 bucket | "What actually happened on the instances?" — verify what ran, audit trail |
-
-### Layer 1: GenAI Dashboard & Traces (Start Here)
-
-The AgentCore runtime auto-instruments all Bedrock model calls, tool executions, and memory operations via OpenTelemetry. No additional setup required.
-
-> **Prerequisite**: Transaction Search must be enabled in CloudWatch (one-time per account). Patchy's deployment enables this automatically. Verify: CloudWatch Console → Settings → X-Ray traces → Transaction Search = "Enabled". See [AgentCore Observability docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html) for manual setup.
-
-**GenAI Observability Dashboard**:
-
-CloudWatch Console → [GenAI Observability](https://console.aws.amazon.com/cloudwatch/home#/genai-observability) → Bedrock AgentCore tab
-
-- **Agents View**: Select `intelligent_patch_automation` → runtime metrics, sessions, traces for this agent
-- **Sessions View**: Browse conversation sessions. Each shows the full sequence of model calls, tool invocations, and memory operations. Use this to replay a specific user interaction.
-- **Traces View**: Inspect individual traces with span-level detail. The trace trajectory shows the execution graph — supervisor routing → specialist agent → tool calls → model invocations → memory operations.
-
-**Transaction Search** (for tracing specific requests):
-
-CloudWatch Console → Transaction Search → filter by service name `intelligent_patch_automation.DEFAULT`
-
-Select a trace to see the full execution graph with timing for each span.
-
-**Metrics** (for performance and health monitoring):
-
-| Namespace | Key Metrics |
-|---|---|
-| `bedrock-agentcore` | `strands.tool.call_count`, `strands.tool.duration`, `strands.tool.success_count` (per tool name), `strands.event_loop.cycle_count/duration` |
-| `AWS/Bedrock-AgentCore` | `Invocations`, `Sessions`, `Duration`, `Errors`/`UserErrors`/`SystemErrors`, `Throttles`, `CPUUsed-vCPUHours`/`MemoryUsed-GBHours` |
-| `AWS/Bedrock` | `InputTokenCount`/`OutputTokenCount`, `InvocationLatency`/`TimeToFirstToken`, `InvocationClientErrors` |
-
-### Layer 2: Tool Summaries (Structured Debugging)
-
-Every tool logs a structured summary at `INFO` level with a `[TOOL:<name>]` prefix. These appear in the runtime-logs streams and are searchable via CloudWatch Logs Insights.
-
-Example log entries:
-```
-[TOOL:capture_patch_state] instances=5 instance_ids=['i-0d62db459b5311d39', ...]
-[TOOL:capture_patch_state] RESULT: instances=5 total_missing=33 total_installed=1 no_data=0
-[TOOL:verify_rollback] COMPARISON i-0d62db459b5311d39: basis=post_patch reverted=True
-[TOOL:verify_rollback] RESULT: status=VERIFIED recommendation=ROLLBACK_CONFIRMED
-[TOOL:patch_dry_run] RESULT: total_missing=1 instances=5 severity_filter=None override_applied=False
-[TOOL:execute_patch_operation] mode=immediate env=staging instances=5 severity_filter=None
-```
-
-**Search tool logs:**
-```bash
-# Find your log group
-LOG_GROUP=$(aws logs describe-log-groups \
-  --query "logGroups[?contains(logGroupName, 'intelligent_patch_automation')].logGroupName" \
-  --output text | head -1)
-
-# Search for a specific tool's activity
-aws logs start-query \
-  --log-group-name "$LOG_GROUP" \
-  --start-time $(python3 -c "import time; print(int(time.time() - 3600))") \
-  --end-time $(python3 -c "import time; print(int(time.time()))") \
-  --query-string 'fields @timestamp, body | filter body like /TOOL:capture_patch_state/ | sort @timestamp desc | limit 20'
-
-# Search for all tool results in a time window
-aws logs start-query \
-  --log-group-name "$LOG_GROUP" \
-  --start-time $(python3 -c "import time; print(int(time.time() - 3600))") \
-  --end-time $(python3 -c "import time; print(int(time.time()))") \
-  --query-string 'fields @timestamp, body | filter body like /TOOL:/ and body like /RESULT:/ | sort @timestamp asc | limit 50'
-
-# Search for errors across all tools
-aws logs start-query \
-  --log-group-name "$LOG_GROUP" \
-  --start-time $(python3 -c "import time; print(int(time.time() - 3600))") \
-  --end-time $(python3 -c "import time; print(int(time.time()))") \
-  --query-string 'fields @timestamp, body | filter body like /TOOL:/ and body like /ERROR/ | sort @timestamp desc | limit 20'
-```
-
-> **Note**: The OTEL auto-instrumentation wraps log messages in structured JSON. The actual message is in the `body` field. Use CloudWatch Logs Insights (which parses JSON automatically) rather than `--filter-pattern` for reliable searching.
-
-### Layer 3: Full Conversation (Deep Investigation)
-
-The runtime-logs streams capture the complete model responses — including all tool data the agent received and its full analysis. This is the richest data source for post-incident forensics.
-
-```bash
-# Tail the most recent runtime-logs stream (live)
-aws logs tail "$LOG_GROUP" \
-  --log-stream-name-prefix "$(date -u +%Y/%m/%d)/[runtime-logs]" --follow
-
-# List available runtime-logs streams
-aws logs describe-log-streams \
-  --log-group-name "$LOG_GROUP" \
-  --log-stream-name-prefix "$(date -u +%Y/%m/%d)/[runtime-logs]" \
-  --order-by LastEventTime --descending --limit 5 \
-  --query 'logStreams[*].logStreamName' --output text
-
-# Read a specific stream (replace with actual stream name)
-aws logs get-log-events \
-  --log-group-name "$LOG_GROUP" \
-  --log-stream-name "<stream-name>" \
-  --limit 50 --output json \
-  | python3 -c "
-import json, sys
-for ev in json.load(sys.stdin).get('events', []):
-    msg = ev.get('message', '')[:300]
-    print(msg)
-    print()
-"
-```
-
-The runtime-logs also contain:
-- `[SUPERVISOR]` prefixed entries — routing decisions, context enrichment, session lifecycle
-- `[MEMORY]` prefixed entries — memory creation, retrieval, session management
-- Strands debug output — model call details, event loop cycles, retry state
-
-### Layer 4: SSM & S3 Records (Ground Truth)
-
-For verifying what actually happened on instances (independent of what the agent reported):
-
-**SSM Command History:**
-```bash
-# List all patch commands (scans, installs, rollbacks)
-aws ssm list-commands \
-  --filter "key=DocumentName,value=AWS-RunPatchBaseline" \
-  --max-items 20 --output json \
-  | python3 -c "
-import json, sys
-for cmd in sorted(json.load(sys.stdin)['Commands'], key=lambda c: c['RequestedDateTime']):
-    print(f\"{cmd['RequestedDateTime']} | {cmd['Parameters'].get('Operation',['?'])[0]:7s} | \
-Override: {'YES' if 'BaselineOverride' in cmd['Parameters'] else 'NO ':3s} | \
-{cmd['Status']:8s} | {cmd.get('Comment','')[:60]}\")"
-
-# Get command output for a specific instance
-aws ssm get-command-invocation \
-  --command-id "<command-id>" \
-  --instance-id "<instance-id>" \
-  --output text
-
-# Check current patch state on an instance
-aws ssm describe-instance-patch-states \
-  --instance-ids <instance-id> --output table
-```
-
-**S3 Routing Decisions:**
-```bash
-# List recent supervisor routing decisions
-aws s3 ls s3://patch-compliance-reports-<account-id>/decisions/ --recursive | tail -20
-
-# Read a specific decision
-aws s3 cp s3://patch-compliance-reports-<account-id>/decisions/<path>.json - | python3 -m json.tool
-```
-
-**S3 Compliance Reports:**
-```sql
--- Query with Athena for fleet-wide audit
-SELECT report_id, timestamp, operator, cve_id, environment, decision, sla_met
-FROM patch_compliance_reports
-WHERE operator LIKE '%jane.doe%'
-ORDER BY timestamp DESC
-```
-
-### Debugging Workflow
-
-When investigating an issue, follow this path:
-
-1. **GenAI Dashboard → Sessions View**: Find the session by time range. See the execution graph — which tools were called, did any fail?
-2. **Tool Summaries**: Search for `[TOOL:<name>] RESULT:` in Logs Insights to see the key data points (counts, statuses, comparison outcomes).
-3. **Full Conversation**: If you need the complete context, read the runtime-logs stream for that time window — the model's full response includes all tool data.
-4. **SSM/S3 Records**: If you need to verify what actually ran on instances (independent of the agent), check SSM command history and S3 compliance reports.
-
-### Extending Observability
-
-If you add new tools, follow this pattern for consistent logging:
-```python
-logger.info(f"[TOOL:my_new_tool] param1={param1} param2={param2}")
-# ... tool logic ...
-logger.info(f"[TOOL:my_new_tool] RESULT: key_metric={value} status={status}")
-```
-
-The `[TOOL:<name>]` prefix makes all tool logs searchable via a single Logs Insights query pattern. The OTEL auto-instrumentation automatically correlates these with the trace spans.
+The agent reads EC2 tags to determine environment, SLA, and compliance context. See [EC2 Instance Requirements](#ec2-instance-requirements) above for the full list. Most organisations already maintain this metadata in their CMDB (ServiceNow, Device42) -- if your CMDB drives EC2 tagging, the agent picks up your existing taxonomy automatically.
 
 ---
 
 ## Security
 
-- Cognito authentication on public ALB (default) — users must log in via Cognito hosted UI
-- Internal ALB mode available (`COGNITO_ENABLED=false`) — accessed via SSM port forwarding, no public exposure
-- HTTPS via ACM certificate (required for Cognito, optional for internal mode)
-- Role-based access control via Cognito groups: `operators` (full access) and `viewers` (dashboard read-only, no chat/patching)
-- Rate limiting (20 req/min per client IP)
-- Instance ID regex validation on all SSM operations
-- IAM least privilege — write access scoped to SSM commands and S3 compliance bucket
-- Human approval gates between environments during phased rollout
-- Dry-run gate — programmatic enforcement requires a recent Scan before any Install operation
-- Per-user audit trail — operator identity (from Cognito JWT) recorded in S3 reports, SSM comments, and CloudWatch logs
+### Network Architecture
 
----
-
-## Production Hardening
-
-The solution ships ready for pilot use. For production workloads, consider the following:
+| Component | Exposure | Access Control |
+|-----------|----------|----------------|
+| ALB | Internet-facing (Cognito mode) or internal (bastion mode) | Cognito authentication or SSM port forwarding |
+| Fargate tasks | Private subnets only | ALB -> port 8000 only |
+| EC2 instances (sample env) | Private subnets only | SSM Agent (no SSH) |
+| S3 compliance bucket | Private | IAM policy (AgentCore role + Fargate task role) |
 
 ### Authentication and Authorization
 
-Cognito authentication is built in and enabled by default. The ALB authenticates users via the Cognito hosted UI before forwarding requests to Fargate. Two groups (`operators`, `viewers`) control access.
+| Mode | How it works | When to use |
+|------|-------------|-------------|
+| **Cognito** (default) | ALB authenticates via Cognito hosted UI. Two groups: `operators` (full access) and `viewers` (read-only dashboard). | Production / pilot |
+| **Internal ALB** (`COGNITO_ENABLED=false`) | No public access. Connect via `./connect-ui.sh` (SSM port forwarding). Optional API key auth via `X-API-Key` header. | VPN-only environments |
 
-For production, consider these enhancements:
+### IAM Permissions
 
-1. **Federate with your corporate IdP**: See [Federating with Okta, Ping, or Azure AD](#federating-with-okta-ping-or-azure-ad) below. This eliminates manual user management in Cognito.
-2. **IAM session tags for CloudTrail attribution**: When invoking the agent, assume the execution role with `sts:AssumeRole` and pass `--tags operator={email}`. CloudTrail then records the human identity on every downstream API call (SSM SendCommand, S3 PutObject) — giving you tamper-proof, native audit attribution without any custom logging code.
-3. **Custom domain**: Replace the ALB DNS name with a Route 53 alias to your own domain (e.g., `patchy.yourcompany.com`) and use an ACM public certificate for that domain. This eliminates the self-signed certificate warning and gives users a memorable URL.
+The AgentCore runtime role (`PatchyAgentCorePolicy` in `Patchy-Core` stack) has:
+- **EC2**: Read-only (`Describe*`)
+- **SSM**: Read + `SendCommand` + maintenance window management (scoped to `resources: ['*']` -- see note below)
+- **Inspector**: Read-only (`ListFindings`)
+- **S3**: Read/Write on the compliance reports bucket only
+- **CloudWatch**: Read-only (`DescribeAlarms`, `GetMetricData`)
 
-### Federating with Okta, Ping, or Azure AD
+> [!NOTE]
+> SSM `SendCommand` is granted on `resources: ['*']`, meaning the agent can target any instance in the account. To restrict the blast radius, add a condition key scoping to specific tags (e.g., `ssm:resourceTag/ManagedBy: IntelligentPatchAutomation`). See [Security documentation](docs/security.md) for examples.
 
-If your organisation already has an IdP, you don't need to manage users in Cognito directly. Cognito acts as a thin OIDC/SAML proxy — users log in via your corporate IdP and Cognito issues the JWT that the ALB validates. No app code changes, no ALB changes.
+### Data Flow
 
-**Steps (Okta example, ~15 min):**
-1. In Okta: create a new OIDC app, set the callback URL to `https://<alb-dns>/oauth2/idpresponse`
-2. In Cognito: add Okta as an OIDC identity provider (Console → User Pool → Sign-in experience → Federated identity provider sign-in)
-3. Map Okta groups to Cognito groups (`operators`, `viewers`) via attribute mapping
-4. Update the User Pool Client's `supportedIdentityProviders` to include the Okta provider
+- **Within your account**: All tool calls (SSM, Inspector, EC2, S3, CloudWatch) stay within your AWS account and region.
+- **Bedrock API**: Agent prompts and responses are sent to the Bedrock API endpoint in your region. Bedrock does not store or train on your data. See [Bedrock data privacy](https://docs.aws.amazon.com/bedrock/latest/userguide/data-protection.html).
+- **No external services**: The solution does not call any third-party APIs.
 
-Users are redirected straight to Okta's login page — Cognito's hosted UI is bypassed entirely. Group membership flows through as JWT claims and the backend resolves roles identically.
+### Safety Mechanisms
 
-**AWS IAM Identity Center (recommended for AWS-native orgs):**
-If your organisation uses IAM Identity Center (formerly AWS SSO), you can add it as a SAML identity provider in Cognito. Users authenticate with their existing corporate credentials and MFA — no separate Cognito passwords needed. Map Identity Center groups to Cognito groups (`operators`, `viewers`) via SAML attribute mapping. This is the recommended approach for AWS-centric organisations as it centralises user lifecycle management and leverages existing access governance.
+- **Dry-run gate** (code-enforced): `execute_patch_operation` refuses to run without a `Scan` within the last 2 hours on every target instance. This cannot be bypassed by prompt manipulation.
+- **Operator confirmation**: The agent's system prompt requires presenting dry-run results and waiting for operator approval before patching. This is prompt-enforced, not code-enforced.
+- **Rate limiting**: 20 requests/minute per client IP on the API proxy.
+- **Input validation**: Instance ID regex validation on all SSM operations. Session ID format validation. Message length limits (10,000 chars).
+- **Per-user audit trail**: Operator identity (Cognito email) recorded in S3 reports, SSM command comments, and CloudWatch logs.
 
-### Native AWS Audit Capabilities
-
-Before building custom audit infrastructure, consider what AWS already provides:
-
-- **CloudTrail**: Every SSM `SendCommand`, S3 `PutObject`, and EC2 API call is already logged with the IAM principal, source IP, timestamp, and full request parameters. With session tags (see above), CloudTrail attributes actions to the human operator, not just the service role.
-- **SSM Command History**: `ssm:ListCommands` and `ssm:ListCommandInvocations` return the full execution history including the `Comment` field (which this solution populates with operator identity), status, timing, and target instances.
-- **S3 Object Metadata**: Compliance reports are stored with S3 object metadata (`operator`, `cve-id`, `environment`, `severity`, `decision-type`, `sla-met`, `team`, `product`). Queryable via S3 Inventory + Athena without reading the JSON body.
-- **CloudWatch Logs Insights**: Agent logs include structured `PATCH_SCHEDULED:` and `PATCH_EXECUTED:` entries with operator identity, environment, mode, and instance count — queryable in real time.
-
-For production, the recommended approach is: Cognito for authentication → IAM session tags for attribution → CloudTrail as the single source of truth for audit. The custom S3 compliance reports complement this with business-level context (SLA assessment, compliance delta) that CloudTrail doesn't capture.
-
-### Integration Patterns
-
-The solution exposes an HTTP API with SSE streaming, making it embeddable in existing tools:
-
-- **Slack / Microsoft Teams**: POST to `/api/chat` with the message body, consume the SSE stream, and render agent responses in a channel. A lightweight Lambda or Fargate sidecar can bridge the Slack Events API to the patch automation API. The agent's structured next-steps output maps naturally to Slack interactive buttons.
-- **ServiceNow / Jira**: Trigger patch operations from incident tickets. On ticket creation with a CVE tag, call the API to assess impact. On approval, call the API to execute. Write the compliance report URL back to the ticket.
-- **SNS Notifications**: After long-running patch operations, publish a completion event to SNS. Subscribe Slack webhooks, email, or PagerDuty for operator notification without polling the chat.
-- **Custom dashboards**: The `/api/dashboard` endpoint returns all fleet status, vulnerability, and compliance data as JSON — embeddable in Grafana, Datadog, or internal portals.
-
-### Network and Access
-
-- **Custom domain**: Register a domain in Route 53, create an alias record pointing to the ALB, and use an ACM public certificate for that domain. This gives users a clean URL (e.g., `https://patchy.yourcompany.com`) and eliminates the self-signed certificate warning.
-- **AWS Client VPN**: For internal-ALB mode (`COGNITO_ENABLED=false`), deploy a Client VPN endpoint in the VPC for broader team access beyond individual SSM tunnels.
-- **VPC endpoints**: Add interface VPC endpoints for SSM, EC2, S3, STS, and Bedrock to eliminate NAT gateway traffic and reduce data transfer costs. Also improves latency for API calls.
-- **WAF**: Add AWS WAF to the public ALB for request filtering, SQL injection protection, rate limiting, and managed rule sets as defense-in-depth.
-
-### Data and Compliance
-
-- **S3 bucket retention**: Change `removalPolicy` to `RETAIN` and remove `autoDeleteObjects` in `core-stack.ts` to preserve compliance reports on stack teardown. Current default is `DESTROY` for clean teardown.
-- **S3 Object Lock**: Enable Object Lock (compliance mode) on the compliance reports bucket to make audit data immutable. Prevents accidental or malicious deletion of compliance evidence.
-- **KMS encryption**: Replace S3-managed encryption with a customer-managed KMS key for compliance reports. Enables key rotation policies and CloudTrail key usage auditing.
-- **Cross-account backup**: Replicate the compliance reports bucket to a separate audit account using S3 Cross-Region Replication. Ensures reports survive even if the primary account is compromised.
-
-### Availability and Scaling
-
-- **Multi-AZ Fargate**: Increase `desiredCount` to 2+ in `ui-stack.ts` for high availability. The ALB already spans multiple AZs.
-- **Auto-scaling**: Add ECS Service Auto Scaling based on CPU/memory utilization or request count to handle variable operator load.
-- **Multi-region**: Deploy the infrastructure stack to a secondary region with Route 53 health checks for disaster recovery. The agent is stateless, so failover is straightforward.
-- **ALB health check tuning**: Tighten health check thresholds for faster failover. Consider adding a deeper health check endpoint that validates downstream connectivity (SSM, Bedrock).
-
-### Agent Reliability
-
-- **Guardrails**: Amazon Bedrock Guardrails are supported out of the box. Run `python agent/setup_guardrail.py` to create a sample guardrail with a denied topic (non-patching queries), content filters, and sensitive data masking (AWS account IDs, IP addresses). Then set `GUARDRAIL_ID` and `GUARDRAIL_VERSION` environment variables — the agent picks them up automatically. The sample guardrail is a starting point; extend it with additional denied topics, PII redaction policies, and custom word filters for your compliance requirements. See [Amazon Bedrock Guardrails documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html) for the full policy options.
-- **Token budget limits**: Set per-invocation token limits to prevent runaway conversations from consuming excessive Bedrock capacity.
-- **Dead letter queue**: Add an SQS DLQ for failed agent invocations to capture and retry failed patch operations.
-- **Idempotency**: Add idempotency keys to patch operations to prevent duplicate patching if an operator retries a failed request.
-- **Rollback for Debian/Ubuntu**: Current rollback is yum-based (Amazon Linux/RHEL only). Add apt-based rollback for Debian-family instances.
-
-### Operational Excellence
-
-- **CI/CD pipeline**: Add a CodePipeline or GitHub Actions workflow for automated testing and deployment. Run `npx tsc --noEmit` and Python linting on PR, deploy to a staging account on merge, promote to production with manual approval.
-- **Infrastructure testing**: Add CDK snapshot tests and integration tests that deploy to a test account, run agent interactions, and validate outcomes.
-- **CloudWatch dashboards**: Create a pre-built CloudWatch dashboard with key metrics: agent invocation count, latency P50/P99, error rate, patch success rate, SLA compliance percentage.
-- **CloudWatch alarms**: Add alarms for agent error rate spikes, Fargate task unhealthy, ALB 5xx rate, and SLA breach count. Route to SNS → PagerDuty/Slack.
-- **Cost monitoring**: Tag all resources with `Project=patch-automation` and set up AWS Budgets alerts. Bedrock token usage is the primary variable cost — monitor via GenAI Observability.
-
-### TLS
-
-- Replace the self-signed certificate with an ACM public certificate tied to your domain (free, auto-renewing, no browser warnings). Request the certificate in ACM with DNS validation, add the CNAME record to Route 53, and set the ARN in `.env` as `ACM_CERTIFICATE_ARN`. Redeploy with `./deploy.sh ui`.
-
----
-
-## Teardown
-
-```bash
-./deploy.sh destroy --sample-only    # Remove sample environment only
-./deploy.sh destroy                # Remove ALL infrastructure (prompts for confirmation)
-agentcore destroy                  # Remove the AgentCore agent runtime separately
-```
-
-S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed.
-
-> **Note:** `agentcore destroy` removes the agent runtime but leaves the memory resource intact (it may contain audit-relevant conversation history). To delete memory: `aws bedrock-agentcore-control delete-memory --memory-id <memory-id>`.
-
-> **Note:** The Cognito User Pool is deleted when `COGNITO_ENABLED=false` is set and the UI is redeployed. A dormant pool with credentials is a security liability. Re-enabling Cognito creates a fresh pool — users will need to be re-invited. If you need to preserve users across a temporary mode switch, export them first with `aws cognito-idp list-users`.
+For production hardening (IdP federation, WAF, KMS encryption, S3 Object Lock, VPC endpoints), see [Security documentation](docs/security.md).
 
 ---
 
@@ -849,88 +391,54 @@ S3 buckets are auto-emptied and deleted with the stack. No manual cleanup needed
 | Problem | Fix |
 |---------|-----|
 | Agent not responding | `agentcore status` then `agentcore launch --auto-update-on-conflict` |
-| Permission errors | Check `Patchy-Core` stack outputs |
-| No instances found | Instances need SSM Agent + `Environment` tag. Check: `aws ssm describe-instance-information` |
+| Permission errors | Check `Patchy-Core` stack outputs for policy ARN |
+| No instances found | Instances need SSM Agent + `Environment` tag. Verify: `aws ssm describe-instance-information` |
 | UI container unhealthy | Check logs: `aws logs tail /patch-automation/ui --follow` |
-| SSM tunnel fails | Ensure Session Manager plugin is installed and at least one instance is online |
-| Cognito login redirect error | Verify the callback URL matches the ALB DNS. ALB DNS is mixed-case but Cognito compares case-sensitively. The CDK stack handles this via a Lambda-backed custom resource that lowercases the DNS. If you see `redirect_mismatch`, redeploy: `./deploy.sh ui` |
-| Cognito users missing after redeploy | If the User Pool was recreated (new Pool ID in CloudFormation outputs), all users are lost. Recreate them — see [User Management](#user-management) |
-| Can't access UI URL | Check ALB is `internet-facing` (not `internal`). Verify security group allows inbound 443. If using `COGNITO_ENABLED=false`, use `./connect-ui.sh` instead |
-| Self-signed cert warning | Expected with `setup-tls.sh`. Click through in browser. For production, use an ACM public certificate |
-| Agent logs missing from CloudWatch | Ensure all agent code uses Python `logging` module, not `print()` to stderr. See [Observability → Logging Configuration](#important-logging-configuration) |
-| Stale config after account migration | Delete `agent/.bedrock_agentcore.yaml` and redeploy: `./deploy.sh agent`. The deploy script auto-detects stale configs from different accounts. |
-| Memory not persisting | Check `agentcore status` for memory errors. Verify the memory resource exists: `aws bedrock-agentcore-control list-memories` |
-| Agent asks for info already provided | This is a context-forwarding issue. The supervisor should enrich queries with CVE IDs and instance IDs from previous turns. If it persists, check that memory is active and the session_id is consistent across requests. |
+| SSM tunnel fails | Ensure Session Manager plugin is installed and at least one instance is `Online` |
+| Cognito login redirect error | Redeploy: `./deploy.sh ui` (fixes callback URL case mismatch) |
+| Cognito users gone after redeploy | User Pool was recreated (new Pool ID). Recreate users -- see [Operations](docs/operations.md) |
+| Self-signed cert warning | Expected with default setup. Click through. For production, use ACM public certificate |
+| Agent asks for info already provided | Memory or session issue. Verify `session_id` is consistent and memory is active: `agentcore status` |
+| Stale config after account switch | Delete `agent/.bedrock_agentcore.yaml` and redeploy: `./deploy.sh agent` |
 
 ### Deploying to a New Account
 
-When moving the solution to a different AWS account:
+1. Update `.env` with new `AWS_PROFILE` (and optionally `AWS_REGION`)
+2. Delete `agent/.bedrock_agentcore.yaml` (contains old account's agent ARN and memory ID)
+3. Run `./deploy.sh --with-sample-env`
 
-1. Update `.env` with the new `AWS_PROFILE` (and optionally `AWS_REGION`)
-2. Delete `agent/.bedrock_agentcore.yaml` (it contains the old account's agent ARN, memory ID, and ECR repo)
-3. Run `./deploy.sh --with-sample-env` — the script handles everything: fresh `agentcore configure`, memory mode upgrade to `STM_AND_LTM`, LTM strategy setup, and IAM policy validation
-
-The deploy script auto-detects stale configs (wrong account), upgrades memory mode, configures LTM strategies, and fixes IAM permissions — no manual steps needed.
-
-### Known Limitations
-
-- Manual approval required between environments in phased rollout
-- CloudWatch alarms must be pre-configured for application-layer health checks
-- Linux-only patching and rollback (Amazon Linux 2 / yum-based). See note at top for adapting to other OS types.
-- Single account and region deployment (multi-account/region extension planned — see `.kiro/specs/multi-account-region/`)
-- Self-signed TLS certificate shows browser warning (replace with ACM public cert for production)
-- Severity-scoped patching applies all patches at the requested severity level, not individual CVEs. SSM Patch Manager does not support per-CVE installation. A future enhancement using `InstallOverrideList` with CVE → package mapping from Inspector could enable surgical per-CVE patching.
-- Baseline override files are pre-generated for Amazon Linux 2. Other OS types require creating equivalent override JSON files.
+The deploy script auto-detects stale configs, upgrades memory mode, configures LTM strategies, and fixes IAM permissions.
 
 ---
 
-## Extending the Solution
+## Detailed Documentation
 
-The multi-agent architecture is designed for extensibility. Each specialist agent has its own tool set — adding a new capability is a single tool function with no changes to routing or decision logic.
-
-### What the Solution Covers Today
-
-- **Vulnerability discovery** — scan your fleet for CVEs, assess severity, and identify which environments and instances are affected
-- **Fleet-wide impact assessment** — understand how widespread a vulnerability is across dev, staging, and prod before deciding how to respond
-- **Patch impact preview** — see exactly which packages will be updated before committing, including packages beyond the target CVE (the "blast radius")
-- **SLA-driven decision making** — automatically determine whether to patch immediately (emergency) or wait for the next maintenance window (scheduled), based on per-instance SLA tags
-- **Patch policy awareness** — detect existing SSM Patch Policies and respect them for scheduled operations instead of creating duplicate patching tasks
-- **Severity-scoped execution** — apply patches at a specific severity level rather than applying everything, with operator confirmation before execution
-- **Application health verification** — check SSM connectivity and CloudWatch alarms after patching to confirm instances are healthy
-- **Automated rollback** — reverse patches if health checks fail, with verification that the rollback succeeded
-- **Compliance reporting** — generate structured audit reports with before/after compliance delta, SLA assessment, and operator identity
-- **Cross-session memory** — the agent remembers previous patching outcomes, CVE history, and operator preferences across conversations
-- **Real-time operations console** — dashboard with fleet status, vulnerability counts, compliance metrics, and decision audit trail
-
-### What Customers Can Extend
-
-| Capability | What it adds | How to integrate |
-|-----------|-------------|-----------------|
-| **CMDB-driven blast radius** | Show application dependencies affected by patching ("patching this instance impacts 3 upstream services") | Add a tool that queries your CMDB (ServiceNow, Device42) for instance dependencies. The agent presents the dependency map before the operator confirms. |
-| **Change management integration** | Check your change calendar before patching, not just SSM maintenance windows | Add a tool that queries your change management system (ServiceNow, Jira). The agent checks both SSM windows and your change calendar for the next available slot. |
-| **Third-party vulnerability scanners** | Use Qualys, Tenable, or Rapid7 instead of (or alongside) Amazon Inspector | Add a tool that queries your scanner's API. The vulnerability analyst uses it alongside or instead of Inspector findings. |
-| **Multi-OS patching** | Support Ubuntu, RHEL, Windows alongside Amazon Linux 2 | Create baseline override JSON files per OS. Adapt rollback commands for apt/zypper/Windows Update. SSM Patch Manager and Inspector already support all OS types. |
-| **Slack/Teams notifications** | Get notified when patching completes or fails | POST to `/api/chat` from a Lambda triggered by SNS. The agent's structured output maps to Slack message blocks. |
-| **Per-CVE surgical patching** | Install only the specific package that fixes a CVE, not all packages at that severity | Use SSM's `InstallOverrideList` parameter with CVE → package name mapping from Inspector's `vulnerablePackages` field. |
-| **Cross-account patching** | Manage instances across multiple AWS accounts from a single agent | Add assume-role logic to operate in spoke accounts. The dashboard API's `scopes` array already supports multiple accounts. |
-
-Each extension is a single tool function added to the relevant specialist agent — no changes to the supervisor routing, memory, or UI.
+| Document | What it covers |
+|----------|---------------|
+| [Architecture](docs/architecture.md) | Agent hierarchy, memory model, SLA decision flow, severity-scoped patching, rollback verification, patch policy integration, compliance reporting |
+| [Operations](docs/operations.md) | User management, long-term memory, guardrails, SLA configuration, maintenance windows, web UI access, local development |
+| [Observability](docs/observability.md) | 4-layer observability model, GenAI dashboard, tool log queries, full conversation replay, SSM/S3 ground truth, debugging workflows |
+| [Security](docs/security.md) | Production hardening, IdP federation, IAM session tags, WAF, KMS, S3 Object Lock, VPC endpoints, network architecture |
+| [Extending the Solution](docs/extending.md) | Adding tools, multi-OS support, CMDB integration, change management, third-party scanners, Slack/Teams, cross-account |
 
 ---
 
-## Usage Examples
+## Teardown
 
-Use the chat panel in the Web UI:
-
-```
-What critical vulnerabilities do we have?
-How widespread is CVE-2025-38477 across our fleet?
-Handle CVE-2025-38477 in dev
-Run a dry-run scan on dev to preview missing patches
-Show SLA breaches this week
-Patch all critical CVEs in staging
-Who patched prod last week?
-Generate a compliance report for PCI-DSS in staging
+```bash
+./deploy.sh destroy --sample-only    # Remove sample environment only
+./deploy.sh destroy                  # Remove ALL infrastructure (prompts for confirmation)
+agentcore destroy                    # Remove the AgentCore agent runtime separately
 ```
 
-The agent will automatically assess fleet-wide impact when scanning vulnerabilities, run a dry-run preview before patching, capture before/after compliance snapshots, and include the compliance delta in the report. If rollback is needed, it verifies the rollback succeeded before reporting back.
+> [!NOTE]
+> `agentcore destroy` removes the agent runtime but leaves the memory resource intact (may contain audit-relevant history). To delete memory: `aws bedrock-agentcore-control delete-memory --memory-id <memory-id>`.
+
+---
+
+## Getting Help
+
+- **Issues**: Report bugs or request features on the project's issue tracker
+- **Logs**: Start with the [Observability guide](docs/observability.md) -- Layer 1 (GenAI Dashboard) answers most "what happened?" questions
+- **Deployment issues**: Check [Troubleshooting](#troubleshooting) above, then review `deploy.sh` output for error messages
+- **Security questions**: See [Security documentation](docs/security.md) for IAM scoping, network architecture, and hardening
