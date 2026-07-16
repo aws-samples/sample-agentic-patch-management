@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "patchy",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "patchy"
+  },
+  "runtimes": [
+    {
+      "name": "patchy",
+      "build": "CodeZip",
+      "entrypoint": "supervisor.py",
+      "codeLocation": ".",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP",
+      "envVars": [
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "MULTI_ACCOUNT_ENABLED",
+          "value": "true"
+        },
+        {
+          "name": "SPOKE_EXECUTION_ROLE",
+          "value": "PatchySpokeRole"
+        },
+        {
+          "name": "SPOKE_ACCOUNT_IDS",
+          "value": "111111111111"
+        },
+        {
+          "name": "SSM_SCOPE_TAG_KEY",
+          "value": "PatchAutomation"
+        },
+        {
+          "name": "SSM_SCOPE_TAG_VALUE",
+          "value": "enabled"
+        }
+      ]
+    }
+  ],
+  "memories": [
+    {
+      "name": "patchMemoryV2",
+      "eventExpiryDuration": 30,
+      "strategies": []
+    }
+  ],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": []
+}

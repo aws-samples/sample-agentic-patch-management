@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: ui/api/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    volumes:
+      - ./api:/app/ui/api
+      - ../agent/agentcore:/app/agent/agentcore:ro
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    working_dir: /app/ui/api
+
+  frontend:
+    image: node:20-slim
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host"

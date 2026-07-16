@@ -1,0 +1,261 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Map Tailwind's `dark:` variant to the project's `<html class="dark">`
+   toggle (set by hooks/useTheme.ts). Without this, Tailwind v4 defaults
+   `dark:` to `prefers-color-scheme: dark`, which doesn't track the
+   in-app theme switcher. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ─── Design Tokens ──────────────────────────────────────────── */
+
+@theme {
+  --font-sans: "DM Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Monaco", "Menlo", monospace;
+
+  /* Surfaces */
+  --color-surface-base: #060a10;
+  --color-surface-panel: #0b1120;
+  --color-surface-card: #111a2b;
+  --color-surface-raised: #182236;
+
+  /* Text */
+  --color-fg: #f1f5f9;
+  --color-fg-secondary: #cbd5e1;
+  --color-fg-muted: #94a3b8;
+  --color-fg-faint: #64748b;
+
+  /* Borders */
+  --color-edge: rgba(148, 163, 184, 0.1);
+  --color-edge-strong: rgba(148, 163, 184, 0.18);
+
+  /* Interactive */
+  --color-input: rgba(255, 255, 255, 0.03);
+  --color-hover: rgba(255, 255, 255, 0.06);
+  --color-hover-row: rgba(255, 255, 255, 0.02);
+
+  /* Accent */
+  --color-accent: #2dd4bf;
+  --color-accent-hover: #5eead4;
+  --color-accent-muted: rgba(45, 212, 191, 0.1);
+  --color-accent-border: rgba(45, 212, 191, 0.2);
+}
+
+/* ─── Base ───────────────────────────────────────────────────── */
+
+html {
+  background-color: var(--color-surface-base);
+  color-scheme: dark;
+  transition: background-color 0.2s;
+}
+
+::selection {
+  background: rgba(45, 212, 191, 0.3);
+  color: var(--color-fg);
+}
+
+/* ─── Light Mode ─────────────────────────────────────────────── */
+
+html.light {
+  --color-surface-base: #f1f5f9;
+  --color-surface-panel: #f8fafc;
+  --color-surface-card: #ffffff;
+  --color-surface-raised: #e2e8f0;
+  --color-fg: #0f172a;
+  --color-fg-secondary: #1e293b;
+  --color-fg-muted: #475569;
+  --color-fg-faint: #64748b;
+  --color-edge: rgba(0, 0, 0, 0.15);
+  --color-edge-strong: rgba(0, 0, 0, 0.25);
+  --color-input: rgba(0, 0, 0, 0.05);
+  --color-hover: rgba(0, 0, 0, 0.08);
+  --color-hover-row: rgba(0, 0, 0, 0.03);
+  --color-accent: #0d9488;
+  --color-accent-hover: #0f766e;
+  --color-accent-muted: rgba(13, 148, 136, 0.1);
+  --color-accent-border: rgba(13, 148, 136, 0.25);
+  color-scheme: light;
+}
+
+html.light .accent-line {
+  background: linear-gradient(90deg, transparent, rgba(13, 148, 136, 0.3), rgba(15, 118, 110, 0.3), transparent);
+}
+
+/* Smooth theme transitions on interactive elements only (avoids jank on tables/streaming) */
+button, a, input, textarea, select, [role="tab"], [role="option"],
+.bg-surface-card, .bg-surface-panel, .bg-surface-raised {
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+/* Disable transition on animations to prevent flash */
+.animate-fade-in, .animate-slide-up, .animate-shimmer, .animate-glow { transition: none; }
+/* Hide scrollbar for overflow-scroll containers (tab bars) */
+.scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* ─── Agent Markdown ─────────────────────────────────────────── */
+
+@layer components {
+  .agent-markdown {
+    font-size: 0.875rem;
+    line-height: 1.625;
+    word-break: break-word;
+    color: var(--color-fg-secondary);
+  }
+
+  /* Smooth content growth — message area expands without jumping */
+  .agent-markdown > * {
+    animation: block-enter 0.25s ease-out both;
+  }
+
+  @keyframes block-enter {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .agent-markdown h1,
+  .agent-markdown h2,
+  .agent-markdown h3,
+  .agent-markdown h4 {
+    font-weight: 700;
+    line-height: 1.25;
+    margin-top: 0.75rem;
+    margin-bottom: 0.25rem;
+    color: var(--color-fg);
+  }
+  .agent-markdown h1 { font-size: 1rem; }
+  .agent-markdown h2 { font-size: 0.9375rem; }
+  .agent-markdown h3 { font-size: 0.875rem; }
+  .agent-markdown h4 { font-size: 0.8125rem; }
+  .agent-markdown > h1:first-child,
+  .agent-markdown > h2:first-child,
+  .agent-markdown > h3:first-child { margin-top: 0; }
+  .agent-markdown p { margin: 0.25rem 0; }
+  .agent-markdown > p:first-child { margin-top: 0; }
+  .agent-markdown ul, .agent-markdown ol { margin: 0.25rem 0; padding-left: 1.5rem; }
+  .agent-markdown li { margin: 0.125rem 0; }
+  .agent-markdown li > p { margin: 0; }
+
+  .agent-markdown table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.5rem 0;
+    font-size: 0.75rem;
+    display: block;
+    overflow-x: auto;
+  }
+  .agent-markdown th,
+  .agent-markdown td {
+    border: 1px solid var(--color-edge);
+    padding: 0.375rem 0.625rem;
+    text-align: left;
+    white-space: normal;
+  }
+  .agent-markdown th {
+    background: var(--color-surface-raised);
+    font-weight: 600;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.025em;
+    color: var(--color-fg-muted);
+  }
+  .agent-markdown tr:nth-child(even) { background: var(--color-hover-row); }
+  .agent-markdown code {
+    background: var(--color-hover);
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-size: 0.88em;
+    font-family: var(--font-mono);
+    color: var(--color-fg);
+  }
+  .agent-markdown pre {
+    background: var(--color-surface-panel);
+    color: var(--color-fg-secondary);
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    font-size: 0.85em;
+    margin: 0.5rem 0;
+    border: 1px solid var(--color-edge);
+  }
+  .agent-markdown pre code { background: none; padding: 0; color: inherit; }
+  .agent-markdown hr { border: none; border-top: 1px solid var(--color-edge); margin: 0.75rem 0; }
+  .agent-markdown strong { font-weight: 700; color: var(--color-fg); }
+  .agent-markdown blockquote {
+    border-left: 3px solid var(--color-accent);
+    margin: 0.5rem 0;
+    padding: 0.25rem 0.75rem;
+    color: var(--color-fg-muted);
+    background: var(--color-accent-muted);
+    border-radius: 0 0.25rem 0.25rem 0;
+  }
+  .agent-markdown a { color: var(--color-accent); text-decoration: none; }
+  .agent-markdown a:hover { text-decoration: underline; color: var(--color-accent-hover); }
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────── */
+
+.custom-scrollbar::-webkit-scrollbar { width: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: var(--color-edge-strong); border-radius: 9999px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--color-fg-faint); }
+
+/* ─── Animations ─────────────────────────────────────────────── */
+
+@keyframes highlight-pulse {
+  0%, 100% { background-color: transparent; }
+  50% { background-color: var(--color-accent-muted); }
+}
+.chat-highlight { animation: highlight-pulse 0.6s ease-in-out 2; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fade-in 0.3s ease-out both; }
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up { animation: slide-up 0.4s ease-out both; }
+
+.stagger-1 { animation-delay: 50ms; }
+.stagger-2 { animation-delay: 100ms; }
+.stagger-3 { animation-delay: 150ms; }
+.stagger-4 { animation-delay: 200ms; }
+.stagger-5 { animation-delay: 250ms; }
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 8px var(--color-accent-muted); }
+  50% { box-shadow: 0 0 20px var(--color-accent-border); }
+}
+.animate-glow { animation: glow-pulse 2s ease-in-out infinite; }
+
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 0%, var(--color-hover) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+/* ─── Accent gradient line ───────────────────────────────────── */
+
+.accent-line {
+  background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.25), rgba(20, 184, 166, 0.25), transparent);
+  height: 1px;
+}
+
+/* ─── Noise texture ──────────────────────────────────────────── */
+
+.noise::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.02;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  border-radius: inherit;
+}

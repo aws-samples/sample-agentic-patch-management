@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Environment and secrets
+.env
+.env.*
+ssh-keys/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+**/node_modules/
+
+# CDK
+infra/node_modules/
+infra/cdk.out/
+infra/cdk.context.json
+
+# AgentCore build artifacts (container only needs agentcore.json + aws-targets.json)
+agent/agentcore/cdk/
+agent/agentcore/.cache/
+agent/agentcore/.cli/
+agent/agentcore/.bedrock_agentcore/
+
+# Build artifacts
+infra/bin/*.js
+infra/bin/*.d.ts
+infra/lib/*.js
+infra/lib/*.d.ts
+# Exclude CDK/infra dist but NOT ui/frontend/dist (pre-built on host for Finch compat)
+infra/dist/
+agent/agentcore/cdk/dist/
+
+# IDE
+.kiro/
+.vscode/
+.DS_Store
+
+# Docs (not needed in container)
+doc/
+*.md
+!ui/frontend/README.md
+
+
+# Docker
+Dockerfile
+.dockerignore

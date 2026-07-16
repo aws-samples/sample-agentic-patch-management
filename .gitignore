@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+**/__pycache__/
+**/*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+agent/venv/
+pip-log.txt
+.tox/
+.coverage
+.pytest_cache/
+
+# Node.js
+node_modules/
+infra/node_modules/
+ui/frontend/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.eslintcache
+
+# CDK build artifacts
+infra/cdk.out/
+infra/cdk.context.json
+infra/bin/*.js
+infra/bin/*.d.ts
+infra/lib/*.js
+infra/lib/*.d.ts
+.cdk.staging/
+
+# Frontend build
+ui/frontend/dist/
+
+# AWS
+.aws/
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+*.key
+secrets.json
+
+# AgentCore (auto-generated, contains account-specific IDs)
+agent/agentcore/.cli/
+agent/agentcore/.env.local
+agent/agentcore/aws-targets.json
+agent/agentcore/.cache
+agent/.bedrock_agentcore/
+
+# Conversations (local testing artifacts)
+conversations/
+
+# Internal documents (assessments, reviews — not part of the solution)
+internal-docs/
+
+# Kiro IDE files (specs, prompts — not part of the solution)
+.kiro/
+
+# Claude Code (local project instructions)
+CLAUDE.md
+learnings.md
+ 
+
+# TypeScript incremental build cache (per-developer artifact)
+**/*.tsbuildinfo
+
+# Personal scratch / talking points (not for source control)
+docs/talking-points.md
+
+# Threat-model output (review artifacts; not source-controlled)
+.threatmodel/

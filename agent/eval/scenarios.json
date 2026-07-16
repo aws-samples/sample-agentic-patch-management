@@ -1,0 +1,156 @@
+{
+  "unified": [
+    {
+      "message": "What vulnerabilities are in staging?",
+      "expected_tool": "get_vulnerability_findings",
+      "expected_params": {"environment": ["staging"]},
+      "assertions": [
+        {"contains": "staging"},
+        {"not_contains": "rollback"}
+      ],
+      "description": "Vulnerability query routes to get_vulnerability_findings"
+    },
+    {
+      "message": "Show EC2 instances in prod",
+      "expected_tool": "get_fleet_overview",
+      "expected_params": {"environment": ["prod"]},
+      "assertions": [
+        {"contains": "prod"}
+      ],
+      "description": "Fleet view routes to get_fleet_overview"
+    },
+    {
+      "message": "Show SLA breaches this week",
+      "expected_tool": "query_compliance_reports",
+      "expected_params": {"sla_breaches_only": [true]},
+      "assertions": [
+        {"contains": "true"}
+      ],
+      "description": "SLA breach query routes to query_compliance_reports with sla_breaches_only"
+    },
+    {
+      "message": "Patch CVE-2024-6387 in dev",
+      "expected_tool": "resolve_execution_scope",
+      "expected_params": {"environment": ["dev"]},
+      "assertions": [
+        {"contains": "dev"}
+      ],
+      "description": "CVE patching without instance IDs starts with scope resolution"
+    },
+    {
+      "message": "Rollback patches on i-0abc1234def56789",
+      "expected_tool": "rollback_patches",
+      "expected_params": {"instance_ids": ["i-0abc1234def56789"]},
+      "assertions": [
+        {"contains": "i-0abc1234def56789"},
+        {"not_contains": "confirm_execute"}
+      ],
+      "description": "Rollback routes directly to rollback_patches"
+    },
+    {
+      "message": "How are we doing on prod compliance?",
+      "expected_tool": "get_patch_compliance",
+      "expected_params": {"environment": ["prod"]},
+      "assertions": [
+        {"contains": "prod"}
+      ],
+      "description": "Current compliance status routes to get_patch_compliance"
+    },
+    {
+      "message": "Patch i-0abc1234def56789 for CVE-2024-1234 in dev",
+      "expected_tool": "execute_patch_operation",
+      "expected_params": {
+        "instance_ids": ["i-0abc1234def56789"],
+        "environment": ["dev"],
+        "cve_id": ["CVE-2024-1234"]
+      },
+      "assertions": [
+        {"contains": "i-0abc1234def56789"},
+        {"contains": "CVE-2024-1234"},
+        {"contains": "dev"},
+        {"not_contains": "confirm_execute"}
+      ],
+      "description": "Instance-targeted patching passes IDs, CVE, env, no confirm"
+    },
+    {
+      "message": "Patch all critical in dev",
+      "expected_tool": "resolve_execution_scope",
+      "expected_params": {"environment": ["dev"]},
+      "assertions": [
+        {"contains": "dev"},
+        {"not_contains": "instance_ids"}
+      ],
+      "description": "Fleet patching starts with scope resolution"
+    },
+    {
+      "message": "Scan i-0abc1234def56789",
+      "expected_tool": "patch_dry_run",
+      "expected_params": {"instance_ids": ["i-0abc1234def56789"]},
+      "assertions": [
+        {"contains": "i-0abc1234def56789"}
+      ],
+      "description": "Scan request routes to patch_dry_run"
+    },
+    {
+      "message": "Show instances in staging",
+      "expected_tool": "get_fleet_overview",
+      "expected_params": {"environment": ["staging"]},
+      "assertions": [
+        {"contains": "staging"}
+      ],
+      "description": "Fleet view passes environment"
+    },
+    {
+      "message": "What's our overall security posture?",
+      "expected_tool": "get_fleet_overview",
+      "expected_params": {},
+      "assertions": [
+        {"not_contains": "rollback"},
+        {"not_contains": "confirm_execute"}
+      ],
+      "description": "Broad security posture query starts with fleet overview"
+    },
+    {
+      "message": "Plan staged rollout for all critical CVEs",
+      "expected_tool": "get_vulnerability_findings",
+      "expected_params": {"severity": ["critical"]},
+      "assertions": [
+        {"contains": "critical"}
+      ],
+      "description": "Staged rollout planning starts with vulnerability assessment"
+    },
+    {
+      "message": "Stop execution abc-123-def",
+      "expected_tool": "emergency_stop",
+      "expected_params": {"automation_execution_id": ["abc-123-def"]},
+      "assertions": [
+        {"contains": "abc-123-def"}
+      ],
+      "description": "Emergency stop with execution ID calls tool directly"
+    }
+  ],
+  "multi_turn": [
+    {
+      "messages": [
+        {"role": "user", "content": "Patch i-0abc1234def56789 in dev"},
+        {"role": "assistant", "content": "", "tool_use": {"name": "execute_patch_operation", "input": {"instance_ids": ["i-0abc1234def56789"], "execution_mode": "immediate", "environment": "dev"}}},
+        {"role": "assistant", "content": "About to patch 1 instance(s) in environment 'dev'. SLA: 72h (default). Decision: EMERGENCY. This will install patches immediately.\n\nConfirm to proceed with patching, or cancel."},
+        {"role": "user", "content": "Yes, proceed"}
+      ],
+      "expected_tool": "execute_patch_operation",
+      "expected_params": {"confirm_execute": [true], "instance_ids": ["i-0abc1234def56789"]},
+      "description": "Confirmation retry: 'yes' after plan triggers confirm_execute=True"
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "Rollback i-0abc1234def56789"},
+        {"role": "assistant", "content": "", "tool_use": {"name": "rollback_patches", "input": {"instance_ids": ["i-0abc1234def56789"]}}},
+        {"role": "assistant", "content": "About to roll back patches on 1 instance(s). This will undo the last yum transaction on each instance.\n\nConfirm to proceed with rollback, or cancel."},
+        {"role": "user", "content": "ok go ahead"}
+      ],
+      "expected_tool": "rollback_patches",
+      "expected_params": {"confirm_execute": [true], "instance_ids": ["i-0abc1234def56789"]},
+      "description": "Rollback confirmation retry works with informal approval"
+    }
+  ]
+}

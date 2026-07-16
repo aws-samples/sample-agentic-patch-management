@@ -1,0 +1,272 @@
+# Response templates for consistent operator-facing output.
+# Each template defines the exact structure an agent must follow.
+# Agents select the template matching their response type.
+#
+# Placeholders use {field} syntax — agents fill from tool data.
+# Tables use exact column headers — never add/remove/rename columns.
+# Do NOT use emojis — status is conveyed by text and the dashboard UI.
+
+# ─── VULNERABILITY TEMPLATES ───
+
+vuln_scan:
+  description: "Vulnerability scan results (multi-CVE)"
+  agent: unified
+  structure: |
+    ## {total_findings} vulnerabilities across {instance_count} instances in {environments}
+
+    **CRITICAL: {n} | HIGH: {n} | MEDIUM: {n} | LOW: {n}**
+
+    | CVE ID | CVSS | Severity | Instances | Environments |
+    (top 10 by CVSS, then alphabetical. Do NOT add Exposure or Impact columns.)
+
+    If assess_fleet_impact was called for top CVEs:
+    | Environment | Instances | SLA Deadline | Next Window | Hours Until |
+    Recommended rollout: {env1} → {env2} → {env3}
+
+    Account/region context if findings span accounts.
+
+    {unique_cves} unique CVEs across {total_findings} findings. All/N have fixes available.
+
+fleet_impact:
+  description: "Fleet-wide CVE impact assessment"
+  agent: unified
+  structure: |
+    STATUS_LINE: {cve_id} affects {total_affected} instances across {env_count} environments
+
+    CVE SUMMARY:
+    | Field       | Value              |
+    |-------------|--------------------|
+    | CVE ID      | {cve_id}           |
+    | Severity    | {severity}         |
+    | CVSS        | {cvss_score}       |
+    | Fix Available | {fix_available}  |
+    | Total Affected | {total_affected}|
+
+    ENVIRONMENT BREAKDOWN:
+    | Environment | Instances | SLA ({source}) | Next Window | Hours Until |
+
+    SLA = sla_hours from config. Next Window = maintenance window name. Hours Until = hours until next window.
+
+    ROLLOUT RECOMMENDATION:
+    "Recommended: {env1} → {env2} → {env3}"
+    One sentence explaining the order (lowest risk first, validate before promoting).
+
+vuln_detail:
+  description: "Single CVE deep-dive"
+  agent: unified
+  structure: |
+    STATUS_LINE: {cve_id} — {severity} ({cvss}) — {short_description}
+
+    OVERVIEW TABLE (always this exact layout):
+    | Field       | Value              |
+    |-------------|--------------------|
+    | CVE ID      | {cve_id}           |
+    | CVSS        | {score} ({severity})|
+    | Status      | {ACTIVE/RESOLVED}  |
+    | Fix         | {YES/NO}           |
+    | Package     | {package_name}     |
+    | Instances   | {count}            |
+    | Environment | {env_list}         |
+
+    ATTACK VECTOR: 2-3 sentences max. What can an attacker do and how.
+
+    AFFECTED INSTANCES (only if ≤10):
+    - {instance_id} ({environment})
+
+    REMEDIATION PRIORITY: 1-2 sentences based on CVSS score, instance count, and environment criticality (prod > staging > dev). Do NOT estimate exposure or blast radius — only use data from tools.
+
+vuln_empty:
+  description: "No vulnerabilities found"
+  agent: unified
+  structure: |
+    STATUS_LINE: {environment} — no active vulnerabilities detected
+
+    One sentence confirming zero findings across all severity levels.
+    Do NOT speculate about why (no "this indicates..." or "this could mean...").
+
+# ─── PATCH OPERATION TEMPLATES ───
+
+patch_compliance:
+  description: "SSM patch compliance status"
+  agent: unified
+  structure: |
+    ## {environment} — {non_compliant}/{total} instances need patches ({total_missing} missing)
+
+    | Instance ID | Missing | Security | Installed | Last Scan |
+
+    If severity provided: **SLA: {sla_hours}hr ({framework}) — {hours_remaining}hr remaining**
+
+operation_initiated:
+  description: "Any async operation started (scan, patch, or rollback). Use for SCAN_INITIATED, EXECUTING, or ROLLBACK_INITIATED status."
+  agent: unified
+  structure: |
+    ## {Operation} started — {environment}, {scope_summary}
+
+    | Detail | Value |
+    |--------|-------|
+    | Instances | {instance_count} (list IDs if ≤5, otherwise "{count} in {environment}") |
+    | Scope | {severity_filter or "all severities"} |
+    | Account(s) | {account_ids} |
+    | Region(s) | {regions} |
+    | Execution ID | {automation_execution_id} |
+    | Est. duration | {estimated_duration} |
+
+    For PATCH operations, also include:
+    | Mode | {EMERGENCY|SCHEDULED} |
+    | SLA | {sla_hours}hr ({framework}) |
+
+    BACKGROUND NOTICE (mandatory, always include):
+    "This runs in the background. You can keep working — ask me anything else, or
+    say 'check {operation} status' when you're ready for results."
+
+    PASSIVE LANDING ZONE (PATCH and ROLLBACK operations):
+    "Results will also appear in the Activity tab automatically once complete."
+    Do NOT include this line for scan operations — scan results are only
+    available by asking me to check status.
+
+    TRACKING (mandatory, always include at the end):
+    "To check progress later: 'check status for {execution_id}'"
+    Use the REAL execution ID from the tool result. Never fabricate one.
+
+    RULES:
+    - NEVER say "I will get back to you", "once complete it will confirm", or imply
+      the system will proactively push results into this chat.
+    - NEVER mention internal tool names (get_automation_status, capture_patch_state).
+    - Keep the operator in control — they decide when to check.
+    - NEVER use this template if the tool result has result_type='gate_blocked' or 'error'.
+      Only use it when result_type='execution_started' and a real execution ID exists.
+    - Tone: confident, brief, no hedging.
+
+patch_execution:
+  description: "Patch operation initiated (DEPRECATED — use operation_initiated instead)"
+  agent: unified
+  structure: |
+    STATUS_LINE: {decision} patching initiated for {environment} — {instance_count} instances
+
+    DECISION BOX:
+    - Mode: {EMERGENCY|SCHEDULED}
+    - SLA: {sla_hours}hr ({framework}) | Window: {hours_until}hr | Decision: {EMERGENCY|SCHEDULED}
+    - Automation Run ID: {automation_execution_id}
+    - Instances: {count}
+    - Accounts: {account_ids} (show ALL — comma-separated list)
+    - Regions: {regions} (show ALL — comma-separated list)
+
+    SCOPE: List instance IDs (if ≤10) or "{count} instances in {environment}".
+
+    WHAT HAPPENS NEXT: 1-2 sentences. "Monitor with execution ID above. Say 'check status' when ready."
+
+command_status:
+  description: "Automation or SSM command execution status"
+  agent: unified
+  structure: |
+    STATUS_LINE: Execution {execution_id} — {overall_status}
+
+    SUMMARY: {success} succeeded | {failed} failed | {in_progress} in progress
+
+    TABLE (only if mixed results or failures):
+    | Instance ID | Status | Detail |
+
+    Detail = first 100 chars of output for failed instances. Omit for success.
+
+    IF all success: "All {n} instances patched successfully."
+    IF in progress: "Patching in progress. Check again in 2-3 minutes."
+    IF failures: "Recommend: check failed instance logs or initiate rollback."
+
+compliance_report:
+  description: "Compliance report generated"
+  agent: unified
+  structure: |
+    STATUS_LINE: Compliance report generated — {cve_id} in {environment}
+
+    REPORT SUMMARY:
+    | Field        | Value           |
+    |--------------|-----------------|
+    | Report ID    | {report_id}     |
+    | CVE          | {cve_id}        |
+    | Environment  | {environment}   |
+    | Decision     | {EMERGENCY/SCHEDULED} |
+    | SLA          | {sla_hours}hr ({source}) |
+    | Time to Patch| {hours}hr       |
+    | SLA Met      | {YES/NO/N/A}    |
+    | S3 Location  | {s3_uri}        |
+
+    COMPLIANCE DELTA (if pre/post patch states provided):
+    | Instance ID | Before | After | Patches Applied | Compliance |
+    Before/After = missing patch count. Compliance = percentage change.
+    FOOTER: "Overall: {environment} compliance improved from {before}% → {after}%. {total_patches} patches applied."
+
+patch_dry_run:
+  description: "Patch dry-run preview results (RunPatchBaseline Scan)"
+  agent: unified
+  structure: |
+    STATUS_LINE: Dry-run complete — {total_missing} missing patches across {total_instances} instances
+
+    TABLE (per instance):
+    | Instance ID | Missing | Installed | Failed | Security NC | Status |
+
+    Missing = missing_count. Installed = installed_count. Security NC = security_non_compliant.
+
+    TOP MISSING PATCHES (if any, first 10 across all instances):
+    | Patch ID | Title | Severity | Classification | CVEs |
+
+    SUMMARY:
+    - Total missing: {total_missing}
+    - Scan command: {scan_command_id}
+    - Instances: {total_instances}
+
+    IF total_missing = 0: "All instances fully patched per SSM patch baseline. Nothing to install."
+    Note: Inspector may still report CVEs for packages where fixes aren't available in current OS repos.
+
+    CONFIRMATION: "Review the changes above. Say 'proceed' to run patching or 'cancel' to stop."
+
+rollback_verification:
+  description: "Rollback verification results"
+  agent: unified
+  structure: |
+    STATUS_LINE: Rollback {VERIFIED/PARTIAL/FAILED} — {instance_count} instances
+
+    TABLE (per instance):
+    | Instance ID | Command | Patch State Reverted | Health |
+
+    Command = Success/Failed. Patch State Reverted = true/false/no_baseline. Health = OK/UNHEALTHY.
+    
+    PATCH STATE DETAIL (if pre_patch_state was provided):
+    | Instance ID | Before Missing | After Missing | Reverted |
+
+    IF VERIFIED: "All instances confirmed rolled back and healthy."
+    IF PARTIAL: "Some instances need manual verification. Check details above."
+    IF FAILED: "Rollback failed. Manual intervention required."
+
+# ─── COMPLIANCE TEMPLATES ───
+
+compliance_overview:
+  description: "Compliance report query results"
+  agent: unified
+  structure: |
+    STATUS_LINE: {total_reports} reports in last {days} days — {breach_count} SLA breaches ({breach_rate}%)
+
+    If total_reports = 0: "No compliance reports found for this period. This means no patching activity was recorded — not that compliance is 100%."
+
+    BREAKDOWN TABLE (if reports exist):
+    | Severity | Reports | SLA Met | SLA Breached |
+
+    ENVIRONMENT TABLE (if reports exist):
+    | Environment | Reports | Breach Rate |
+
+    TREND: "{metric} vs previous period" or "No baseline for comparison" if first period.
+
+    TOP RECOMMENDATIONS: 2-3 specific, data-driven actions. Reference actual numbers.
+
+# ─── OUTPUT TEMPLATES ───
+
+next_steps:
+  description: "Next steps section (appended to every response)"
+  agent: unified
+  structure: |
+    ## Next Steps
+    Exactly 3 numbered actions the operator can click to execute.
+    - Plain language — what the operator wants to do, not system jargon
+    - Reference specific data (CVE counts, instance counts, environments)
+    - ONLY reference environments where data exists in the response
+    - Think environment-first: "Preview patches for dev" not "Assess CVE-X on instance-Y"
+    - Use patterns: PLAN, PREVIEW, PATCH, STAGED ROLLOUT, VERIFY, AUDIT, ROLLBACK, SCAN

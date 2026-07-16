@@ -1,0 +1,407 @@
+{
+  "total": 15,
+  "passed": 15,
+  "accuracy": 100.0,
+  "results": [
+    {
+      "agent": "unified",
+      "message": "What vulnerabilities are in staging?",
+      "expected_tool": "get_vulnerability_findings",
+      "actual_tool": "get_vulnerability_findings",
+      "tool_correct": true,
+      "expected_params": {
+        "environment": [
+          "staging"
+        ]
+      },
+      "actual_params": {
+        "environment": "staging"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Vulnerability query routes to get_vulnerability_findings",
+      "metrics": {
+        "input_tokens": 3678,
+        "output_tokens": 56,
+        "total_tokens": 3734,
+        "latency_ms": 1441
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Show EC2 instances in prod",
+      "expected_tool": "get_fleet_overview",
+      "actual_tool": "get_fleet_overview",
+      "tool_correct": true,
+      "expected_params": {
+        "environment": [
+          "prod"
+        ]
+      },
+      "actual_params": {
+        "environment": "prod"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Fleet view routes to get_fleet_overview",
+      "metrics": {
+        "input_tokens": 3678,
+        "output_tokens": 56,
+        "total_tokens": 3734,
+        "latency_ms": 1447
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Show SLA breaches this week",
+      "expected_tool": "query_compliance_reports",
+      "actual_tool": "query_compliance_reports",
+      "tool_correct": true,
+      "expected_params": {
+        "sla_breaches_only": [
+          true
+        ]
+      },
+      "actual_params": {
+        "days_back": 7,
+        "sla_breaches_only": true
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "SLA breach query routes to query_compliance_reports with sla_breaches_only",
+      "metrics": {
+        "input_tokens": 3678,
+        "output_tokens": 81,
+        "total_tokens": 3759,
+        "latency_ms": 1849
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Patch CVE-2024-6387 in dev",
+      "expected_tool": "resolve_execution_scope",
+      "actual_tool": "resolve_execution_scope",
+      "tool_correct": true,
+      "expected_params": {
+        "environment": [
+          "dev"
+        ]
+      },
+      "actual_params": {
+        "environment": "dev"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "CVE patching without instance IDs starts with scope resolution",
+      "metrics": {
+        "input_tokens": 3684,
+        "output_tokens": 85,
+        "total_tokens": 3769,
+        "latency_ms": 1955
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Rollback patches on i-0abc1234def56789",
+      "expected_tool": "rollback_patches",
+      "actual_tool": "rollback_patches",
+      "tool_correct": true,
+      "expected_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ]
+      },
+      "actual_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ]
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Rollback routes directly to rollback_patches",
+      "metrics": {
+        "input_tokens": 3685,
+        "output_tokens": 67,
+        "total_tokens": 3752,
+        "latency_ms": 1722
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "How are we doing on prod compliance?",
+      "expected_tool": "get_patch_compliance",
+      "actual_tool": "get_patch_compliance",
+      "tool_correct": true,
+      "expected_params": {
+        "environment": [
+          "prod"
+        ]
+      },
+      "actual_params": {
+        "environment": "prod"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Current compliance status routes to get_patch_compliance",
+      "metrics": {
+        "input_tokens": 3679,
+        "output_tokens": 56,
+        "total_tokens": 3735,
+        "latency_ms": 2955
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Patch i-0abc1234def56789 for CVE-2024-1234 in dev",
+      "expected_tool": "execute_patch_operation",
+      "actual_tool": "execute_patch_operation",
+      "tool_correct": true,
+      "expected_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ],
+        "environment": [
+          "dev"
+        ],
+        "cve_id": [
+          "CVE-2024-1234"
+        ]
+      },
+      "actual_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ],
+        "execution_mode": "remediate",
+        "environment": "dev",
+        "cve_id": "CVE-2024-1234"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Instance-targeted patching passes IDs, CVE, env, no confirm",
+      "metrics": {
+        "input_tokens": 3695,
+        "output_tokens": 132,
+        "total_tokens": 3827,
+        "latency_ms": 2347
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Patch all critical in dev",
+      "expected_tool": "resolve_execution_scope",
+      "actual_tool": "resolve_execution_scope",
+      "tool_correct": true,
+      "expected_params": {
+        "environment": [
+          "dev"
+        ]
+      },
+      "actual_params": {
+        "environment": "dev"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Fleet patching starts with scope resolution",
+      "metrics": {
+        "input_tokens": 3677,
+        "output_tokens": 73,
+        "total_tokens": 3750,
+        "latency_ms": 1999
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Scan i-0abc1234def56789",
+      "expected_tool": "patch_dry_run",
+      "actual_tool": "patch_dry_run",
+      "tool_correct": true,
+      "expected_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ]
+      },
+      "actual_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ]
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Scan request routes to patch_dry_run",
+      "metrics": {
+        "input_tokens": 3682,
+        "output_tokens": 68,
+        "total_tokens": 3750,
+        "latency_ms": 1642
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Show instances in staging",
+      "expected_tool": "get_fleet_overview",
+      "actual_tool": "get_fleet_overview",
+      "tool_correct": true,
+      "expected_params": {
+        "environment": [
+          "staging"
+        ]
+      },
+      "actual_params": {
+        "environment": "staging"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Fleet view passes environment",
+      "metrics": {
+        "input_tokens": 3675,
+        "output_tokens": 56,
+        "total_tokens": 3731,
+        "latency_ms": 1636
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "What's our overall security posture?",
+      "expected_tool": "get_fleet_overview",
+      "actual_tool": "get_fleet_overview",
+      "tool_correct": true,
+      "expected_params": {},
+      "actual_params": {},
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Broad security posture query starts with fleet overview",
+      "metrics": {
+        "input_tokens": 3679,
+        "output_tokens": 191,
+        "total_tokens": 3870,
+        "latency_ms": 2679
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Plan staged rollout for all critical CVEs",
+      "expected_tool": "get_vulnerability_findings",
+      "actual_tool": "get_vulnerability_findings",
+      "tool_correct": true,
+      "expected_params": {
+        "severity": [
+          "critical"
+        ]
+      },
+      "actual_params": {
+        "severity": "CRITICAL"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Staged rollout planning starts with vulnerability assessment",
+      "metrics": {
+        "input_tokens": 3680,
+        "output_tokens": 250,
+        "total_tokens": 3930,
+        "latency_ms": 3346
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Stop execution abc-123-def",
+      "expected_tool": "emergency_stop",
+      "actual_tool": "emergency_stop",
+      "tool_correct": true,
+      "expected_params": {
+        "automation_execution_id": [
+          "abc-123-def"
+        ]
+      },
+      "actual_params": {
+        "automation_execution_id": "abc-123-def"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Emergency stop with execution ID calls tool directly",
+      "metrics": {
+        "input_tokens": 3678,
+        "output_tokens": 62,
+        "total_tokens": 3740,
+        "latency_ms": 1704
+      }
+    },
+    {
+      "agent": "multi_turn",
+      "message": "Yes, proceed",
+      "expected_tool": "execute_patch_operation",
+      "actual_tool": "execute_patch_operation",
+      "tool_correct": true,
+      "expected_params": {
+        "confirm_execute": [
+          true
+        ],
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ]
+      },
+      "actual_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ],
+        "execution_mode": "immediate",
+        "environment": "dev",
+        "confirm_execute": true
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Confirmation retry: 'yes' after plan triggers confirm_execute=True",
+      "metrics": {
+        "input_tokens": 3915,
+        "output_tokens": 123,
+        "total_tokens": 4038,
+        "latency_ms": 2425
+      }
+    },
+    {
+      "agent": "multi_turn",
+      "message": "ok go ahead",
+      "expected_tool": "rollback_patches",
+      "actual_tool": "rollback_patches",
+      "tool_correct": true,
+      "expected_params": {
+        "confirm_execute": [
+          true
+        ],
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ]
+      },
+      "actual_params": {
+        "instance_ids": [
+          "i-0abc1234def56789"
+        ],
+        "confirm_execute": true
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Rollback confirmation retry works with informal approval",
+      "metrics": {
+        "input_tokens": 3865,
+        "output_tokens": 86,
+        "total_tokens": 3951,
+        "latency_ms": 1725
+      }
+    }
+  ],
+  "timestamp": "2026-07-03T06:16:33Z"
+}
