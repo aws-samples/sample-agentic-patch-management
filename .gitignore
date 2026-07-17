@@ -62,7 +62,6 @@ agent/agentcore/.cli/
 agent/agentcore/.env.local
 agent/agentcore/aws-targets.json
 agent/agentcore/.cache
-agent/.bedrock_agentcore/
 
 # Conversations (local testing artifacts)
 conversations/
