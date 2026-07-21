@@ -14,6 +14,8 @@ This repo takes a different approach. It's a ready-to-deploy AI agent that manag
 
 Under the hood it leans on the [Strands Agents SDK](https://github.com/strands-agents/sdk-python) for the runtime and tool orchestration, and [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock/latest/userguide/agents-core.html) for hosting, session memory, and observability. The interesting parts are the patterns you can't easily lift from a docs page: deterministic steering handlers that inspect tool calls before they run, `next_action` hints that keep the prompt lean, dry-run/execute confirmation loops, and per-user memory isolation tied to Cognito identity.
 
+![Demo](docs/images/demo.gif)
+
 ## What it does
 
 - Handles patch workflows in plain English. Ask about a CVE, an SLA impact, or fleet coverage, and the agent decides whether to patch now or defer to a maintenance window.

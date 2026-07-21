@@ -176,7 +176,7 @@ export default function App() {
           </button>
 
           <a
-            href="https://github.com/aws-samples"
+            href="https://github.com/aws-samples/sample-agentic-patch-management"
             target="_blank"
             rel="noopener noreferrer"
             className="text-fg-faint hover:text-fg-muted transition"
