@@ -1,8 +1,8 @@
 ## Disclaimer
 
-This application is not designed for production use. Treat it as a proof-of-concept for exploring AI agent use cases.
+> This application is not designed for production use. Treat it as a proof-of-concept for exploring AI agent use cases.
 
-Be mindful of what you type into it. Your inputs get processed and stored across several AWS services (Amazon Bedrock, Bedrock AgentCore Memory, Amazon S3, Amazon CloudWatch Logs, Amazon Cognito, and others), and handling that information appropriately is on you as the deployer.
+> Be mindful of what you type into it. Your inputs get processed and stored across several AWS services (Amazon Bedrock, Bedrock AgentCore Memory, Amazon S3, Amazon CloudWatch Logs, Amazon Cognito, and others), and handling that information appropriately is on you as the deployer.
 
 ---
 
