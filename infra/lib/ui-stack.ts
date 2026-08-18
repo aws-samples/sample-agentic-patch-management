@@ -206,7 +206,7 @@ export class UIStack extends cdk.Stack {
       if (process.env.SPOKE_REGIONS) containerEnv['SPOKE_REGIONS'] = process.env.SPOKE_REGIONS;
     }
 
-    taskDef.addContainer('ui', {
+    const uiContainer = taskDef.addContainer('ui', {
       image: ecs.ContainerImage.fromDockerImageAsset(image),
       portMappings: [{ containerPort: 8000 }],
       environment: containerEnv,
@@ -339,6 +339,13 @@ export class UIStack extends cdk.Stack {
         clientId: userPoolClient.userPoolClientId,
         useCognitoProvidedValues: true,
       });
+
+      // The API verifies the access token's cognito:groups claim against the
+      // pool's JWKS — that claim decides operator vs viewer, and the ALB does
+      // not sign the access token. Added here rather than in containerEnv
+      // because the pool is created after the task definition.
+      uiContainer.addEnvironment('COGNITO_USER_POOL_ID', userPool.userPoolId);
+      uiContainer.addEnvironment('COGNITO_CLIENT_ID', userPoolClient.userPoolClientId);
 
       const httpsListener = alb.addListener('HTTPSListener', {
         port: 443,

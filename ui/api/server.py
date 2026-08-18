@@ -139,6 +139,73 @@ def _verify_alb_jwt(token: str, region: str) -> dict:
     return claims
 
 
+# ── Cognito access-token verification ─────────────────────────────────
+# The ALB signs x-amzn-oidc-data, so identity is trustworthy. It does NOT sign
+# x-amzn-oidc-accesstoken, and that is where cognito:groups lives — the claim
+# that decides operator vs viewer. An unverified groups claim is worthless: a
+# caller can grant themselves the operator role by editing one header. So the
+# access token is verified against the user pool's JWKS.
+
+_cognito_jwk_clients: dict = {}
+
+
+def _cognito_jwk_client(region: str, user_pool_id: str):
+    """Return a cached PyJWKClient for a user pool. Caches signing keys itself."""
+    import jwt
+
+    # user_pool_id is interpolated into the URL we fetch. It comes from our own
+    # environment rather than the request, but validate the charset anyway to
+    # match the defence on the ALB key path above.
+    if not re.match(r"^[a-zA-Z0-9_-]+$", user_pool_id):
+        raise ValueError(f"user pool id contains unexpected characters: {user_pool_id!r}")
+
+    cache_key = f"{region}/{user_pool_id}"
+    client = _cognito_jwk_clients.get(cache_key)
+    if client is None:
+        url = (
+            f"https://cognito-idp.{region}.amazonaws.com/"
+            f"{user_pool_id}/.well-known/jwks.json"
+        )
+        client = jwt.PyJWKClient(url, cache_keys=True)
+        _cognito_jwk_clients[cache_key] = client
+    return client
+
+
+def _verify_cognito_access_token(
+    token: str, region: str, user_pool_id: str, client_id: str
+) -> dict:
+    """Verify a Cognito access token (RS256) and return its claims.
+
+    Raises on any failure. Callers must fail closed rather than falling back to
+    an unverified read of the token.
+    """
+    import jwt
+
+    signing_key = _cognito_jwk_client(region, user_pool_id).get_signing_key_from_jwt(token)
+    claims = jwt.decode(
+        token,
+        signing_key.key,
+        algorithms=["RS256"],
+        issuer=f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}",
+        # Access tokens carry client_id rather than aud, so PyJWT's audience
+        # check does not apply and the comparison is made explicitly below.
+        options={
+            "verify_aud": False,
+            "require": ["exp", "iss", "token_use", "client_id"],
+        },
+    )
+
+    if claims.get("client_id") != client_id:
+        raise ValueError("access token was issued to a different app client")
+
+    # ID tokens also carry cognito:groups. They are issued for a different
+    # purpose and must not be accepted in place of an access token.
+    if claims.get("token_use") != "access":
+        raise ValueError(f"expected token_use=access, got {claims.get('token_use')!r}")
+
+    return claims
+
+
 # ── Auth + RBAC middleware ────────────────────────────────────────────
 # Roles: "operator" (full access) and "viewer" (read-only: dashboard + health).
 #
@@ -175,7 +242,6 @@ def _resolve_role(request: Request) -> str | None:
     #   x-amzn-oidc-accesstoken → Access token (cognito:groups lives here)
     oidc_data = request.headers.get("x-amzn-oidc-data")
     if oidc_data:
-        import base64
         try:
             # Verify ES256 signature on the ALB-signed OIDC data token
             region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
@@ -183,18 +249,26 @@ def _resolve_role(request: Request) -> str | None:
             email = claims.get("email", "unknown")
             request.state.cognito_email = email
 
-            # Access token (cognito:groups) — base64 decode only (not ALB-signed,
-            # would need Cognito JWKS to verify; out of scope for this change)
+            # Access token carries cognito:groups, which decides operator vs
+            # viewer. The ALB does not sign it, so verify against the pool JWKS.
             groups = []
             access_token = request.headers.get("x-amzn-oidc-accesstoken", "")
-            if access_token:
-                at_parts = access_token.split('.')
-                if len(at_parts) >= 2:
-                    at_payload = at_parts[1]
-                    at_payload += '=' * (4 - len(at_payload) % 4)
-                    at_claims = json.loads(base64.b64decode(at_payload))
-                    groups = at_claims.get("cognito:groups", [])
-                    logger.warning("[AUTH] Using unverified access token groups claim — production should verify against Cognito JWKS")
+            pool_id = os.environ.get("COGNITO_USER_POOL_ID")
+            client_id = os.environ.get("COGNITO_CLIENT_ID")
+            if access_token and pool_id and client_id:
+                at_claims = _verify_cognito_access_token(
+                    access_token, region, pool_id, client_id
+                )
+                groups = at_claims.get("cognito:groups", [])
+            elif access_token:
+                # Without the pool config the groups claim cannot be verified, and
+                # an unverified claim grants nothing — a caller can set it freely.
+                # Fall through with no groups, which resolves to viewer.
+                logger.error(
+                    "[AUTH] COGNITO_USER_POOL_ID/COGNITO_CLIENT_ID are not set, so the "
+                    "groups claim cannot be verified. Treating caller as viewer. "
+                    "Redeploy the UI stack to populate them."
+                )
 
             logger.info(f"Cognito auth: email={email}, groups={groups}")
             if "operators" in groups:
@@ -1675,6 +1749,16 @@ def _count_execution_outcomes(ssm_hub, execution_id: str, hub_region: str) -> di
     ssm_clients: dict[tuple[str, str], object] = {}
 
     def _ssm_client_for(account_id: str, region: str):
+        # The hub is reachable with our own credentials, and assuming a spoke
+        # role into our own account fails with AccessDenied — so normalise the
+        # hub account to the hub session rather than paying a failed STS call
+        # for every same-account child.
+        if account_id:
+            try:
+                if account_id == _get_hub_account_id():
+                    account_id = ""
+            except Exception:
+                pass  # Can't resolve our own account; fall through and try.
         # Empty account_id means use the hub session.
         key = (account_id or "", region or hub_region)
         if key in ssm_clients:
@@ -1798,45 +1882,100 @@ def _count_execution_outcomes(ssm_hub, execution_id: str, hub_region: str) -> di
                     # the loop below fetches full details via get_automation_execution.
                     children.append({"AutomationExecutionId": cid})
 
+    # (account, region) pairs the parent dispatched to. A cross-account child
+    # execution lives in one of these accounts, and hub credentials cannot read
+    # it, so we need the right spoke client to fetch it at all. Reading the
+    # child with the hub client is the bug this list exists to avoid: it raises
+    # AutomationExecutionNotFound for every spoke child, which previously meant
+    # they were all skipped and the report recorded zero instances.
+    parent_locations: list[tuple[str, str]] = []
+    for loc in parent.get("TargetLocations") or []:
+        for acct in loc.get("Accounts") or []:
+            for reg in (loc.get("Regions") or [hub_region]):
+                if (acct, reg) not in parent_locations:
+                    parent_locations.append((acct, reg))
+
+    def _account_from_executed_by(child_meta: dict) -> str:
+        """Pull the owning account out of a child's ExecutedBy ARN.
+
+        AutomationExecutionMetadata carries no account field. ExecutedBy is an
+        assumed-role ARN — arn:aws:sts::<account>:assumed-role/... — and for a
+        cross-account child that account is the spoke. Note `Target` is a plain
+        string (the target resource id), not a structure, so it is no help here.
+        """
+        arn = child_meta.get("ExecutedBy") or ""
+        parts = arn.split(":")
+        if len(parts) >= 5 and parts[4].isdigit():
+            return parts[4]
+        return ""
+
+    def _fetch_child(child_meta: dict, child_id: str):
+        """Fetch a child execution, trying each account it could live in.
+
+        Returns (execution, account, region) or (None, None, None). A child
+        spawned by TargetLocations lives in the spoke account and is not
+        readable with hub credentials at all, so the account has to be right.
+        Cheapest correct guess first.
+        """
+        candidates: list[tuple[str, str]] = []
+        regions = [r for _, r in parent_locations] or [hub_region]
+
+        # 1. The account named in the child's own ExecutedBy ARN.
+        executed_by = _account_from_executed_by(child_meta)
+        if executed_by:
+            for reg in regions:
+                if (executed_by, reg) not in candidates:
+                    candidates.append((executed_by, reg))
+
+        # 2. The hub, for same-account dispatch (AutomationType 'Local').
+        if ("", hub_region) not in candidates:
+            candidates.append(("", hub_region))
+
+        # 3. Every account/region the parent dispatched to.
+        for pair in parent_locations:
+            if pair not in candidates:
+                candidates.append(pair)
+
+        last_exc = None
+        for acct, reg in candidates:
+            try:
+                client = _ssm_client_for(acct, reg)
+                execution = client.get_automation_execution(
+                    AutomationExecutionId=child_id
+                )["AutomationExecution"]
+                return execution, acct, reg
+            except Exception as exc:
+                last_exc = exc
+                continue
+
+        logger.warning(
+            f"[RECONCILE] child {child_id} not readable from any of "
+            f"{[a or 'hub' for a, _ in candidates]}: {last_exc}"
+        )
+        return None, None, None
+
     for child in children:
-        # Each child has Target/TargetParameterName/MaxConcurrency for the
-        # location, and the AutomationExecutionId is in the child's account.
-        # SSM's metadata response surfaces these as Target / TargetMaps but
-        # the canonical fields we need are on the full execution.
         child_id = child.get("AutomationExecutionId")
         if not child_id:
             continue
-        # Each child has its own account/region. Use the child's metadata
-        # when available; fall back to the parent's region if absent.
-        child_account = ""
-        child_region = hub_region
-        # SSM Automation metadata doesn't always include the account_id
-        # field directly — derive it from the assumed role used by the
-        # parent's TargetLocations. The full execution's TargetLocations
-        # array carries the same info, but for dispatch we just try the
-        # spoke session and let the assume-role layer cache by account.
-        # Look for the account in the child's metadata if present.
-        if child.get("Target") and child.get("Target", {}).get("Accounts"):
-            accts = child["Target"]["Accounts"]
+
+        child_full, child_account, child_region = _fetch_child(child, child_id)
+        if child_full is None:
+            continue
+
+        # The child's own TargetLocations is the authoritative account/region,
+        # when present — prefer it over whichever candidate happened to work.
+        target_locs = child_full.get("TargetLocations") or []
+        if target_locs:
+            accts = target_locs[0].get("Accounts") or []
+            regions = target_locs[0].get("Regions") or []
             if accts:
                 child_account = accts[0]
-        # SSM API: TargetLocations on the parent enumerates the children's
-        # accounts. We can't always tell from the child metadata which
-        # account it ran in, so look up the full execution.
+            if regions:
+                child_region = regions[0]
+
         try:
-            child_full = ssm_hub.get_automation_execution(
-                AutomationExecutionId=child_id
-            )["AutomationExecution"]
-            # `TargetLocations` on a child carries the account it ran in.
-            target_locs = child_full.get("TargetLocations") or []
-            if target_locs:
-                accts = target_locs[0].get("Accounts") or []
-                regions = target_locs[0].get("Regions") or []
-                if accts:
-                    child_account = accts[0]
-                if regions:
-                    child_region = regions[0]
-            client = _ssm_client_for(child_account, child_region)
+            client = _ssm_client_for(child_account, child_region or hub_region)
             _walk_steps(client, child_full.get("StepExecutions", []))
         except Exception as exc:
             logger.warning(
@@ -1936,10 +2075,12 @@ def _reconcile_pending_reports(s3, bucket: str, session) -> tuple[int, list[dict
             # Build the final compliance report
             ended_at = exec_data.get('ExecutionEndTime')
             duration_seconds = None
+            completed_at = None  # remediation completion time, for the SLA calc
             if ended_at and started_at:
                 ended = ended_at if isinstance(ended_at, datetime) else datetime.fromisoformat(str(ended_at))
                 if ended.tzinfo is None:
                     ended = ended.replace(tzinfo=timezone.utc)
+                completed_at = ended
                 duration_seconds = (ended - started_at).total_seconds()
 
             # Walk child executions to count actual outcomes. The pending
@@ -2016,7 +2157,12 @@ def _reconcile_pending_reports(s3, bucket: str, session) -> tuple[int, list[dict
                     'compliance': {
                         'sla_hours': context.get('sla_hours'),
                         'sla_source': context.get('sla_source'),
-                        'sla_met': _evaluate_sla(context.get('sla_hours'), duration_seconds),
+                        'first_observed_at': context.get('first_observed_at'),
+                        'sla_met': _evaluate_sla(
+                            context.get('sla_hours'),
+                            context.get('first_observed_at'),
+                            completed_at,
+                        ),
                         'frameworks': context.get('frameworks') or [],
                     },
                     'patch_state': {
@@ -2033,7 +2179,11 @@ def _reconcile_pending_reports(s3, bucket: str, session) -> tuple[int, list[dict
             # query_compliance_reports (compliance analyst tool) can use the
             # cheap head_object path instead of fetching every body. Field
             # names follow the SSM Resource Data Sync convention (kebab-case).
-            sla_met_value = _evaluate_sla(context.get("sla_hours"), duration_seconds)
+            sla_met_value = _evaluate_sla(
+                context.get("sla_hours"),
+                context.get("first_observed_at"),
+                completed_at,
+            )
             frameworks_list = context.get("frameworks") or []
             metadata: dict[str, str] = {
                 "cve-id": (context.get("cve_id") or "N/A"),
@@ -2073,17 +2223,50 @@ def _reconcile_pending_reports(s3, bucket: str, session) -> tuple[int, list[dict
     return generated_count, running
 
 
-def _evaluate_sla(sla_hours, duration_seconds) -> "bool | None":
-    """Compute sla_met as True/False, or None when SLA can't be determined.
+def _coerce_utc_dt(value) -> "datetime | None":
+    """Parse an ISO-8601 string or datetime into a tz-aware UTC datetime.
 
-    Returns a real bool so downstream `is True` / `is False` checks behave
-    correctly. None signals "we don't have enough info to call it" (no
-    sla_hours forwarded by the agent, or no execution end time yet).
+    Returns None when the value is missing or unparseable. Naive datetimes are
+    assumed to be UTC.
     """
-    if sla_hours is None or duration_seconds is None:
+    if value is None:
         return None
-    sla_seconds = sla_hours * 3600
-    return duration_seconds <= sla_seconds
+    dt = value if isinstance(value, datetime) else None
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _evaluate_sla(sla_hours, first_observed_at, remediation_completed_at) -> "bool | None":
+    """Was the vulnerability remediated within its SLA window?
+
+    Compliance measures the elapsed time from when the vulnerability was first
+    observed (Inspector's firstObservedAt) to when remediation completed,
+    against sla_hours. Returns a real bool so downstream `is True`/`is False`
+    checks behave, or None when it cannot be determined: no sla_hours, no
+    discovery timestamp, no completion time, or timestamps that fail to parse
+    or run backwards.
+
+    None must never read as met. The earlier implementation compared the patch
+    job's *duration* against the SLA window — unrelated to compliance, and true
+    for any fast job. "Unknown" is the honest answer until a discovery
+    timestamp (first_observed_at) is captured and forwarded in the context.
+    """
+    if sla_hours is None:
+        return None
+    observed = _coerce_utc_dt(first_observed_at)
+    completed = _coerce_utc_dt(remediation_completed_at)
+    if observed is None or completed is None:
+        return None
+    elapsed_seconds = (completed - observed).total_seconds()
+    if elapsed_seconds < 0:
+        return None  # inconsistent timestamps — don't guess
+    return elapsed_seconds <= sla_hours * 3600
 
 
 def _fetch_reports() -> dict:
