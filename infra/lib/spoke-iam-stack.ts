@@ -118,7 +118,11 @@ export class SpokeIamStack extends cdk.Stack {
       resources: [`arn:aws:ec2:*:${cdk.Aws.ACCOUNT_ID}:instance/*`],
       conditions: {
         StringEquals: {
-          'ssm:resourceTag/PatchAutomation': 'enabled',
+          // Scope tag must track the configured key/value (matches core-stack).
+          // Hardcoding it here would leave the spoke blast-radius boundary keyed
+          // to 'PatchAutomation' even when SSM_SCOPE_TAG_KEY is reconfigured.
+          [`ssm:resourceTag/${process.env.SSM_SCOPE_TAG_KEY || 'PatchAutomation'}`]:
+            process.env.SSM_SCOPE_TAG_VALUE || 'enabled',
         },
       },
     }));

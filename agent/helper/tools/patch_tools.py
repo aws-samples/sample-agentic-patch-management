@@ -13,7 +13,7 @@ from ._shared import (
     is_multi_account,
     resolve_scope,
     _ssm, _s3,
-    _validate_instance_ids, _validate_instance_scope,
+    _validate_instance_ids, _validate_instance_scope, _validate_account_scope,
     _normalize_environment,
     _get_configured_scope_accounts,
     _get_query_targets,
@@ -1319,6 +1319,13 @@ def multi_account_execute(environment: str,
         target_regions = regions or SPOKE_REGIONS
         operator = get_operator()
 
+        # Gate 0: accounts must be within the configured patch scope. The
+        # tag-based path takes account_ids directly, so validate them here the
+        # way the read paths already constrain to _get_configured_scope_accounts().
+        account_scope_error = _validate_account_scope(account_ids)
+        if account_scope_error:
+            return account_scope_error
+
         # Gate 1: operator must confirm concurrency/threshold
         if not max_concurrency or not max_errors:
             return {
@@ -1502,6 +1509,12 @@ def multi_account_rollback(environment: str,
         env_value = _normalize_environment(environment)
         target_regions = regions or SPOKE_REGIONS
         operator = get_operator()
+
+        # Accounts must be within the configured patch scope (see
+        # multi_account_execute — the tag-based path takes account_ids directly).
+        account_scope_error = _validate_account_scope(account_ids)
+        if account_scope_error:
+            return account_scope_error
 
         if not max_concurrency or not max_errors:
             return {

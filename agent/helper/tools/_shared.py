@@ -313,6 +313,35 @@ def _validate_instance_scope(instance_ids: List[str]) -> Optional[dict]:
     return None
 
 
+def _validate_account_scope(account_ids: List[str]) -> Optional[dict]:
+    """Returns an error dict if any account is outside the configured scope, None otherwise.
+
+    The tag-based write paths (multi_account_execute / multi_account_rollback)
+    take account_ids directly rather than deriving them from scope-validated
+    instances, so they need their own account check — the read paths already
+    filter to _get_configured_scope_accounts(). An empty configured scope is
+    the "no filter" sentinel (both SPOKE_OU_IDS and SPOKE_ACCOUNT_IDS unset)
+    and permits everything, preserving single-account / unconfigured behaviour.
+    """
+    allowed = _get_configured_scope_accounts()
+    if not allowed:
+        return None  # no allowlist configured — nothing to enforce
+    out_of_scope = [a for a in (account_ids or []) if a not in allowed]
+    if out_of_scope:
+        return {
+            "error": f"{len(out_of_scope)} account(s) outside the configured patch scope: "
+                     f"{out_of_scope}. Allowed accounts come from SPOKE_ACCOUNT_IDS or "
+                     "SPOKE_OU_IDS (plus the hub). Call resolve_execution_scope to get valid accounts.",
+            "error_code": "AccountOutOfScope",
+            "category": "ABORT",
+            "retryable": False,
+            "result_type": "error",
+            "out_of_scope_accounts": out_of_scope,
+            "next_action": "The operation was NOT started. Present this to the operator. Do NOT use get_response_template('operation_initiated').",
+        }
+    return None
+
+
 def _normalize_environment(user_input: str) -> str:
     """Map user input to canonical environment tag value.
 
@@ -1471,6 +1500,7 @@ __all__ = [
     '_configured_scope_cache',
     '_resolve_ou_member_accounts',
     '_get_configured_scope_accounts',
+    '_validate_account_scope',
     '_get_spoke_accounts',
     '_get_query_targets',
 
