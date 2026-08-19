@@ -23,6 +23,7 @@ from ._shared import (
     _earliest_window_within_sla,
     _get_baseline_override_url,
     _get_compliance_bucket_name,
+    _earliest_first_observed_at,
     _write_pending_compliance_context,
     _unwrap_patch_state,
     _start_patch_automation,
@@ -393,6 +394,7 @@ def execute_patch_operation(
     additional_cve_ids: Optional[List[str]] = None,
     sla_hours: Optional[int] = None,
     sla_source: Optional[str] = None,
+    first_observed_at: Optional[str] = None,
     pre_patch_state: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """Execute patching via SSM Automation (MAMR). Always uses instance-ID targeting.
@@ -654,6 +656,15 @@ def execute_patch_operation(
         account_ids = sorted(set(executed_account_ids))
         target_regions = sorted(set(executed_regions))
 
+        # SLA compliance is measured from when the vulnerability was first
+        # observed. Derive it deterministically from Inspector for the CVE(s)
+        # in scope unless the caller already supplied it. Without a CVE it
+        # stays None and the reconciler reports sla_met as "unknown".
+        if first_observed_at is None:
+            first_observed_at = _earliest_first_observed_at(
+                [cve_id] + (additional_cve_ids or [])
+            )
+
         # Write pending compliance context for later reconciliation.
         # One pending file per execution so the UI reconciler can correlate
         # status of each (account, region) child to its own report.
@@ -675,6 +686,7 @@ def execute_patch_operation(
                 'additional_cve_ids': additional_cve_ids,
                 'sla_hours': sla_hours,
                 'sla_source': sla_source,
+                'first_observed_at': first_observed_at,
                 'frameworks': derived_frameworks,
                 'pre_patch_state': _unwrap_patch_state(pre_patch_state),
                 'sibling_execution_ids': [x for x in execution_ids if x != eid],
@@ -1267,6 +1279,7 @@ def multi_account_execute(environment: str,
                           additional_cve_ids: Optional[List[str]] = None,
                           sla_hours: Optional[int] = None,
                           sla_source: Optional[str] = None,
+                          first_observed_at: Optional[str] = None,
                           pre_patch_state: Optional[Dict[str, Any]] = None) -> dict:
     """Execute patching across accounts via SSM Automation. Returns one execution ID.
 
@@ -1399,6 +1412,14 @@ def multi_account_execute(environment: str,
             severity_filter=severity_filter,
         )
 
+        # Derive the vulnerability's discovery time (SLA clock start) from
+        # Inspector for the CVE(s) in scope, unless the caller supplied it.
+        # Without a CVE it stays None and sla_met reports as "unknown".
+        if first_observed_at is None:
+            first_observed_at = _earliest_first_observed_at(
+                [cve_id] + (additional_cve_ids or [])
+            )
+
         # Write pending compliance context for later reconciliation
         _write_pending_compliance_context(execution_id, {
             'operation_type': 'patch',
@@ -1417,6 +1438,7 @@ def multi_account_execute(environment: str,
             'additional_cve_ids': additional_cve_ids,
             'sla_hours': sla_hours,
             'sla_source': sla_source,
+            'first_observed_at': first_observed_at,
             'pre_patch_state': _unwrap_patch_state(pre_patch_state),
         })
 

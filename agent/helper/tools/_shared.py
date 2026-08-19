@@ -1162,6 +1162,53 @@ def _get_date_prefix(date: datetime) -> str:
     return f"{date.year}/{date.month:02d}/{date.day:02d}/"
 
 
+def _earliest_first_observed_at(cve_ids: List[str],
+                                account_id: Optional[str] = None,
+                                region: Optional[str] = None) -> Optional[str]:
+    """Earliest firstObservedAt across ACTIVE Inspector findings for these CVEs.
+
+    Returns an ISO-8601 UTC string, or None when no CVE is supplied or nothing
+    is found. This is the vulnerability's discovery time — the start of the SLA
+    clock. The earliest observation is the worst case (longest exposure), so a
+    multi-instance CVE is judged by its oldest sighting.
+
+    Best-effort: an Inspector error for one CVE is logged and skipped rather
+    than raised, so a lookup failure downgrades the SLA to "unknown" instead of
+    blocking the patch.
+    """
+    cves = [c for c in (cve_ids or []) if c and c != 'N/A']
+    if not cves:
+        return None
+    client = _inspector(account_id=account_id, region=region)
+    earliest: Optional[datetime] = None
+    for cve_id in cves:
+        try:
+            resp = client.list_findings(
+                filterCriteria={
+                    'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
+                    'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}],
+                },
+                maxResults=100,
+            )
+        except Exception as e:
+            logger.warning(f"[SLA] Inspector firstObservedAt lookup failed for {cve_id}: {e}")
+            continue
+        for finding in resp.get('findings', []):
+            observed = finding.get('firstObservedAt')
+            if observed is None:
+                continue
+            if not isinstance(observed, datetime):
+                try:
+                    observed = datetime.fromisoformat(str(observed).replace('Z', '+00:00'))
+                except Exception:
+                    continue
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            if earliest is None or observed < earliest:
+                earliest = observed
+    return earliest.astimezone(timezone.utc).isoformat() if earliest else None
+
+
 def _write_pending_compliance_context(execution_id: str, context: Dict[str, Any]) -> None:
     """Write patching context to S3 immediately after starting an automation execution.
 
@@ -1450,6 +1497,7 @@ __all__ = [
     # S3 compliance bucket helpers
     '_get_compliance_bucket_name',
     '_get_date_prefix',
+    '_earliest_first_observed_at',
     '_write_pending_compliance_context',
 
     # Patch state helpers
