@@ -44,6 +44,9 @@ export CDK_DEFAULT_ACCOUNT
 export CDK_DEFAULT_REGION=$AWS_REGION
 unset _saved_profile _saved_region
 
+# Repository root, so helpers resolve whatever directory a step is in.
+PATCHY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 print_status() { echo -e "${GREEN}✅ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_error() { echo -e "${RED}❌ $1${NC}"; }
@@ -1218,17 +1221,27 @@ for m in mems.values():
             --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text 2>/dev/null | sed 's|https://||')
         alb_dns_lower=$(echo "$alb_dns" | tr '[:upper:]' '[:lower:]')
         if [ -n "$pool_id" ] && [ -n "$client_id" ] && [ -n "$alb_dns" ]; then
-            aws cognito-idp update-user-pool-client \
-                --user-pool-id "$pool_id" \
-                --client-id "$client_id" \
-                --supported-identity-providers COGNITO \
-                --allowed-o-auth-flows code \
-                --allowed-o-auth-scopes openid email profile \
-                --allowed-o-auth-flows-user-pool-client \
-                --callback-urls "https://${alb_dns}/oauth2/idpresponse" "https://${alb_dns_lower}/oauth2/idpresponse" \
-                --logout-urls "https://${alb_dns}" "https://${alb_dns_lower}" "https://${alb_dns}/signed-out" "https://${alb_dns_lower}/signed-out" \
-                > /dev/null 2>&1
-            print_status "Cognito callback URLs updated (added lowercase: ${alb_dns_lower})"
+            # UpdateUserPoolClient resets every field it isn't given, so read
+            # the client, add only the missing URLs, and send everything back.
+            local cognito_tmp merge_rc=0
+            cognito_tmp=$(mktemp -d)
+            if aws cognito-idp describe-user-pool-client --user-pool-id "$pool_id" --client-id "$client_id" \
+                    --output json > "$cognito_tmp/client.json" \
+                && aws cognito-idp update-user-pool-client --generate-cli-skeleton input > "$cognito_tmp/skeleton.json"; then
+                python3 -I "$PATCHY_ROOT/scripts/merge_cognito_callbacks.py" "$cognito_tmp/client.json" "$cognito_tmp/skeleton.json" \
+                    "$alb_dns" > "$cognito_tmp/update.json" || merge_rc=$?
+                if [ "$merge_rc" -eq 3 ]; then
+                    print_status "Cognito callback URLs already include ${alb_dns_lower}"
+                elif [ "$merge_rc" -eq 0 ] && aws cognito-idp update-user-pool-client \
+                        --cli-input-json "file://$cognito_tmp/update.json" > /dev/null; then
+                    print_status "Cognito callback URLs updated (added lowercase: ${alb_dns_lower})"
+                else
+                    print_warning "Could not update Cognito callback URLs; sign-in may fail on the lowercase host"
+                fi
+            else
+                print_warning "Could not read the Cognito app client; callback URLs not updated"
+            fi
+            rm -rf "$cognito_tmp"
 
             # Switch domain to managed login v2 (modern branding).
             # CloudFormation rejects this property on existing domains, so we set it via CLI.
@@ -1241,8 +1254,9 @@ for m in mems.values():
                     --user-pool-id "$pool_id" \
                     --domain "$domain_prefix" \
                     --managed-login-version 2 \
-                    > /dev/null 2>&1
-                print_status "Managed login v2 enabled"
+                    > /dev/null \
+                    && print_status "Managed login v2 enabled" \
+                    || print_warning "Could not enable managed login v2 on domain $domain_prefix"
             fi
 
             # Create default managed login branding style if none exists.
