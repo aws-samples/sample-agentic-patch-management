@@ -22,6 +22,8 @@ export class PatchySsmDocsStack extends cdk.Stack {
     new ssm.CfnDocument(this, 'PatchAutomationDocV2', {
       name: 'Patchy-RunPatchBaseline',
       documentType: 'Automation',
+      // Fixed names: update in place as a new version, not by replacement.
+      updateMethod: 'NewVersion',
       documentFormat: 'YAML',
       content: {
         schemaVersion: '0.3',
@@ -52,6 +54,7 @@ export class PatchySsmDocsStack extends cdk.Stack {
             Parameters: {
               Operation: ['{{ Operation }}'],
               RebootOption: ['{{ RebootOption }}'],
+              BaselineOverride: ['{{ BaselineOverride }}'],
             },
             MaxConcurrency: '{{ MaxConcurrency }}',
             MaxErrors: '{{ MaxErrors }}',
@@ -67,6 +70,8 @@ export class PatchySsmDocsStack extends cdk.Stack {
     new ssm.CfnDocument(this, 'PatchByIdAutomationDocV2', {
       name: 'Patchy-RunPatchBaselineById',
       documentType: 'Automation',
+      // Fixed names: update in place as a new version, not by replacement.
+      updateMethod: 'NewVersion',
       documentFormat: 'YAML',
       content: {
         schemaVersion: '0.3',
@@ -93,6 +98,7 @@ export class PatchySsmDocsStack extends cdk.Stack {
             Parameters: {
               Operation: ['{{ Operation }}'],
               RebootOption: ['{{ RebootOption }}'],
+              BaselineOverride: ['{{ BaselineOverride }}'],
             },
             MaxConcurrency: '{{ MaxConcurrency }}',
             MaxErrors: '{{ MaxErrors }}',
@@ -105,6 +111,8 @@ export class PatchySsmDocsStack extends cdk.Stack {
     new ssm.CfnDocument(this, 'RollbackByIdAutomationDocV2', {
       name: 'Patchy-RunRollbackById',
       documentType: 'Automation',
+      // Fixed names: update in place as a new version, not by replacement.
+      updateMethod: 'NewVersion',
       documentFormat: 'YAML',
       content: {
         schemaVersion: '0.3',
@@ -144,6 +152,8 @@ export class PatchySsmDocsStack extends cdk.Stack {
     new ssm.CfnDocument(this, 'RollbackAutomationDocV2', {
       name: 'Patchy-RunRollback',
       documentType: 'Automation',
+      // Fixed names: update in place as a new version, not by replacement.
+      updateMethod: 'NewVersion',
       documentFormat: 'YAML',
       content: {
         schemaVersion: '0.3',

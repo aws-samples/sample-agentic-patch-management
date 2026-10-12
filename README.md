@@ -181,7 +181,8 @@ Generate a compliance report for PCI-DSS in staging
 | Limitation | Detail |
 |---|---|
 | Rollback is Amazon Linux 2 only | It uses `yum history undo`. Patching itself works on any OS that Patch Manager supports. |
-| Severity-scoped, not per-CVE | AWS Systems Manager Patch Manager can't install a single CVE's patch in isolation, so the agent scopes to severity level using `BaselineOverride` files. |
+| Severity-scoped, not per-CVE | The agent scopes installs to a severity level using `BaselineOverride` files, so a CVE request installs every approved patch at that severity or above, not only the CVE's packages. The override files cover Amazon Linux 2; other operating systems fall back to their default patch baseline. |
+| Instances must read the override files | With a severity filter, each instance downloads its override file from the hub compliance bucket (`baseline-overrides/*`). Its instance role needs `s3:GetObject` on that prefix, or the patch command fails. The sample environment grants this; see `infra/lib/sample/sample-environment-stack.ts`. |
 | Manual approval between environments | This is a safety gate by design, not an oversight. |
 | Self-signed TLS by default | Swap in an ACM public certificate for production. |
 | Health checks need your CloudWatch Alarms | After patching, the agent reads your existing CloudWatch Alarms to verify health. It doesn't create them — set them up on your fleet first. |
