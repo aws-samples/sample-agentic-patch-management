@@ -732,7 +732,7 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
 
 @tool
 def verify_and_proceed(command_id: str, instance_ids: List[str],
-                       environment: str, alarm_pattern: Optional[str] = "httpd") -> dict:
+                       environment: str, alarm_pattern: Optional[str] = None) -> dict:
     """Verify patch completion and health before proceeding to next environment.
 
     This is an OPTIONAL tool for production-ready verification. Use when:
@@ -746,7 +746,7 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
         command_id: SSM command ID from execute_patch_operation
         instance_ids: List of instance IDs that were patched
         environment: Environment name (for logging)
-        alarm_pattern: CloudWatch alarm pattern to check (default: "httpd")
+        alarm_pattern: Optional alarm name filter (default: all alarms on the instances)
 
     Returns:
         dict: {'status': str, 'recommendation': str, 'details': dict}
@@ -814,8 +814,11 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
                 logger.warning(f"[TOOL:verify_and_proceed] CloudWatch alarm check failed: {e}")
                 alarm_health = {'recommendation': 'UNKNOWN', 'error': str(e)}
 
-        # Determine recommendation
-        if ssm_health.get('recommendation') == 'ROLLBACK_RECOMMENDED':
+        # Determine recommendation. Only a clean result from both checks
+        # proceeds; anything else holds the rollout for the operator.
+        ssm_rec = ssm_health.get('recommendation')
+        alarm_rec = alarm_health.get('recommendation')
+        if ssm_rec == 'ROLLBACK_RECOMMENDED':
             return {
                 'status': 'UNHEALTHY',
                 'recommendation': 'ROLLBACK',
@@ -824,11 +827,23 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
                 'alarm_health': alarm_health
             }
 
-        if alarm_health.get('recommendation') == 'ROLLBACK_RECOMMENDED':
+        if alarm_health.get('unhealthy_instances', 0) > 0:
             return {
                 'status': 'UNHEALTHY',
-                'recommendation': 'ROLLBACK',
-                'reason': 'CloudWatch alarms firing',
+                'recommendation': 'HOLD',
+                'reason': (
+                    f"CloudWatch alarms firing on {alarm_health['unhealthy_instances']} "
+                    "instance(s). Do not promote until the operator has reviewed them."
+                ),
+                'ssm_health': ssm_health,
+                'alarm_health': alarm_health
+            }
+
+        if ssm_rec != 'HEALTHY' or alarm_rec != 'HEALTHY':
+            return {
+                'status': 'NEEDS_REVIEW',
+                'recommendation': 'HOLD',
+                'reason': f'Health not confirmed (SSM: {ssm_rec}, alarms: {alarm_rec})',
                 'ssm_health': ssm_health,
                 'alarm_health': alarm_health
             }

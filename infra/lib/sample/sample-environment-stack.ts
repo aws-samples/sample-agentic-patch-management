@@ -318,7 +318,9 @@ export class SampleEnvironmentStack extends cdk.Stack {
           }),
           threshold: 1, evaluationPeriods: 2,
           comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-          treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+          // The sample instances don't run the CloudWatch agent, so missing
+          // data must not read as an outage or the health gate always holds.
+          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
         });
       });
 
