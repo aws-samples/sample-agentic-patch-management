@@ -107,8 +107,36 @@ export class PatchySsmDocsStack extends cdk.Stack {
       },
     });
 
+    // ── Rollback command ──
+    // The rollback runbooks run this fixed script instead of AWS-RunShellScript,
+    // so neither the hub nor the spoke role needs a general shell document.
+    const yumUndo = new ssm.CfnDocument(this, 'YumUndoCommandDoc', {
+      name: 'Patchy-YumUndo',
+      documentType: 'Command',
+      updateMethod: 'NewVersion',
+      documentFormat: 'YAML',
+      content: {
+        schemaVersion: '2.2',
+        description: 'Undo the most recent yum transaction',
+        mainSteps: [{
+          action: 'aws:runShellScript',
+          name: 'YumUndo',
+          inputs: {
+            runCommand: [
+              '#!/bin/bash',
+              'LAST_TRANSACTION=$(yum history list | grep -E "^[[:space:]]*[0-9]+" | head -1 | awk \'{print $1}\')',
+              'if [ -z "$LAST_TRANSACTION" ]; then echo "ERROR: No yum history found"; exit 1; fi',
+              'echo "Rolling back transaction ID: $LAST_TRANSACTION"',
+              'yum history undo $LAST_TRANSACTION -y',
+              'if [ $? -eq 0 ]; then echo "SUCCESS: Rollback completed for transaction $LAST_TRANSACTION"; else echo "ERROR: Rollback failed"; exit 1; fi',
+            ],
+          },
+        }],
+      },
+    });
+
     // ── Instance-ID based rollback ──
-    new ssm.CfnDocument(this, 'RollbackByIdAutomationDocV2', {
+    const rollbackById = new ssm.CfnDocument(this, 'RollbackByIdAutomationDocV2', {
       name: 'Patchy-RunRollbackById',
       documentType: 'Automation',
       // Fixed names: update in place as a new version, not by replacement.
@@ -129,18 +157,8 @@ export class PatchySsmDocsStack extends cdk.Stack {
           name: 'RunRollback',
           action: 'aws:runCommand',
           inputs: {
-            DocumentName: 'AWS-RunShellScript',
+            DocumentName: 'Patchy-YumUndo',
             InstanceIds: ['{{ InstanceId }}'],
-            Parameters: {
-              commands: [
-                '#!/bin/bash',
-                'LAST_TRANSACTION=$(yum history list | grep -E "^[[:space:]]*[0-9]+" | head -1 | awk \'{print $1}\')',
-                'if [ -z "$LAST_TRANSACTION" ]; then echo "ERROR: No yum history found"; exit 1; fi',
-                'echo "Rolling back transaction ID: $LAST_TRANSACTION"',
-                'yum history undo $LAST_TRANSACTION -y',
-                'if [ $? -eq 0 ]; then echo "SUCCESS: Rollback completed for transaction $LAST_TRANSACTION"; else echo "ERROR: Rollback failed"; exit 1; fi',
-              ],
-            },
             MaxConcurrency: '{{ MaxConcurrency }}',
             MaxErrors: '{{ MaxErrors }}',
           },
@@ -149,7 +167,7 @@ export class PatchySsmDocsStack extends cdk.Stack {
     });
 
     // ── Tag-based fleet rollback ──
-    new ssm.CfnDocument(this, 'RollbackAutomationDocV2', {
+    const rollbackByTag = new ssm.CfnDocument(this, 'RollbackAutomationDocV2', {
       name: 'Patchy-RunRollback',
       documentType: 'Automation',
       // Fixed names: update in place as a new version, not by replacement.
@@ -172,26 +190,18 @@ export class PatchySsmDocsStack extends cdk.Stack {
           name: 'RunRollback',
           action: 'aws:runCommand',
           inputs: {
-            DocumentName: 'AWS-RunShellScript',
+            DocumentName: 'Patchy-YumUndo',
             Targets: [
               { Key: 'tag:Environment', Values: ['{{ Environment }}'] },
               { Key: 'tag:{{ ScopeTagKey }}', Values: ['{{ ScopeTagValue }}'] },
             ],
-            Parameters: {
-              commands: [
-                '#!/bin/bash',
-                'LAST_TRANSACTION=$(yum history list | grep -E "^[[:space:]]*[0-9]+" | head -1 | awk \'{print $1}\')',
-                'if [ -z "$LAST_TRANSACTION" ]; then echo "ERROR: No yum history found"; exit 1; fi',
-                'echo "Rolling back transaction ID: $LAST_TRANSACTION"',
-                'yum history undo $LAST_TRANSACTION -y',
-                'if [ $? -eq 0 ]; then echo "SUCCESS: Rollback completed for transaction $LAST_TRANSACTION"; else echo "ERROR: Rollback failed"; exit 1; fi',
-              ],
-            },
             MaxConcurrency: '{{ MaxConcurrency }}',
             MaxErrors: '{{ MaxErrors }}',
           },
         }],
       },
     });
+    rollbackById.addDependency(yumUndo);
+    rollbackByTag.addDependency(yumUndo);
   }
 }

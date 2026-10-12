@@ -96,6 +96,7 @@ new SpokeIamStack(app, 'Patchy-SpokeIam', {
   hubAccountId,
   agentCoreRoleArn: resolvedRoleArn,
   roleName: spokeRoleName,
+  readRoleName: process.env.SPOKE_READ_ROLE || 'PatchySpokeReadRole',
   description: 'Patchy: Spoke IAM role for cross-account patch operations',
 });
 

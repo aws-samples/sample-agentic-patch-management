@@ -136,11 +136,13 @@ export class UIStack extends cdk.Stack {
           "aws organizations describe-organization --query 'Organization.Id' --output text"
         );
       }
-      const spokeRole = process.env.SPOKE_EXECUTION_ROLE || 'PatchySpokeRole';
+      // The dashboard only reads from spokes, so it assumes the read role.
+      // The write role (PatchySpokeRole) doesn't trust this task role.
+      const spokeReadRole = process.env.SPOKE_READ_ROLE || 'PatchySpokeReadRole';
       taskRole.addToPolicy(new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['sts:AssumeRole'],
-        resources: [`arn:aws:iam::*:role/${spokeRole}`],
+        resources: [`arn:aws:iam::*:role/${spokeReadRole}`],
         conditions: {
           StringEquals: { 'aws:PrincipalOrgID': process.env.AWS_ORG_ID },
         },
@@ -202,7 +204,7 @@ export class UIStack extends cdk.Stack {
       containerEnv['MULTI_ACCOUNT_ENABLED'] = 'true';
       if (process.env.SPOKE_ACCOUNT_IDS) containerEnv['SPOKE_ACCOUNT_IDS'] = process.env.SPOKE_ACCOUNT_IDS;
       if (process.env.SPOKE_OU_IDS) containerEnv['SPOKE_OU_IDS'] = process.env.SPOKE_OU_IDS;
-      if (process.env.SPOKE_EXECUTION_ROLE) containerEnv['SPOKE_EXECUTION_ROLE'] = process.env.SPOKE_EXECUTION_ROLE;
+      if (process.env.SPOKE_READ_ROLE) containerEnv['SPOKE_READ_ROLE'] = process.env.SPOKE_READ_ROLE;
       if (process.env.SPOKE_REGIONS) containerEnv['SPOKE_REGIONS'] = process.env.SPOKE_REGIONS;
     }
 

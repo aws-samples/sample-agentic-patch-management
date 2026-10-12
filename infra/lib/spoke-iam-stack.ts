@@ -9,6 +9,8 @@ export interface SpokeIamStackProps extends cdk.StackProps {
   agentCoreRoleArn?: string;
   /** Role name — must match SPOKE_EXECUTION_ROLE in .env (default: PatchySpokeRole). */
   roleName?: string;
+  /** Read-only role for the dashboard — must match SPOKE_READ_ROLE (default: PatchySpokeReadRole). */
+  readRoleName?: string;
 }
 
 /**
@@ -24,38 +26,57 @@ export class SpokeIamStack extends cdk.Stack {
     super(scope, id, props);
 
     const roleName = props.roleName || 'PatchySpokeRole';
+    const readRoleName = props.readRoleName || 'PatchySpokeReadRole';
 
-    // Trust hub account, scoped to the role patterns Patchy actually uses.
-    // The ArnLike condition restricts who in the hub can assume this role:
-    //   - AgentCore-* / AmazonBedrockAgentCoreSDKRuntime-* — runtime patch operations
-    //   - Patchy-UI-* — dashboard cross-account queries
-    // SSM service principal is always trusted (Automation document execution).
-    //
-    // Sample-environment deploys (./sample-env.sh deploy) use CloudFormation
-    // StackSets, which do not assume the spoke role — they use AWS-managed
-    // execution roles in the spoke account directly. So tightening this trust
-    // policy does not break sample-env deployment.
-    const spokeRole = new iam.Role(this, 'SpokeRole', {
-      roleName,
-      assumedBy: new iam.CompositePrincipal(
-        new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions({
+    // Write role trust: the hub's AgentCore runtime role only. With the exact
+    // ARN, no other hub principal can assume it, whatever its name. Without
+    // it (spoke deployed before the agent), fall back to the runtime role
+    // name patterns and warn, because any hub principal that can create a
+    // role with a matching name could then assume this role.
+    // The SSM service principal is always trusted (Automation execution).
+    const runtimeTrust = props.agentCoreRoleArn
+      ? { ArnEquals: { 'aws:PrincipalArn': props.agentCoreRoleArn } }
+      : {
           ArnLike: {
             'aws:PrincipalArn': [
               `arn:aws:iam::${props.hubAccountId}:role/AgentCore-*`,
               `arn:aws:iam::${props.hubAccountId}:role/AmazonBedrockAgentCoreSDKRuntime-*`,
-              `arn:aws:iam::${props.hubAccountId}:role/Patchy-UI-*`,
             ],
           },
-        }),
+        };
+    if (!props.agentCoreRoleArn) {
+      console.warn(
+        '[Patchy-SpokeIam] agentCoreRoleArn not set: PatchySpokeRole trusts any hub role ' +
+        'named AgentCore-* or AmazonBedrockAgentCoreSDKRuntime-*. Deploy the agent first, ' +
+        'or pass -c agentCoreRoleArn=<arn>, to trust the runtime role only.'
+      );
+    }
+    const spokeRole = new iam.Role(this, 'SpokeRole', {
+      roleName,
+      assumedBy: new iam.CompositePrincipal(
+        new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions(runtimeTrust),
         new iam.ServicePrincipal('ssm.amazonaws.com'),
       ),
       maxSessionDuration: cdk.Duration.hours(1),
       description: 'Cross-account role for Patchy patch automation',
     });
 
+    // Read role for the dashboard (Patchy-UI-* task role). It carries the
+    // read statements below and nothing that can change an instance, so a
+    // compromise of the internet-facing UI can't patch or run commands.
+    const readRole = new iam.Role(this, 'SpokeReadRole', {
+      roleName: readRoleName,
+      assumedBy: new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions({
+        ArnLike: { 'aws:PrincipalArn': `arn:aws:iam::${props.hubAccountId}:role/Patchy-UI-*` },
+      }),
+      maxSessionDuration: cdk.Duration.hours(1),
+      description: 'Read-only cross-account role for the Patchy dashboard',
+    });
+    const bothRoles = [spokeRole, readRole];
+
     // EC2 — read-only for instance discovery and tag resolution.
     // ec2:Describe* actions do not support resource-level permissions (AWS limitation).
-    spokeRole.addToPolicy(new iam.PolicyStatement({
+    for (const role of bothRoles) role.addToPolicy(new iam.PolicyStatement({
       sid: 'EC2ReadOnly',
       actions: [
         'ec2:DescribeInstances',
@@ -67,7 +88,7 @@ export class SpokeIamStack extends cdk.Stack {
 
     // SSM — Read-only operations. Describe/Get/List actions do not support
     // resource-level permissions (AWS limitation).
-    spokeRole.addToPolicy(new iam.PolicyStatement({
+    for (const role of bothRoles) role.addToPolicy(new iam.PolicyStatement({
       sid: 'SSMReadOnly',
       actions: [
         'ssm:GetAutomationExecution',
@@ -91,13 +112,14 @@ export class SpokeIamStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // SSM — Automation execution (targets documents, not instances)
+    // SSM — Automation execution, limited to Patchy's own runbooks so the
+    // role can't start AWS-owned or other documents in the spoke.
     spokeRole.addToPolicy(new iam.PolicyStatement({
       sid: 'SSMAutomation',
       actions: [
         'ssm:StartAutomationExecution',
       ],
-      resources: ['*'],
+      resources: [`arn:aws:ssm:*:${cdk.Aws.ACCOUNT_ID}:automation-definition/Patchy-*:*`],
     }));
 
     // SSM — SendCommand on documents (which docs can be invoked)
@@ -106,7 +128,8 @@ export class SpokeIamStack extends cdk.Stack {
       actions: ['ssm:SendCommand'],
       resources: [
         `arn:aws:ssm:*::document/AWS-RunPatchBaseline`,
-        `arn:aws:ssm:*::document/AWS-RunShellScript`,
+        // Rollback runs through the Patchy-YumUndo Command document, so the
+        // role has no general shell document on tagged instances.
         `arn:aws:ssm:*:${cdk.Aws.ACCOUNT_ID}:document/Patchy-*`,
       ],
     }));
@@ -129,7 +152,7 @@ export class SpokeIamStack extends cdk.Stack {
 
     // Inspector — read-only. inspector2:ListFindings and GetConfiguration
     // do not support resource-level permissions (AWS service requirement).
-    spokeRole.addToPolicy(new iam.PolicyStatement({
+    for (const role of bothRoles) role.addToPolicy(new iam.PolicyStatement({
       sid: 'InspectorReadOnly',
       actions: [
         'inspector2:ListFindings',
@@ -140,7 +163,7 @@ export class SpokeIamStack extends cdk.Stack {
 
     // CloudWatch — read-only for health checks. DescribeAlarms and
     // GetMetricData do not support resource-level permissions (AWS limitation).
-    spokeRole.addToPolicy(new iam.PolicyStatement({
+    for (const role of bothRoles) role.addToPolicy(new iam.PolicyStatement({
       sid: 'CloudWatchReadOnly',
       actions: [
         'cloudwatch:DescribeAlarms',
@@ -161,6 +184,10 @@ export class SpokeIamStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SpokeRoleArn', {
       value: spokeRole.roleArn,
       description: 'ARN of the Patchy spoke role',
+    });
+    new cdk.CfnOutput(this, 'SpokeReadRoleArn', {
+      value: readRole.roleArn,
+      description: 'ARN of the Patchy read-only spoke role used by the dashboard',
     });
   }
 }

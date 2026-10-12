@@ -137,7 +137,6 @@ export class CoreStack extends cdk.Stack {
           actions: ['ssm:SendCommand'],
           resources: [
             `arn:aws:ssm:${this.region}::document/AWS-RunPatchBaseline`,
-            `arn:aws:ssm:${this.region}::document/AWS-RunShellScript`,
           ],
         }),
         new iam.PolicyStatement({
@@ -185,10 +184,16 @@ export class CoreStack extends cdk.Stack {
           resources: ['arn:aws:iam::*:role/aws-service-role/ssm.amazonaws.com/AWSServiceRoleForAmazonSSM'],
           conditions: { StringLike: { 'iam:AWSServiceName': 'ssm.amazonaws.com' } },
         }),
+        // PassRole limited to the roles multi-account Automation can use:
+        // the spoke execution role (also present in the hub) and the
+        // standard Automation administration role.
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: ['iam:PassRole'],
-          resources: [`arn:aws:iam::${this.account}:role/*`],
+          resources: [
+            `arn:aws:iam::${this.account}:role/${process.env.SPOKE_EXECUTION_ROLE || 'PatchySpokeRole'}`,
+            `arn:aws:iam::${this.account}:role/AWS-SystemsManager-AutomationAdministrationRole`,
+          ],
           conditions: { StringEquals: { 'iam:PassedToService': 'ssm.amazonaws.com' } },
         }),
         // Read-only for use_aws fallback tool
@@ -235,13 +240,20 @@ export class CoreStack extends cdk.Stack {
           ],
           resources: ['*'],
         }),
-        // SSM Automation APIs require Resource: "*" for cross-account execution
-        // via TargetLocations (cannot scope to specific automation ARNs).
+        // Starting an Automation is limited to Patchy's own runbooks, so the
+        // runtime can't start AWS-owned or other documents with another role.
+        new iam.PolicyStatement({
+          sid: 'AutomationStart',
+          effect: iam.Effect.ALLOW,
+          actions: ['ssm:StartAutomationExecution'],
+          resources: [`arn:aws:ssm:*:${this.account}:automation-definition/Patchy-*:*`],
+        }),
+        // Execution read and stop APIs act on execution IDs, which have no
+        // document scope, so they stay on "*".
         new iam.PolicyStatement({
           sid: 'AutomationExecution',
           effect: iam.Effect.ALLOW,
           actions: [
-            'ssm:StartAutomationExecution',
             'ssm:GetAutomationExecution',
             'ssm:DescribeAutomationExecutions',
             'ssm:DescribeAutomationStepExecutions',

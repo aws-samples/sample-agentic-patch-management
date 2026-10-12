@@ -42,15 +42,16 @@ For production, a few enhancements are worth making:
 | SSM | `DescribeInstance*`, `ListCompliance*`, `Describe*PatchStates`, `DescribeMaintenanceWindows`, `GetMaintenanceWindow`, `ListAssociations`, `DescribeAssociation`, etc. | `*` | Read patch compliance, maintenance windows, patch policies |
 | SSM | `CreateMaintenanceWindow`, `CreatePatchBaseline` | `*` (with an `aws:RequestTag/ManagedBy=IntelligentPatchAutomation` condition) | Create agent-managed resources only |
 | SSM | `Update*`, `Delete*`, `Register*`, `Deregister*` (maintenance windows + baselines) | Scoped to `aws:ResourceTag/ManagedBy=IntelligentPatchAutomation` | Modify or delete only agent-created resources |
-| SSM | `SendCommand` (documents) | `AWS-RunPatchBaseline`, `AWS-RunShellScript`, `Patchy-*` | Which documents can be invoked |
+| SSM | `SendCommand` (documents) | `AWS-RunPatchBaseline` | Which documents can be invoked. Rollback uses the `Patchy-YumUndo` Command document through the spoke role, so no general shell document is granted |
 | SSM | `SendCommand` (instances) | `arn:aws:ec2:*:ACCOUNT:instance/*` with `ssm:resourceTag/PatchAutomation=enabled` | Only patch opted-in instances |
-| SSM | `StartAutomationExecution`, `Get/Describe/StopAutomationExecution` | `*` | Cross-account Automation via TargetLocations |
+| SSM | `StartAutomationExecution` | `automation-definition/Patchy-*` | Start Patchy's own runbooks only, via TargetLocations |
+| SSM | `Get/Describe/StopAutomationExecution`, `DescribeAutomationStepExecutions` | `*` | Track and stop executions (execution IDs have no document scope) |
 | Inspector | `ListFindings`, `BatchGetFreeTrialInfo`, `DescribeOrganizationConfiguration`, `GetConfiguration` | `*` | Read vulnerability findings |
 | S3 | `PutObject`, `GetObject`, `ListBucket` | Compliance bucket only | Write and read compliance reports |
 | CloudWatch | `DescribeAlarms`, `GetMetricData`, `GetMetricStatistics`, `ListMetrics`, `DescribeAlarmHistory` | `*` | Read alarm state for health checks |
 | CloudWatch Logs | `DescribeLogGroups`, `DescribeLogStreams`, `GetLogEvents` | `*` | Read logs for diagnostics |
 | IAM | `CreateServiceLinkedRole` | SSM SLR only | One-time SSM setup |
-| IAM | `PassRole` | Account roles, SSM only | Pass roles to SSM |
+| IAM | `PassRole` | `PatchySpokeRole` and `AWS-SystemsManager-AutomationAdministrationRole`, to SSM only | Roles multi-account Automation can use |
 | Organizations | `ListAccounts`, `ListAccountsForParent`, `ListTagsForResource` | `*` | Discover spoke accounts |
 | STS | `AssumeRole` | `arn:aws:iam::*:role/PatchySpokeRole` (with an `aws:PrincipalOrgID` condition) | Cross-account operations |
 
@@ -61,35 +62,26 @@ For production, a few enhancements are worth making:
 | EC2 | `DescribeInstances`, `DescribeTags` | `*` | Dashboard: environment cards |
 | SSM | `DescribeInstanceInformation`, `DescribeInstancePatchStates` | `*` | Dashboard: patch compliance |
 | Inspector | `ListFindings` | `*` | Dashboard: vulnerability table |
-| S3 | `GetObject`, `ListBucket` | Compliance bucket only | Dashboard: compliance reports |
-| STS | `GetCallerIdentity`, `AssumeRole` | `*` / `PatchySpokeRole` | Account ID resolution, cross-account dashboard queries |
+| S3 | `GetObject`, `ListBucket`, `PutObject`, `DeleteObject` | Compliance bucket only | Dashboard: compliance reports and reconciliation |
+| STS | `GetCallerIdentity`, `AssumeRole` | `*` / `PatchySpokeReadRole` | Account ID resolution, cross-account dashboard queries |
 | Organizations | `ListAccounts` | `*` | Auto-discover spoke accounts (multi-account mode only) |
 | AgentCore | `InvokeAgentRuntime` | `arn:aws:bedrock-agentcore:REGION:ACCOUNT:runtime/*` | Chat: invoke the agent |
 | AgentCore | `ListEvents`, `GetEvent` | `arn:aws:bedrock-agentcore:REGION:ACCOUNT:memory/*` | Chat: read conversation history for session rehydration |
 
-### Cross-account trust model (`PatchySpokeRole`)
+### Cross-account trust model
 
-The spoke role (`infra/lib/spoke-iam-stack.ts`) trusts the hub account root, but an `ArnLike` condition narrows down which hub principals can actually assume it:
+Each spoke account gets two roles from `infra/lib/spoke-iam-stack.ts`.
 
-```typescript
-new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions({
-  ArnLike: {
-    'aws:PrincipalArn': [
-      `arn:aws:iam::${props.hubAccountId}:role/AgentCore-*`,
-      `arn:aws:iam::${props.hubAccountId}:role/AmazonBedrockAgentCoreSDKRuntime-*`,
-      `arn:aws:iam::${props.hubAccountId}:role/Patchy-UI-*`,
-    ],
-  },
-}),
-```
+`PatchySpokeRole` is the write role. It can start `Patchy-*` runbooks and run `AWS-RunPatchBaseline` and `Patchy-*` command documents on instances with the scope tag. It trusts:
 
-Only these hub role patterns can assume into spoke accounts:
+- the hub's AgentCore runtime role, by exact ARN (`ArnEquals` on `aws:PrincipalArn`);
+- the SSM service principal, for Automation execution.
 
-- `AgentCore-*` / `AmazonBedrockAgentCoreSDKRuntime-*` — the agent runtime (patch operations, fleet queries)
-- `Patchy-UI-*` — the dashboard Fargate task (read-only cross-account queries)
-- The SSM service principal is also trusted, for Automation document execution
+`./deploy.sh spoke` resolves the runtime role ARN before it synthesises the StackSet. If no agent is deployed yet, the trust falls back to the `AgentCore-*` and `AmazonBedrockAgentCoreSDKRuntime-*` role name patterns and the deploy prints a warning. In that state any hub principal that can create a role with a matching name could assume the write role, so re-run `./deploy.sh spoke` once the agent exists.
 
-Arbitrary IAM users or other roles in the hub account can't assume `PatchySpokeRole`. That's the default — no extra hardening needed.
+`PatchySpokeReadRole` is the read role used by the dashboard. It has the same Describe, Get and List permissions as the write role and nothing else, and it trusts only hub roles named `Patchy-UI-*`. A compromise of the internet-facing UI container can read spoke inventory and findings but can't patch, roll back or run commands.
+
+When upgrading an existing deployment, update the spoke StackSet (`./deploy.sh spoke`) before the UI. Until the read role exists in a spoke, the dashboard can't read that spoke's data.
 
 ### StackSet topology
 
@@ -97,8 +89,8 @@ Cross-account resources are managed by two independent StackSets:
 
 | StackSet | Scope | What it provisions |
 |---|---|---|
-| `Patchy-SpokeIam` | (Hub + spokes) × primary region | `PatchySpokeRole` IAM role |
-| `Patchy-SsmDocs` | (Hub + spokes) × all `SPOKE_REGIONS` | Four SSM Automation documents (`Patchy-RunPatchBaseline`, `Patchy-RunPatchBaselineById`, `Patchy-RunRollback`, `Patchy-RunRollbackById`) |
+| `Patchy-SpokeIam` | (Hub + spokes) × primary region | `PatchySpokeRole` and `PatchySpokeReadRole` IAM roles |
+| `Patchy-SsmDocs` | (Hub + spokes) × all `SPOKE_REGIONS` | Four SSM Automation documents (`Patchy-RunPatchBaseline`, `Patchy-RunPatchBaselineById`, `Patchy-RunRollback`, `Patchy-RunRollbackById`) and the `Patchy-YumUndo` Command document they use for rollback |
 
 Each deploys and destroys independently via `./deploy.sh spoke` and `./deploy.sh docs`.
 

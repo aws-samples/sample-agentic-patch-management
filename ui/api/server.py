@@ -812,7 +812,8 @@ from datetime import datetime, timedelta, timezone
 ENVIRONMENTS = None  # Discovered dynamically from EC2 Environment tags
 
 MULTI_ACCOUNT_ENABLED = os.environ.get("MULTI_ACCOUNT_ENABLED", "").lower() == "true"
-SPOKE_EXECUTION_ROLE = os.environ.get("SPOKE_EXECUTION_ROLE", "PatchySpokeRole")
+# The dashboard only reads from spokes, so it assumes the read-only role.
+SPOKE_READ_ROLE = os.environ.get("SPOKE_READ_ROLE", "PatchySpokeReadRole")
 SPOKE_ACCOUNT_IDS = [a.strip() for a in os.environ.get("SPOKE_ACCOUNT_IDS", "").split(",") if a.strip()]
 SPOKE_OU_IDS = [o.strip() for o in os.environ.get("SPOKE_OU_IDS", "").split(",") if o.strip()]
 # Regions to query for fleet, vulnerability, and patch data.
@@ -843,7 +844,7 @@ def _get_hub_account_id() -> str:
 
 
 def _get_spoke_session(account_id: str) -> boto3.Session:
-    """Assume PatchySpokeRole in a spoke account. Caches credentials for 50 min."""
+    """Assume the read-only spoke role in a spoke account. Caches credentials for 50 min."""
     region = os.environ.get("AWS_REGION", _region or "us-east-1")
     now = time.time()
 
@@ -857,7 +858,7 @@ def _get_spoke_session(account_id: str) -> boto3.Session:
                 region_name=region,
             )
 
-    role_arn = f"arn:aws:iam::{account_id}:role/{SPOKE_EXECUTION_ROLE}"
+    role_arn = f"arn:aws:iam::{account_id}:role/{SPOKE_READ_ROLE}"
     sts = _aws_session().client("sts")
     resp = sts.assume_role(RoleArn=role_arn, RoleSessionName=f"patchy-dashboard-{account_id}", DurationSeconds=3600)
     creds = resp["Credentials"]
@@ -1732,7 +1733,7 @@ def _count_execution_outcomes(ssm_hub, execution_id: str, hub_region: str) -> di
     until SSM resolves the tag query.
 
     Cross-account: child Automation executions live in spoke accounts and
-    their CommandIds are spoke-scoped. We assume PatchySpokeRole into each
+    their CommandIds are spoke-scoped. We assume the read role into each
     child's owning account before calling list_command_invocations. Without
     this, ListCommandInvocations from the hub silently returns zero results
     even though the patches actually ran.

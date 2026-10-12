@@ -1285,6 +1285,17 @@ deploy_spoke() {
     # including the hub itself, even though the hub uses local credentials
     # for everything else (the agent's get_credentials short-circuits the
     # hub case via cross_account.py).
+    #
+    # The spoke role trusts the exact AgentCore runtime role ARN when it is
+    # known, so resolve it first. Without an agent this falls back to the
+    # role name patterns (the stack warns at synth).
+    if [ -z "$AGENTCORE_ROLE_ARN" ]; then
+        AGENTCORE_ROLE_ARN=$( (resolve_agentcore_role >/dev/null 2>&1 && echo "$AGENTCORE_ROLE_ARN") || true )
+        export AGENTCORE_ROLE_ARN
+    fi
+    if [ -z "$AGENTCORE_ROLE_ARN" ]; then
+        print_warning "AgentCore role not found: PatchySpokeRole will trust AgentCore-* role names. Re-run ./deploy.sh spoke after deploying the agent."
+    fi
     _deploy_stackset \
         --stack-set "Patchy-SpokeIam" \
         --cdk-stack "Patchy-SpokeIam" \

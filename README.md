@@ -114,7 +114,7 @@ Individual deploy commands, teardown, and the environment-variable reference are
 You can patch a fleet that's spread across several AWS accounts. The setup follows a hub-and-spoke model:
 
 - The hub account is where the solution runs — the agent, the UI, and the compliance bucket all live here. It's your Organizations management account or a delegated administrator account.
-- A spoke account is any other account holding EC2 instances you want to patch. Each one gets a lightweight IAM role (`PatchySpokeRole`) and the SSM Automation documents, deployed via StackSet. The hub assumes that role to scan and patch instances in the spoke — no agent or UI runs there.
+- A spoke account is any other account holding EC2 instances you want to patch. Each one gets two IAM roles and the SSM documents, deployed via StackSet: `PatchySpokeRole`, which the agent assumes to scan and patch, and `PatchySpokeReadRole`, which the dashboard assumes to read. No agent or UI runs there.
 
 The hub drives all cross-account work through [SSM Automation with TargetLocations](https://docs.aws.amazon.com/systems-manager/latest/userguide/running-automations-multiple-accounts-regions.html): one control plane reaching into N spoke accounts.
 
@@ -149,7 +149,7 @@ Here's what `./deploy.sh` lays down:
 | VPC + subnets + NAT | `Patchy-Network` (CDK) | Hub account, hub region | Network for UI Fargate tasks (skipped if `EXISTING_VPC_ID` set) |
 | ECS Fargate + ALB + Cognito | `Patchy-UI` (CDK) | Hub account, hub region | Web dashboard and chat, operator authentication |
 | SSM Resource Data Sync | `aws ssm create-resource-data-sync` | Hub account, hub region | Cross-account fleet discovery via SSM Explorer |
-| Cross-account IAM role | `Patchy-SpokeIam` (StackSet) | (Hub + spokes) × primary region | `PatchySpokeRole` — assumed by the agent for cross-account operations |
+| Cross-account IAM roles | `Patchy-SpokeIam` (StackSet) | (Hub + spokes) × primary region | `PatchySpokeRole` (agent, read and patch) and `PatchySpokeReadRole` (dashboard, read only) |
 | SSM Automation documents | `Patchy-SsmDocs` (StackSet) | (Hub + spokes) × all `SPOKE_REGIONS` | `Patchy-RunPatchBaseline`, `Patchy-RunPatchBaselineById`, `Patchy-RunRollback`, `Patchy-RunRollbackById` |
 
 You can also deploy the StackSets on their own:
