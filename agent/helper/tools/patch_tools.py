@@ -474,7 +474,14 @@ def execute_patch_operation(
         # default to emergency when an existing maintenance window would
         # cover the SLA. The operator can override via force_emergency=True.
         if not force_emergency and not confirm_execute and sla_hours:
-            window = _earliest_window_within_sla(environment, instance_ids, int(sla_hours))
+            # The SLA clock starts at discovery, so a window that opens inside
+            # sla_hours from now can still land after the deadline.
+            observed_at = first_observed_at or _earliest_first_observed_at(
+                [cve_id] + (additional_cve_ids or [])
+            )
+            window = _earliest_window_within_sla(environment, instance_ids,
+                                                 int(sla_hours),
+                                                 first_observed_at=observed_at)
             if window:
                 return {
                     "status": "schedule_recommended",
@@ -495,6 +502,7 @@ def execute_patch_operation(
                         "next_window_region": window['region'],
                         "next_window_at_utc": window['next_execution'],
                         "hours_until_window": window['hours_until_window'],
+                        "sla_deadline_utc": window['sla_deadline_utc'],
                         "window_within_sla": True,
                     },
                     "options": [

@@ -1080,23 +1080,18 @@ def _resolve_sla_for_instances(instance_ids: List[str], severity: Optional[str])
 
 
 def _earliest_window_within_sla(environment: str, instance_ids: List[str],
-                                sla_hours: int) -> Optional[Dict[str, Any]]:
-    """Return the earliest enabled maintenance window that opens within sla_hours,
-    or None if no qualifying window exists.
+                                sla_hours: int,
+                                first_observed_at: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Return the earliest maintenance window that will patch these instances
+    before the SLA deadline, or None if no qualifying window exists.
 
-    Used by patch tools to decide between SCHEDULED and EMERGENCY before
-    starting an Automation. Strict -- runs for both Path A and Path B so the
-    operator gets the same recommendation regardless of how they targeted
-    instances.
-
-    Returns a dict with the window's name, account_id, region, next_execution
-    (ISO string), and hours_until_window so the tool can render a useful
-    advisory message.
+    The deadline runs from the vulnerability's first observation when known,
+    otherwise from now. A window qualifies only if it is enabled, has an
+    AWS-RunPatchBaseline task, covers every requested instance, and finishes
+    before the deadline.
     """
     # Import here to avoid circular import -- get_maintenance_windows is a @tool
-    # function that lives in a domain module. When tools are split, this will
-    # need to be resolved via a callback or by moving window lookup logic here.
-    # For now, we rely on the tool being importable at call time.
+    # function that lives in a domain module.
     from helper.tools import get_maintenance_windows
     try:
         windows_result = get_maintenance_windows(environment=environment,
@@ -1106,32 +1101,34 @@ def _earliest_window_within_sla(environment: str, instance_ids: List[str],
             return None
 
         now = datetime.now(timezone.utc)
+        clock_start = _coerce_utc(first_observed_at) or now
+        deadline = clock_start + timedelta(hours=sla_hours)
         best: Optional[Dict[str, Any]] = None
         best_hours: Optional[float] = None
 
         for w in windows:
             if not w.get('enabled', True):
                 continue
-            next_exec = w.get('next_execution')
-            if not next_exec:
+            if not w.get('has_patch_task'):
                 continue
-            try:
-                win_dt = datetime.fromisoformat(str(next_exec).replace('Z', '+00:00'))
-            except Exception:
+            if instance_ids and w.get('instances_not_covered'):
+                continue
+            win_dt = _coerce_utc(w.get('next_execution_utc'))
+            if win_dt is None or win_dt < now:
+                continue
+            win_end = win_dt + timedelta(hours=float(w.get('duration_hours') or 0))
+            if win_end > deadline:
                 continue
             hours = (win_dt - now).total_seconds() / 3600
-            if hours < 0:
-                continue
-            if hours > sla_hours:
-                continue
             if best_hours is None or hours < best_hours:
                 best = {
                     'name': w.get('name', 'unknown'),
                     'window_id': w.get('window_id'),
                     'account_id': w.get('account_id'),
                     'region': w.get('region'),
-                    'next_execution': str(next_exec),
+                    'next_execution': win_dt.isoformat(),
                     'hours_until_window': round(hours, 2),
+                    'sla_deadline_utc': deadline.isoformat(),
                 }
                 best_hours = hours
 
@@ -1139,6 +1136,17 @@ def _earliest_window_within_sla(environment: str, instance_ids: List[str],
     except Exception as e:
         logger.warning(f"[SLA_WINDOW] earliest-window lookup failed: {e}")
         return None
+
+
+def _coerce_utc(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO-8601 string to an aware UTC datetime, or None."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 # ============================================================================
