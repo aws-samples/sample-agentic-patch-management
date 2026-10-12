@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from helper.agent_factory import create_agent
+from helper.stream_filter import client_event
 from helper.tools import (
     # Vulnerability Analysis
     get_vulnerability_findings, assess_fleet_impact,
@@ -159,7 +160,11 @@ async def agent_invocation(payload, context):
         async for event in stream:
             if hasattr(event, 'result'):
                 result = event.result
-            yield event
+            # Raw Strands events carry the system prompt, tool specs and agent
+            # state. Send the caller only tool names and answer text.
+            safe = client_event(event)
+            if safe is not None:
+                yield safe
 
         elapsed_ms = int((time.time() - start_time) * 1000)
         logger.info(f"[AGENT] Completed in {elapsed_ms}ms")
