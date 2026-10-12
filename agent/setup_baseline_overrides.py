@@ -24,57 +24,81 @@ logger = logging.getLogger(__name__)
 
 AWS_REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 
-# Severity-scoped baseline overrides for Amazon Linux 2
-# Each override approves patches at the specified severity levels with 0-day delay.
+# Severity-scoped baseline overrides. AWS-RunPatchBaseline picks the entry
+# whose OperatingSystem matches the instance and fails the run if none does,
+# so each file carries one entry per OS family that supports severity filters.
+# Ubuntu and Debian filter on PRIORITY, not severity, so they have no entry and
+# a severity-filtered run against them fails rather than over-installing.
 OVERRIDES = {
     "critical-only": {
         "description": "Critical severity patches only",
-        "severities": ["Critical"]
+        "levels": ["Critical"],
     },
     "high-and-above": {
         "description": "Critical + Important (High) severity patches",
-        "severities": ["Critical", "Important"]
+        "levels": ["Critical", "Important"],
     },
     "medium-and-above": {
         "description": "Critical + Important + Medium severity patches",
-        "severities": ["Critical", "Important", "Medium"]
+        "levels": ["Critical", "Important", "Medium"],
     },
     "all-severities": {
         "description": "All severity levels",
-        "severities": ["Critical", "Important", "Medium", "Low"]
+        "levels": ["Critical", "Important", "Medium", "Low"],
     },
 }
 
+# Per-OS filter vocabulary, from ssm:DescribePatchProperties. "Medium" is
+# called "Moderate" outside Amazon Linux.
+OS_FILTERS = {
+    "AMAZON_LINUX_2":          ("SEVERITY", "Medium", ["Security", "Bugfix"]),
+    "AMAZON_LINUX_2023":       ("SEVERITY", "Medium", ["Security", "Bugfix"]),
+    "REDHAT_ENTERPRISE_LINUX": ("SEVERITY", "Moderate", ["Security", "Bugfix"]),
+    "CENTOS":                  ("SEVERITY", "Moderate", ["Security", "Bugfix"]),
+    "ROCKY_LINUX":             ("SEVERITY", "Moderate", ["Security", "Bugfix"]),
+    "ALMA_LINUX":              ("SEVERITY", "Moderate", ["Security", "Bugfix"]),
+    "ORACLE_LINUX":            ("SEVERITY", "Moderate", ["Security", "Bugfix"]),
+    "SUSE":                    ("SEVERITY", "Moderate", ["Security", "Recommended"]),
+    "WINDOWS":                 ("MSRC_SEVERITY", "Moderate", ["SecurityUpdates", "CriticalUpdates"]),
+}
 
-def build_override_json(severities: list) -> list:
-    """Build a BaselineOverride JSON structure for the given severities.
-    
-    Returns a LIST of baseline objects (AWS requires an array, not a single object).
-    All fields must be explicitly typed — SSM rejects null values for booleans/strings.
+
+def build_override_json(levels: list) -> list:
+    """Build a BaselineOverride list with one baseline per supported OS family.
+
+    Args:
+        levels: Severity levels using Amazon Linux names (Critical, Important, Medium, Low).
+
+    Returns:
+        List of baseline objects, as AWS-RunPatchBaseline expects.
     """
-    return [{
-        "OperatingSystem": "AMAZON_LINUX_2",
-        "ApprovalRules": {
-            "PatchRules": [{
-                "PatchFilterGroup": {
-                    "PatchFilters": [
-                        {"Key": "SEVERITY", "Values": severities},
-                        {"Key": "CLASSIFICATION", "Values": ["Security", "Bugfix"]},
-                    ]
-                },
-                "ApproveAfterDays": 0,
-                "ComplianceLevel": "CRITICAL",
-                "EnableNonSecurity": False,
-            }]
-        },
-        "ApprovedPatches": [],
-        "ApprovedPatchesComplianceLevel": "CRITICAL",
-        "ApprovedPatchesEnableNonSecurity": False,
-        "RejectedPatches": [],
-        "RejectedPatchesAction": "BLOCK",
-        "GlobalFilters": {"PatchFilters": []},
-        "Sources": [],
-    }]
+    baselines = []
+    for os_name, (key, medium_name, classes) in OS_FILTERS.items():
+        values = [medium_name if lvl == "Medium" else lvl for lvl in levels]
+        baselines.append({
+            "OperatingSystem": os_name,
+            "ApprovalRules": {
+                "PatchRules": [{
+                    "PatchFilterGroup": {
+                        "PatchFilters": [
+                            {"Key": key, "Values": values},
+                            {"Key": "CLASSIFICATION", "Values": classes},
+                        ]
+                    },
+                    "ApproveAfterDays": 0,
+                    "ComplianceLevel": "CRITICAL",
+                    "EnableNonSecurity": False,
+                }]
+            },
+            "ApprovedPatches": [],
+            "ApprovedPatchesComplianceLevel": "CRITICAL",
+            "ApprovedPatchesEnableNonSecurity": False,
+            "RejectedPatches": [],
+            "RejectedPatchesAction": "BLOCK",
+            "GlobalFilters": {"PatchFilters": []},
+            "Sources": [],
+        })
+    return baselines
 
 
 def main():
@@ -93,7 +117,7 @@ def main():
         return
 
     for name, config in OVERRIDES.items():
-        override = build_override_json(config["severities"])
+        override = build_override_json(config["levels"])
         key = f"baseline-overrides/{name}.json"
         body = json.dumps(override, indent=2)
 
