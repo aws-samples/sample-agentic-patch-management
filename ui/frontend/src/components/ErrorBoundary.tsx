@@ -22,12 +22,12 @@ export class ErrorBoundary extends React.Component<React.PropsWithChildren, Stat
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex flex-col items-center justify-center h-screen gap-4 font-sans text-gray-700">
-          <h2 className="text-xl font-semibold">Something went wrong</h2>
-          <p className="text-gray-500">{this.state.error?.message ?? "An unexpected error occurred."}</p>
+        <div className="flex flex-col items-center justify-center h-full min-h-[240px] gap-3 p-6 text-fg">
+          <h2 className="text-base font-semibold">This part of Patchy stopped working</h2>
+          <p className="text-fg-muted text-sm">{this.state.error?.message ?? "An unexpected error occurred."}</p>
           <button
             onClick={() => window.location.reload()}
-            className="px-5 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-sm cursor-pointer transition"
+            className="btn"
           >
             Reload
           </button>

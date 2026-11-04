@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 800" width="1120" height="800" role="img" aria-labelledby="title desc">
+  <title id="title">Patchy architecture</title>
+  <desc id="desc">The hub account runs the load balancer with Cognito sign-in, the UI on Fargate, the AgentCore runtime with the Strands agent, its tools, model and memory, the compliance bucket, SSM Automation, and the report Lambda. Spoke accounts hold the Patchy write and read roles, the Patchy SSM documents and the tagged EC2 instances. Changes reach instances only through an approved plan.</desc>
+  <style>
+    text { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1a1915; }
+    .h1 { font-size: 22px; font-weight: 700; }
+    .grp { font-size: 12.5px; font-weight: 700; letter-spacing: .13em; fill: #6b675d; }
+    .grpsub { font-size: 12.5px; fill: #6b675d; }
+    .t { font-size: 15px; font-weight: 700; }
+    .t14 { font-size: 14px; font-weight: 700; }
+    .s { font-size: 12.5px; fill: #6b675d; }
+    .chip { font-size: 13px; font-weight: 500; }
+    .chipc { font-size: 13px; font-weight: 600; fill: #8a3420; }
+    .lbl { font-size: 12.5px; fill: #6b675d; }
+    .lblc { font-size: 12.5px; font-weight: 600; fill: #8a3420; }
+    .leg { font-size: 13px; fill: #3a3731; }
+    .node { fill: #fffdfa; stroke: #e4ddd0; stroke-width: 1.2; }
+    .gate { fill: #fffdfa; stroke: #b5462a; stroke-width: 2.2; }
+    .opt { fill: #fffdfa; stroke: #a8a299; stroke-width: 1.2; stroke-dasharray: 5 4; }
+    .acct { fill: #f2ede4; stroke: #e4ddd0; stroke-width: 1.2; }
+    .inner { fill: #f7f3ec; stroke: #d9cfbf; stroke-width: 1.2; }
+    .cbox { fill: #fffdfa; stroke: #e4ddd0; stroke-width: 1; }
+    .cboxc { fill: #fffdfa; stroke: #b5462a; stroke-width: 1.6; }
+    .wire { fill: none; stroke: #6b675d; stroke-width: 1.5; }
+    .wirec { fill: none; stroke: #b5462a; stroke-width: 2.2; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b675d"/>
+    </marker>
+    <marker id="ac" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b5462a"/>
+    </marker>
+  </defs>
+
+  <!-- Solid light background so the figure reads in GitHub dark mode -->
+  <rect x="0" y="0" width="1120" height="800" fill="#faf7f2"/>
+
+  <text class="h1" x="24" y="42">Patchy architecture</text>
+
+  <!-- Legend -->
+  <line x1="640" y1="86" x2="676" y2="86" class="wirec"/>
+  <text class="leg" x="686" y="90">Change path: runs only from an approved plan</text>
+  <rect x="640" y="104" width="36" height="20" rx="5" class="opt"/>
+  <text class="leg" x="686" y="119">Optional, set in .env</text>
+
+  <!-- Browser -->
+  <rect x="110" y="66" width="190" height="62" rx="10" class="node"/>
+  <text class="t" x="124" y="92">Operator browser</text>
+  <text class="s" x="124" y="112">chat · change records · runs</text>
+
+  <!-- ===================== Hub account ===================== -->
+  <rect x="24" y="150" width="750" height="626" rx="14" class="acct"/>
+  <text class="grp" x="40" y="174">HUB ACCOUNT</text>
+  <text class="grpsub" x="232" y="174">multi-account: management or delegated administrator</text>
+
+  <!-- Browser to ALB, drawn over the hub panel -->
+  <line x1="170" y1="128" x2="170" y2="198" class="wire" marker-end="url(#a)"/>
+  <text class="lbl" x="178" y="146">HTTPS</text>
+
+  <!-- ALB + Cognito -->
+  <rect x="44" y="200" width="160" height="92" rx="10" class="node"/>
+  <text class="t" x="58" y="226">ALB + Cognito</text>
+  <text class="s" x="58" y="246">OIDC sign-in</text>
+  <text class="s" x="58" y="264">12 h session</text>
+  <text class="s" x="58" y="282">operators · viewers</text>
+  <line x1="204" y1="246" x2="238" y2="246" class="wire" marker-end="url(#a)"/>
+
+  <!-- UI on Fargate -->
+  <rect x="240" y="200" width="180" height="92" rx="10" class="node"/>
+  <text class="t" x="254" y="226">UI on Fargate</text>
+  <text class="s" x="254" y="246">FastAPI · React</text>
+  <text class="s" x="254" y="264">approve · cancel · Stop</text>
+  <text class="s" x="254" y="282">role and CSRF checks</text>
+  <line x1="420" y1="232" x2="458" y2="232" class="wire" marker-end="url(#a)"/>
+
+  <!-- AgentCore runtime -->
+  <rect x="460" y="196" width="294" height="276" rx="12" class="inner"/>
+  <text class="grp" x="476" y="218">AGENTCORE RUNTIME</text>
+  <rect x="476" y="230" width="262" height="52" rx="10" class="node"/>
+  <text class="t" x="490" y="252">Strands agent</text>
+  <text class="s" x="490" y="271">steering · result cards · next_action</text>
+  <rect x="476" y="290" width="262" height="52" rx="10" class="node"/>
+  <text class="t" x="490" y="312">24 tools</text>
+  <text class="s" x="490" y="331">reads · 5 write tools that only plan</text>
+  <rect x="476" y="350" width="262" height="52" rx="10" class="node"/>
+  <text class="t" x="490" y="372">Bedrock model</text>
+  <text class="s" x="490" y="391">Claude Sonnet 5 · adaptive thinking</text>
+  <rect x="476" y="410" width="262" height="52" rx="10" class="node"/>
+  <text class="t" x="490" y="432">AgentCore Memory</text>
+  <text class="s" x="490" y="451">session turns per operator</text>
+
+  <!-- Compliance bucket -->
+  <rect x="44" y="322" width="376" height="180" rx="12" class="inner"/>
+  <text class="grp" x="60" y="344">COMPLIANCE BUCKET (S3)</text>
+  <!-- column 1 -->
+  <rect x="60" y="354" width="170" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="70" y="368">plans/</text>
+  <rect x="60" y="378" width="170" height="20" rx="7" class="cboxc"/>
+  <text class="chipc" x="70" y="392">plan-decisions/</text>
+  <rect x="60" y="402" width="170" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="70" y="416">plan-runs/</text>
+  <rect x="60" y="426" width="170" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="70" y="440">run-executions/</text>
+  <rect x="60" y="450" width="170" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="70" y="464">plan-executions/</text>
+  <rect x="60" y="474" width="170" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="70" y="488">session-owners/</text>
+  <!-- column 2 -->
+  <rect x="238" y="354" width="168" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="248" y="368">install-overrides/</text>
+  <rect x="238" y="378" width="168" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="248" y="392">baseline-overrides/</text>
+  <rect x="238" y="402" width="168" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="248" y="416">promotions/</text>
+  <rect x="238" y="426" width="168" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="248" y="440">pending-reports/</text>
+  <rect x="238" y="450" width="168" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="248" y="464">YYYY/MM/DD reports</text>
+
+  <!-- UI writes the decision -->
+  <line x1="330" y1="292" x2="330" y2="320" class="wirec" marker-end="url(#ac)"/>
+  <text class="lblc" x="338" y="311">decision</text>
+
+  <!-- Runtime reads and writes plans and run records -->
+  <line x1="460" y1="430" x2="422" y2="430" class="wire" marker-end="url(#a)"/>
+
+  <!-- Runtime starts Automation only for an approved plan -->
+  <line x1="607" y1="472" x2="607" y2="528" class="wirec" marker-end="url(#ac)"/>
+  <text class="lblc" x="616" y="504">approved plan</text>
+
+  <!-- SSM Automation -->
+  <rect x="460" y="530" width="294" height="84" rx="10" class="gate"/>
+  <text class="t" x="476" y="556">SSM Automation</text>
+  <text class="s" x="476" y="576">Patchy-* runbooks · TargetLocations</text>
+  <text class="s" x="476" y="596">Change Calendar · abort alarms</text>
+
+  <!-- Events: Automation -> EventBridge -> Report Lambda -> SNS -->
+  <line x1="460" y1="572" x2="426" y2="572" class="wire" marker-end="url(#a)"/>
+  <rect x="314" y="540" width="110" height="64" rx="10" class="node"/>
+  <text class="t14" x="326" y="564">EventBridge</text>
+  <text class="s" x="326" y="584">finished · 15 min</text>
+  <line x1="314" y1="572" x2="298" y2="572" class="wire" marker-end="url(#a)"/>
+  <rect x="158" y="540" width="138" height="64" rx="10" class="node"/>
+  <text class="t14" x="170" y="564">Report Lambda</text>
+  <text class="s" x="170" y="584">final report, once</text>
+  <line x1="227" y1="540" x2="227" y2="504" class="wire" marker-end="url(#a)"/>
+  <line x1="158" y1="572" x2="142" y2="572" class="wire" marker-end="url(#a)"/>
+  <rect x="44" y="540" width="96" height="64" rx="10" class="opt"/>
+  <text class="t14" x="56" y="564">SNS topic</text>
+  <text class="s" x="56" y="584">KMS optional</text>
+
+  <!-- IAM split in the hub -->
+  <text class="grp" x="44" y="650">HUB ROLES</text>
+  <rect x="44" y="662" width="230" height="58" rx="10" class="node"/>
+  <text class="t" x="58" y="686">UI task role</text>
+  <text class="s" x="58" y="706">writes decisions, put-once</text>
+  <rect x="290" y="662" width="230" height="58" rx="10" class="node"/>
+  <text class="t" x="304" y="686">Runtime role</text>
+  <text class="s" x="304" y="706">plans and runs, no decisions</text>
+  <rect x="536" y="662" width="218" height="58" rx="10" class="node"/>
+  <text class="t" x="550" y="686">Report Lambda role</text>
+  <text class="s" x="550" y="706">reports and notifications</text>
+  <text class="s" x="44" y="752">None of the three can delete a plan, decision, claim or run record.</text>
+
+  <!-- ===================== Spoke accounts ===================== -->
+  <rect x="800" y="150" width="296" height="626" rx="14" class="acct"/>
+  <text class="grp" x="816" y="174">SPOKE ACCOUNTS</text>
+  <text class="grpsub" x="816" y="192">roles per account · documents per Region</text>
+
+  <rect x="816" y="206" width="264" height="76" rx="10" class="gate"/>
+  <text class="t" x="830" y="230">PatchySpokeRole</text>
+  <text class="s" x="830" y="250">trusts the runtime role and SSM</text>
+  <text class="s" x="830" y="268">runs Patchy-* runbooks</text>
+
+  <rect x="816" y="294" width="264" height="60" rx="10" class="node"/>
+  <text class="t" x="830" y="318">Patchy SSM documents</text>
+  <text class="s" x="830" y="338">4 runbooks · Patchy-YumUndo</text>
+
+  <rect x="816" y="366" width="264" height="60" rx="10" class="node"/>
+  <text class="t" x="830" y="390">EC2 instances</text>
+  <text class="s" x="830" y="410">PatchAutomation=enabled · SSM Agent</text>
+
+  <rect x="816" y="454" width="264" height="76" rx="10" class="node"/>
+  <text class="t" x="830" y="478">PatchySpokeReadRole</text>
+  <text class="s" x="830" y="498">trusts the UI and report Lambda</text>
+  <text class="s" x="830" y="516">read only</text>
+
+  <rect x="816" y="542" width="264" height="60" rx="10" class="node"/>
+  <text class="t" x="830" y="566">Inspector and SSM</text>
+  <text class="s" x="830" y="586">findings · patch state · alarms</text>
+
+  <text class="s" x="816" y="640">The hub is a target location too and</text>
+  <text class="s" x="816" y="658">holds the same roles and documents.</text>
+  <text class="s" x="816" y="684">Single-account deploys skip StackSets</text>
+  <text class="s" x="816" y="702">and deploy them as plain stacks.</text>
+
+  <!-- Runtime assumes the spoke role for reads -->
+  <line x1="754" y1="232" x2="814" y2="232" class="wire" marker-end="url(#a)"/>
+  <text class="lbl" x="762" y="224">assume</text>
+
+  <!-- Automation runs in each target location with PatchySpokeRole -->
+  <path d="M754,556 H787 V262 H814" class="wirec" marker-end="url(#ac)"/>
+</svg>

@@ -1,39 +1,56 @@
 """Agent factory — creates the agent with memory, steering, and guardrails."""
 
-import os
 import logging
+import os
+import re
+from typing import Optional
+
 from strands import Agent
 from strands.models import BedrockModel, CacheConfig
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
-from helper.template_loader import get_template_names_for_agent, get_response_template
 from helper.steering import (
     PatchWorkflowSteering,
     ComplianceOutputSteering,
 )
-from helper.goals import ConfirmationGoalHandler
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = 'us.anthropic.claude-sonnet-5'
 
 # Models that require adaptive thinking (always-on, cannot be disabled).
 # All Sonnet 5+ variants require this — intentionally broad matching.
 _ADAPTIVE_THINKING_MODELS = ('claude-sonnet-5', 'claude-sonnet-6')
+_EFFORTS = ('low', 'medium', 'high')
+DEFAULT_EFFORT = 'medium'  # Release B: same routing as the default, ~30% less output on the eval
 
-logger = logging.getLogger(__name__)
+
+def model_request_fields(model_id: str):
+    """Extra Bedrock request fields for a model: adaptive thinking and, if set, its effort.
+
+    Shared by the agent and the tool-selection eval so both send the same request.
+    THINKING_EFFORT (low, medium or high) overrides DEFAULT_EFFORT; other values are ignored.
+    """
+    if not any(base in model_id for base in _ADAPTIVE_THINKING_MODELS):
+        return None
+    fields = {"thinking": {"type": "adaptive"}}
+    effort = (os.environ.get('THINKING_EFFORT') or '').lower()
+    fields["output_config"] = {"effort": effort if effort in _EFFORTS else DEFAULT_EFFORT}
+    return fields
 
 
 def _build_actor_id(operator_id: str | None) -> str:
     """Build operator-scoped actor_id for memory isolation."""
-    import re
     base = operator_id or "anonymous"
     sanitized = re.sub(r'[^a-zA-Z0-9\-_/]', '-', base)
     sanitized = re.sub(r'-{2,}', '-', sanitized).strip('-')
     return f"patch-automation/{sanitized}" if sanitized else "patch-automation/anonymous"
 
 
-def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens: int = 6000) -> Agent:
+def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens: int = 6000,
+                 hooks: Optional[list] = None) -> Agent:
     """Create agent with AgentCore memory integration."""
     memory_id = getattr(context, 'memory_id', None)
     session_id = getattr(context, 'session_id', None)
@@ -59,10 +76,6 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
         )
         logger.info(f"[MEMORY] Session manager for {name} (actor={actor_id}, session={session_id})")
 
-    # Templates as on-demand tool — only template NAMES in prompt, full text loaded via tool call
-    full_prompt = system_prompt + get_template_names_for_agent(name)
-    agent_tools = tools + [get_response_template]
-
     guardrail_kwargs = {}
     guardrail_id = os.environ.get('GUARDRAIL_ID')
     guardrail_version = os.environ.get('GUARDRAIL_VERSION')
@@ -74,6 +87,9 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
             'guardrail_stream_processing_mode': 'async',
             'guardrail_redact_input': True,
             'guardrail_redact_output': False,
+            # Screen the operator's new message, not the whole replayed conversation,
+            # which was already screened on earlier turns and is billed per call.
+            'guardrail_latest_message': True,
         }
         logger.info(f"Guardrail enabled for {name}: {guardrail_id} v{guardrail_version}")
 
@@ -81,10 +97,6 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
     plugins = [PatchWorkflowSteering(), ComplianceOutputSteering()]
     for plugin in plugins:
         logger.info(f"[STEERING] {plugin.__class__.__name__} enabled for {name}")
-
-    # Confirmation goal: catches when model forgets to retry with confirm_execute=True
-    plugins.append(ConfirmationGoalHandler())
-    logger.info(f"[STEERING] ConfirmationGoalHandler enabled for {name}")
 
     model_id = os.environ.get('BEDROCK_MODEL_ID', _DEFAULT_MODEL)
 
@@ -98,21 +110,21 @@ def create_agent(name: str, system_prompt: str, tools: list, context, max_tokens
         'cache_config': CacheConfig(strategy="auto"),
         **guardrail_kwargs,
     }
-    if any(base in model_id for base in _ADAPTIVE_THINKING_MODELS):
-        model_kwargs['additional_request_fields'] = {
-            "thinking": {"type": "adaptive"}
-        }
-        logger.info(f"[MODEL] Adaptive thinking enabled for {model_id}")
+    request_fields = model_request_fields(model_id)
+    if request_fields:
+        model_kwargs['additional_request_fields'] = request_fields
+        logger.info(f"[MODEL] {model_id} request fields {request_fields}")
     else:
         model_kwargs['temperature'] = 0.1
 
     return Agent(
         name=name,
         model=BedrockModel(**model_kwargs),
-        system_prompt=full_prompt,
-        tools=agent_tools,
+        system_prompt=system_prompt,
+        tools=list(tools),
         plugins=plugins,
         session_manager=session_manager,
+        hooks=hooks or [],
     )
 
 

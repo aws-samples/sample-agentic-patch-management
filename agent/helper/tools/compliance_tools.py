@@ -1,23 +1,31 @@
 """Compliance and reporting tools: patch state capture, CVE verification, report queries."""
 
 from strands import tool
-from typing import Optional, List, Dict, Any
+
+from helper import forecast, verification
+from helper.display import compliance_card
+from typing import Optional, List
 
 from . import _shared
 from ._shared import (
-    logger, os, json,
-    classify_error,
+    logger, classify_error,
     ClientError,
     datetime, timedelta, timezone,
     get_client,
-    _ssm, _s3, _inspector,
-    _validate_instance_ids,
+    _s3, _validate_instance_ids,
     _normalize_environment,
-    _get_fleet_summary,
     _get_compliance_bucket_name,
-    _get_date_prefix,
-    AWS_REGION,
 )
+
+# Threads for reading compliance report metadata.
+_REPORT_WORKERS = 10
+# One query reads at most this many reports, newest first.
+_REPORT_READ_MAX = 1000
+
+
+class _Reports(list):
+    """Reports read for a query; truncated when the range held more than _REPORT_READ_MAX."""
+    truncated = False
 
 
 # ============================================================================
@@ -29,7 +37,8 @@ def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime,
                            end_date: datetime, severity: Optional[str],
                            environment: Optional[str], sla_breaches_only: bool) -> list:
     """Fetch and filter reports from S3 with optimized month-prefix queries."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
+    from helper.concurrency import ContextThreadPoolExecutor as ThreadPoolExecutor
 
     # Collect unique year/month prefixes covering the date range (few API calls)
     months: set[str] = set()
@@ -51,34 +60,36 @@ def _fetch_reports_from_s3(s3_client, bucket_name: str, start_date: datetime,
                         obj_date = obj_date.replace(tzinfo=timezone.utc)
                     if start_date <= obj_date <= end_date:
                         objects_to_check.append(obj)
-        except Exception as e:
-            logger.debug(f"No reports for {prefix}: {e}")
-            continue
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "NoSuchBucket"):
+                continue
+            raise  # AccessDenied and the like: an error, not "no reports"
 
+    out = _Reports()
     if not objects_to_check:
-        return []
+        return out
+    if len(objects_to_check) > _REPORT_READ_MAX:
+        objects_to_check.sort(key=lambda o: o["LastModified"], reverse=True)
+        objects_to_check = objects_to_check[:_REPORT_READ_MAX]
+        out.truncated = True
 
     # Parallel head_object calls (max 10 concurrent)
     def fetch_metadata(obj):
         return _parse_report_metadata(s3_client, bucket_name, obj)
 
-    reports = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=_REPORT_WORKERS) as executor:
         futures = {executor.submit(fetch_metadata, obj): obj for obj in objects_to_check}
         for future in as_completed(futures):
             obj = futures[future]
             try:
-                report = future.result(timeout=15)
-            except TimeoutError:
-                logger.warning(f"[TOOL:_fetch_reports_from_s3] Worker timed out for {obj.get('Key', 'unknown')}")
-                continue
+                report = future.result()
             except Exception as e:
                 logger.warning(f"[TOOL:_fetch_reports_from_s3] Worker failed for {obj.get('Key', 'unknown')}: {e}")
                 continue
             if report and _matches_filters(report, severity, environment, sla_breaches_only):
-                reports.append(report)
+                out.append(report)
 
-    return reports
+    return out
 
 
 def _parse_report_metadata(s3_client, bucket_name: str, obj: dict) -> Optional[dict]:
@@ -109,6 +120,7 @@ def _parse_report_metadata(s3_client, bucket_name: str, obj: dict) -> Optional[d
             'sla_met': sla_met,
             'frameworks': frameworks,
             'team': metadata.get('team', 'unknown'),
+            'reboot_pending': int(metadata['reboot-pending']) if str(metadata.get('reboot-pending', '')).isdigit() else None,
             'product': metadata.get('product', 'unknown'),
             's3_key': obj['Key'],
             'generated_at': obj['LastModified'].isoformat()
@@ -188,28 +200,16 @@ def _calculate_report_statistics(reports: list) -> dict:
 
 @tool
 def capture_patch_state(instance_ids: List[str]) -> dict:
-    """Capture current patch compliance state for instances (snapshot).
+    """Snapshot of patch counts per instance, for a before-and-after comparison.
 
-    IMPORTANT: This reads DescribeInstancePatchStates which is only populated
-    AFTER a scan (patch_dry_run) has been run. Always call patch_dry_run FIRST,
-    then capture_patch_state. Without a prior scan, patch state data may be
-    empty or stale.
-
-    Call this BEFORE patching to capture pre-patch state, and AFTER patching
-    to capture post-patch state. Both snapshots are forwarded to the UI's
-    compliance reconciliation pipeline for before/after delta in the final
-    compliance report (rendered in the Compliance tab).
+    Reads the last scan result; it doesn't scan. Use when the operator wants a before or after
+    record for a patch or rollback.
 
     Args:
-        instance_ids: List of EC2 instance IDs to snapshot
-
-    Returns:
-        dict: {
-            'snapshot': {instance_id: {missing_count, installed_count, security_non_compliant}},
-            'timestamp': str,
-            'total_missing': int
-        }
+        instance_ids: Instances to snapshot.
     """
+    # Reads DescribeInstancePatchStates, which only changes after a scan or install.
+    # Snapshots flow to the UI reconciler for the before/after delta in reports.
     try:
         validation_error = _validate_instance_ids(instance_ids)
         if validation_error:
@@ -218,16 +218,7 @@ def capture_patch_state(instance_ids: List[str]) -> dict:
         logger.info(f"[TOOL:capture_patch_state] instances={len(instance_ids)} instance_ids={instance_ids[:5]}")
 
         # Group by (account, region) for cross-region support
-        _get_fleet_summary()  # ensure cache is warm
-        cache = _shared._fleet_instances_cache or {}
-        by_location: Dict[tuple, list] = {}
-        for iid in instance_ids:
-            cached = cache.get(iid)
-            if cached:
-                loc = (cached.get('account_id'), cached.get('region') or AWS_REGION)
-            else:
-                loc = (None, AWS_REGION)
-            by_location.setdefault(loc, []).append(iid)
+        by_location = _shared._locate_instances(instance_ids)
 
         snapshot = {}
         total_missing = 0
@@ -254,21 +245,19 @@ def capture_patch_state(instance_ids: List[str]) -> dict:
             except Exception as e:
                 logger.warning(f"[TOOL:capture_patch_state] Failed for {account_id}/{region}: {e}")
 
-        # Include instances with no patch state data
-        for iid in instance_ids:
-            if iid not in snapshot:
-                snapshot[iid] = {
-                    'missing_count': 0,
-                    'installed_count': 0,
-                    'security_non_compliant': 0,
-                    'failed_count': 0
-                }
+        # Instances with no patch state are marked as such, not given zero
+        # counts: zero would read as "fully patched" in a before/after compare.
+        no_data = [iid for iid in instance_ids if iid not in snapshot]
+        for iid in no_data:
+            snapshot[iid] = {'no_data': True, 'missing_count': None, 'installed_count': None,
+                             'security_non_compliant': None, 'failed_count': None}
 
         logger.info(f"[TOOL:capture_patch_state] RESULT: instances={len(snapshot)} total_missing={total_missing} "
-                     f"total_installed={total_installed} no_data={len([iid for iid in instance_ids if iid not in snapshot])}")
+                     f"total_installed={total_installed} no_data={len(no_data)}")
 
         return {
             'snapshot': snapshot,
+            'no_data_instances': no_data,
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'total_missing': total_missing,
             'instance_count': len(instance_ids)
@@ -284,144 +273,39 @@ def capture_patch_state(instance_ids: List[str]) -> dict:
 
 
 @tool
-def verify_cve_remediation(
-    cve_ids: List[str],
-    instance_ids: List[str],
-    max_wait_minutes: int = 0
-) -> dict:
-    """Check CVE remediation status in Inspector. Non-blocking -- returns current state immediately.
+def verify_cve_remediation(cve_ids: List[str], instance_ids: List[str]) -> dict:
+    """Whether Inspector has closed CVEs on instances after patching, and why not where it hasn't.
+
+    Use after a patch run to confirm the fix. Reads current state and returns at once.
 
     Args:
-        cve_ids: CVE IDs to verify
-        instance_ids: EC2 instance IDs that were patched
-        max_wait_minutes: Ignored (kept for compatibility). Always queries immediately.
-
-    Returns: {cve_status, summary, note}
+        cve_ids: CVEs to check.
+        instance_ids: Instances that were patched.
     """
+    # Each instance is checked in its own region (helper.verification). "No
+    # finding" is never counted as fixed; open findings get a cause.
     try:
         validation_error = _validate_instance_ids(instance_ids)
         if validation_error:
             return validation_error
-
         if not cve_ids:
             return {"error": "cve_ids list is empty", "category": "ABORT", "retryable": False}
-
-        # Query immediately -- Inspector re-evaluation takes 5-15min asynchronously
-        waited = 0
-        logger.info(f"[TOOL:verify_cve_remediation] cve_ids={cve_ids[:5]} instances={len(instance_ids)} (non-blocking)")
-
-        # Build instance ID set for fast lookup
-        instance_set = set(instance_ids)
-
-        # Query Inspector for each CVE -- check both ACTIVE and CLOSED findings
-        cve_status: Dict[str, Dict] = {}
-
-        for cve_id in cve_ids:
-            active_instances = []
-            closed_instances = []
-
-            # Check ACTIVE findings (still vulnerable)
-            try:
-                active_resp = _inspector().list_findings(
-                    filterCriteria={
-                        'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
-                        'findingStatus': [{'comparison': 'EQUALS', 'value': 'ACTIVE'}],
-                    },
-                    maxResults=100
-                )
-                for finding in active_resp.get('findings', []):
-                    for resource in finding.get('resources', []):
-                        rid = resource.get('id', '')
-                        if rid in instance_set:
-                            active_instances.append(rid)
-            except Exception as e:
-                logger.warning(f"[CVE_VERIFY] Inspector query failed for {cve_id} (ACTIVE): {e}")
-
-            # Check CLOSED findings (remediated)
-            try:
-                closed_resp = _inspector().list_findings(
-                    filterCriteria={
-                        'vulnerabilityId': [{'comparison': 'EQUALS', 'value': cve_id}],
-                        'findingStatus': [{'comparison': 'EQUALS', 'value': 'CLOSED'}],
-                    },
-                    maxResults=100
-                )
-                for finding in closed_resp.get('findings', []):
-                    for resource in finding.get('resources', []):
-                        rid = resource.get('id', '')
-                        if rid in instance_set:
-                            closed_instances.append(rid)
-            except Exception as e:
-                logger.warning(f"[CVE_VERIFY] Inspector query failed for {cve_id} (CLOSED): {e}")
-
-            # Deduplicate
-            active_instances = list(set(active_instances))
-            closed_instances = list(set(closed_instances))
-
-            # Instances with no finding at all (never appeared in Inspector for this CVE)
-            found_instances = set(active_instances) | set(closed_instances)
-            not_found_instances = [i for i in instance_ids if i not in found_instances]
-
-            total = len(instance_ids)
-            remediated_count = len(closed_instances) + len(not_found_instances)  # not found = was never vulnerable or already fixed
-
-            if not active_instances and not closed_instances:
-                status = 'NOT_FOUND'  # Inspector has no record -- may not have scanned yet
-            elif not active_instances:
-                status = 'REMEDIATED'
-            elif not closed_instances and not not_found_instances:
-                status = 'STILL_ACTIVE'
-            else:
-                status = 'PARTIALLY_REMEDIATED'
-
-            cve_status[cve_id] = {
-                'status': status,
-                'remediated_on': closed_instances + not_found_instances,
-                'still_active_on': active_instances,
-                'remediation_rate': f"{remediated_count}/{total} instances",
-            }
-
-        # Build summary
-        statuses = [v['status'] for v in cve_status.values()]
-        summary = {
-            'total_cves': len(cve_ids),
-            'fully_remediated': statuses.count('REMEDIATED'),
-            'partially_remediated': statuses.count('PARTIALLY_REMEDIATED'),
-            'still_active': statuses.count('STILL_ACTIVE'),
-            'not_found_in_inspector': statuses.count('NOT_FOUND'),
+        logger.info(f"[CVE_VERIFY] cve_ids={cve_ids[:5]} instances={len(instance_ids)}")
+        results = [verification.verify(cve, instance_ids) for cve in cve_ids[:10]]
+        for r in results:
+            logger.info(f"[CVE_VERIFY] {r['cve_id']}: {r['counts']}")
+        out = {
+            "cve_status": {r["cve_id"]: {"counts": r["counts"], "instances": r["instances"]} for r in results},
+            "next_action": ("Say per CVE how many instances are fixed. For open findings give the cause: "
+                            "pending_reboot needs a reboot, awaiting_rescan clears when Inspector rescans "
+                            "(check again later), fix_not_installed means it needs patching, "
+                            "no_fix_available means wait for a fix. no_finding is not proof of a fix. "
+                            "terminated instances no longer exist, so leave them out of the fixed count; unlocated "
+                            "ones weren't found where Patchy looked, so say they couldn't be checked, not that they're gone."),
         }
-
-        logger.info(f"[CVE_VERIFY] Results: {summary}")
-
-        # Check if pending reboots explain active CVEs
-        reboot_note = None
-        if summary['still_active'] > 0:
-            try:
-                patch_states = _ssm().describe_instance_patch_states(InstanceIds=instance_ids)
-                pending_reboot = sum(
-                    1 for s in patch_states.get('InstancePatchStates', [])
-                    if s.get('InstalledPendingRebootCount', 0) > 0
-                )
-                if pending_reboot > 0:
-                    reboot_note = (
-                        f"{pending_reboot} instance(s) have patches installed but pending reboot. "
-                        "CVEs may remain ACTIVE in Inspector until instances are rebooted."
-                    )
-            except Exception:
-                pass
-
-        return {
-            'cve_status': cve_status,
-            'summary': summary,
-            'waited_minutes': waited,
-            'reboot_note': reboot_note,
-            'note': (
-                'Inspector re-evaluates findings 5-15 minutes after patching. '
-                'STILL_ACTIVE or NOT_FOUND results may update shortly. '
-                'Check again in a few minutes if CVEs still show as active.'
-            )
-        }
-
+        if len(results) == 1:
+            out["display"] = verification.verification_card(results[0])
+        return out
     except ClientError as e:
         error_info = classify_error(e)
         logger.error(f"[CVE_VERIFY] Error: {error_info}")
@@ -432,6 +316,64 @@ def verify_cve_remediation(
 
 
 @tool
+def forecast_sla_misses(environment: str) -> dict:
+    """Which findings in an environment scheduled patching will fix after their SLA deadline, and why.
+
+    Use for "what will miss its SLA", "are we on track", or deadline risk. Checks each finding's
+    deadline against the next scheduled install and whether the baseline approves the fix.
+
+    Args:
+        environment: dev, staging or prod.
+    """
+    try:
+        env = _normalize_environment(environment)
+        result = forecast.forecast(env)
+        logger.info(f"[FORECAST] {env}: {result['will_miss']} CVE(s) at risk of {len(result['cves'])}")
+        out = {"environment": env, "will_miss": result["will_miss"], "cves_assessed": len(result["cves"]),
+               "cves": result["cves"][:15],
+               "next_action": ("Lead with how many CVEs will miss their SLA (will_miss) out of cves_assessed, and "
+                               "the main reason. Offer to plan a patch for the most urgent one that has "
+                               "fix_available true; a CVE without a fix can't be patched.")}
+        unassessed = sum(g["counts"].get("unknown", 0) for g in result["cves"])
+        if unassessed:
+            out["findings_not_assessed"] = unassessed
+            out["next_action"] += (f" Say that {unassessed} finding(s) couldn't be assessed, so those instances "
+                                   "may also miss; don't say the misses cover every affected instance.")
+        if len(result["cves"]) > 15:
+            out["cves_not_listed"] = len(result["cves"]) - 15  # the card and these counts still cover them
+        if not result.get("complete", True):
+            out["incomplete"] = "Some Regions' findings couldn't be read, so other CVEs may also miss."
+        elif result.get("cut_off"):
+            out["incomplete"] = (f"Only the {result.get('findings_assessed')} most severe findings were assessed, "
+                                 "so less severe CVEs may also miss.")
+        out["display"] = forecast.forecast_card(result)
+        return out
+    except ClientError as e:
+        return classify_error(e)
+    except Exception as e:
+        logger.error(f"[FORECAST] Error: {e}")
+        return classify_error(e)
+
+
+# Reports the model sees; statistics and the card cover the full set.
+MODEL_REPORT_ROWS = 20
+_REPORT_NOISE = ('s3_key',)
+
+
+def _reports_for_model(result: dict) -> dict:
+    """Most recent reports without storage keys or empty attribution fields."""
+    reports = result.get('reports') or []
+    slim = []
+    for r in reports[:MODEL_REPORT_ROWS]:
+        slim.append({k: v for k, v in r.items()
+                     if k not in _REPORT_NOISE and v not in ('unknown', [], None) or k == 'sla_met'})
+    out = {**result, 'reports': slim, 'showing': len(slim)}
+    if len(reports) > len(slim):
+        out['reports_omitted'] = len(reports) - len(slim)
+    return out
+
+
+@tool
 def query_compliance_reports(
     days_back: int = 7,
     severity: Optional[str] = None,
@@ -439,17 +381,17 @@ def query_compliance_reports(
     sla_breaches_only: bool = False,
     limit: int = 50
 ) -> dict:
-    """Query compliance reports from S3 with filtering and statistics.
+    """History of past patch runs and their SLA outcomes, from stored reports.
+
+    Use for past activity, SLA breaches and audit questions. For current state use
+    get_patch_compliance.
 
     Args:
-        days_back: Number of days to look back (default: 7)
-        severity: Filter by severity (CRITICAL, HIGH, MEDIUM, LOW)
-        environment: Filter by environment (dev, staging, prod)
-        sla_breaches_only: Only return SLA breaches (default: False)
-        limit: Maximum number of reports to return (default: 50)
-
-    Returns:
-        dict: {'reports': list, 'statistics': dict, 'total_count': int}
+        days_back: Days to look back (default 7).
+        severity: CRITICAL, HIGH, MEDIUM or LOW.
+        environment: dev, staging or prod.
+        sla_breaches_only: Only runs that missed their SLA.
+        limit: Maximum reports (default 50).
     """
     try:
         logger.info(f"[TOOL:query_compliance_reports] days_back={days_back} severity={severity} env={environment} sla_breaches_only={sla_breaches_only}")
@@ -458,7 +400,10 @@ def query_compliance_reports(
 
         try:
             _s3().head_bucket(Bucket=bucket_name)
-        except Exception:
+        except ClientError as e:
+            # Only a missing bucket means no reports; denied or throttled is an error (2 Nov review, M10).
+            if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket", "NotFound"):
+                raise
             return {
                 "reports": [],
                 "total_count": 0,
@@ -490,9 +435,14 @@ def query_compliance_reports(
         _s_met = stats.get('total_reports', 0) - stats.get('sla_breaches', 0) - stats.get('sla_unknown', 0)
         _s_summary = f"{len(all_reports)} reports in {start_date.date()} to {end_date.date()}. {_s_met} met SLA, {stats.get('sla_breaches', 0)} breached." if all_reports else "No reports found."
 
-        return {
+        truncated = getattr(all_reports, 'truncated', False)
+        if truncated:
+            _s_summary += (f" Only the newest {_REPORT_READ_MAX} reports in the range were read;"
+                           " ask for fewer days for complete figures.")
+        result = {
             'summary': _s_summary,
             'reports': limited_reports,
+            'truncated': truncated,
             'total_count': len(all_reports),
             'filtered_count': len(filtered_reports),
             'showing': len(limited_reports),
@@ -504,8 +454,10 @@ def query_compliance_reports(
                 'sla_breaches_only': sla_breaches_only,
                 'limit': limit
             },
-            'next_action': "Present the compliance overview using the compliance_overview response template.",
+            'next_action': "Summarise the reports: totals, SLA breaches by severity and environment, and two or three actions from the numbers.",
         }
+        result['display'] = compliance_card(result)
+        return _reports_for_model(result)
 
     except ClientError as e:
         error_info = classify_error(e)

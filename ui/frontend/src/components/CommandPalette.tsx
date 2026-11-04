@@ -12,11 +12,11 @@ const ACTIONS = [
   { id: "patch-cve", label: "Patch CVE-2026-XXXXX in dev", group: "Patch" },
   { id: "patch-env", label: "Patch all prod", group: "Patch" },
   { id: "patch-severity", label: "Patch HIGH severity in staging", group: "Patch" },
-  { id: "patch-account", label: "Patch dev in account 123412341234", group: "Patch" },
+  { id: "patch-account", label: "Patch dev in account 111111111111", group: "Patch" },
   { id: "patch-instance", label: "Patch i-0123456789abcdef0 in dev", group: "Patch" },
   // Preview
   { id: "preview-env", label: "Preview patches in prod", group: "Preview" },
-  { id: "dry-run-dev", label: "Dry-run scan on dev for account 1231231231", group: "Preview" },
+  { id: "dry-run-dev", label: "Dry-run scan on dev for account 111111111111", group: "Preview" },
   // Compliance
   { id: "compliance-reports", label: "Show compliance reports", group: "Compliance" },
   { id: "sla-breaches", label: "Show SLA breaches this week", group: "Compliance" },
@@ -38,11 +38,12 @@ export function CommandPalette({ open, onClose, onSend }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (open) {
-      setQuery("");
-      setSelectedIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
+    if (!open) return;
+    const opener = document.activeElement as HTMLElement | null;
+    setQuery("");
+    setSelectedIndex(0);
+    setTimeout(() => inputRef.current?.focus(), 50);
+    return () => { if (opener?.isConnected) opener.focus(); };
   }, [open]);
 
   const filtered = useMemo(() => {
@@ -85,10 +86,11 @@ export function CommandPalette({ open, onClose, onSend }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[18vh]" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="absolute inset-0" style={{ background: "var(--overlay)" }} />
       <div
-        className="relative bg-surface-card border border-edge-strong rounded-2xl w-full max-w-lg mx-4 shadow-2xl animate-fade-in overflow-hidden"
+        className="relative bg-surface-card border border-edge-strong rounded-lg w-full max-w-lg mx-4 shadow-2xl animate-fade-in overflow-hidden"
         onClick={(e) => e.stopPropagation()}
+        role="dialog" aria-modal="true" aria-label="Things to ask"
       >
         {/* Search */}
         <div className="flex items-center gap-3 px-4 py-3.5 border-b border-edge">
@@ -100,23 +102,27 @@ export function CommandPalette({ open, onClose, onSend }: Props) {
             value={query}
             onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
             onKeyDown={handleKeyDown}
-            placeholder="Search actions or type a question..."
+            placeholder="Search, or type a question"
+            aria-label="Search things to ask, or type a question"
+            role="combobox" aria-expanded="true" aria-controls="palette-list"
+            aria-activedescendant={filtered[selectedIndex] ? `palette-${filtered[selectedIndex].id}` : undefined}
             className="flex-1 bg-transparent text-sm text-fg placeholder:text-fg-faint outline-none"
           />
           <kbd className="text-[10px] text-fg-faint bg-hover px-1.5 py-0.5 rounded border border-edge font-mono">ESC</kbd>
         </div>
 
         {/* Results */}
-        <div className="max-h-80 overflow-y-auto py-1.5 custom-scrollbar" role="listbox" aria-label="Available actions">
+        <div className="max-h-80 overflow-y-auto py-1.5 custom-scrollbar" role="listbox" id="palette-list" aria-label="Things to ask">
           {Object.entries(grouped).map(([group, items]) => (
             <div key={group}>
-              <div className="px-4 py-1.5 text-[10px] font-semibold text-fg-faint uppercase tracking-wider">{group}</div>
+              <div className="px-4 py-1.5 text-[12px] font-medium text-fg-muted">{group}</div>
               {items.map((item) => {
                 const idx = flatIndex++;
                 const isSelected = idx === selectedIndex;
                 return (
                   <button
                     key={item.id}
+                    id={`palette-${item.id}`}
                     role="option"
                     aria-selected={isSelected}
                     onClick={() => handleSelect(item.label)}

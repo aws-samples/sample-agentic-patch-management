@@ -32,10 +32,16 @@ NC='\033[0m'
 _saved_profile="${AWS_PROFILE:-}"
 _saved_region="${AWS_REGION:-}"
 
+_env_file_profile=""
+_env_file_region=""
 if [ -f ".env" ]; then
+    # Unset first, so these record only what .env itself sets.
+    unset AWS_PROFILE AWS_REGION
     set -a
     source .env
     set +a
+    _env_file_profile="${AWS_PROFILE:-}"
+    _env_file_region="${AWS_REGION:-}"
 fi
 
 AWS_PROFILE="${_saved_profile:-${AWS_PROFILE:-default}}"
@@ -44,7 +50,9 @@ AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-}"
 export AWS_PROFILE AWS_REGION AGENTCORE_ROLE_ARN
 export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --profile "$AWS_PROFILE" --query Account --output text 2>/dev/null)
 export CDK_DEFAULT_REGION=$AWS_REGION
-unset _saved_profile _saved_region
+source "$(dirname "${BASH_SOURCE[0]}")/scripts/confirm_target.sh"
+confirm_target "${1:-deploy}" "$_env_file_profile" "$_saved_profile" "$_env_file_region" "$_saved_region"
+unset _saved_profile _saved_region _env_file_profile _env_file_region
 
 print_status()  { echo -e "${GREEN}✅ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
@@ -147,6 +155,37 @@ deploy_hub_stack() {
     cd ..
 }
 
+# Waits for one StackSet operation and fails unless it succeeded.
+_wait_sample_op() {
+    local op_id="$1" label="$2" waited=0 status
+    local limit="${SAMPLE_STACKSET_TIMEOUT:-1800}" step="${STACKSET_POLL_SECONDS:-15}"
+    if [ -z "$op_id" ] || [ "$op_id" = "None" ]; then
+        print_error "$STACK_NAME: $label did not start (see the aws error above)"
+        return 1
+    fi
+    echo "  Waiting for $label (op $op_id)..."
+    while [ "$waited" -lt "$limit" ]; do
+        status=$(aws cloudformation describe-stack-set-operation --stack-set-name "$STACK_NAME" \
+            --operation-id "$op_id" --call-as DELEGATED_ADMIN \
+            --query 'StackSetOperation.Status' --output text \
+            --profile "$AWS_PROFILE" --region "$AWS_REGION") || status="UNKNOWN"
+        case "$status" in
+            SUCCEEDED) print_status "$STACK_NAME $label succeeded"; return 0 ;;
+            FAILED|STOPPED)
+                print_error "$STACK_NAME $label $status (op $op_id)"
+                aws cloudformation list-stack-set-operation-results --stack-set-name "$STACK_NAME" \
+                    --operation-id "$op_id" --call-as DELEGATED_ADMIN \
+                    --query 'Summaries[?Status!=`SUCCEEDED`].[Account,Region,Status,StatusReason]' --output table \
+                    --profile "$AWS_PROFILE" --region "$AWS_REGION" || true
+                return 1 ;;
+        esac
+        sleep "$step"
+        waited=$((waited + (step > 0 ? step : 1)))
+    done
+    print_error "$STACK_NAME $label still running after ${limit}s (op $op_id). Check the StackSet in the CloudFormation console."
+    return 1
+}
+
 deploy_spoke_stackset() {
     if [ "${MULTI_ACCOUNT_ENABLED:-false}" != "true" ]; then
         print_status "Single-account mode — spoke StackSet skipped"
@@ -179,15 +218,22 @@ deploy_spoke_stackset() {
     fi
 
     echo "Synthesizing $STACK_NAME template (self-contained, no VPC dependency)..."
-    npx cdk synth "$STACK_NAME" --exclusively \
-        -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}" \
-        -c hubAccountId="${hub_account_id}" \
-        -c synthForStackSet=true \
-        --quiet > /dev/null 2>&1
+    # A fresh output directory, so a stale template can't stand in for a failed synth.
+    local synth_dir
+    synth_dir=$(mktemp -d)
+    if ! npx cdk synth "$STACK_NAME" --exclusively \
+            -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}" \
+            -c hubAccountId="${hub_account_id}" \
+            -c synthForStackSet=true \
+            --quiet -o "$synth_dir" > /dev/null; then
+        print_error "Failed to synthesize $STACK_NAME template (see the error above)"
+        cd ..
+        return 1
+    fi
 
-    local template_path="cdk.out/${STACK_NAME}.template.json"
-    if [ ! -f "$template_path" ]; then
-        print_error "Failed to synthesize $STACK_NAME template"
+    local template_path="${synth_dir}/${STACK_NAME}.template.json"
+    if [ ! -s "$template_path" ]; then
+        print_error "Failed to synthesize $STACK_NAME template: $template_path is missing"
         cd ..
         return 1
     fi
@@ -197,24 +243,33 @@ deploy_spoke_stackset() {
             --call-as DELEGATED_ADMIN \
             --profile "$AWS_PROFILE" --region "$AWS_REGION" &>/dev/null; then
         echo "Updating existing StackSet: $STACK_NAME"
-        aws cloudformation update-stack-set \
+        local update_op
+        update_op=$(aws cloudformation update-stack-set \
             --stack-set-name "$STACK_NAME" \
             --template-body "file://${template_path}" \
             --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --permission-model SERVICE_MANAGED \
             --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
             --call-as DELEGATED_ADMIN \
-            --profile "$AWS_PROFILE" --region "$AWS_REGION" 2>/dev/null || true
+            --query 'OperationId' --output text \
+            --profile "$AWS_PROFILE" --region "$AWS_REGION") || update_op=""
+        # The update must finish before new instances are created: a StackSet
+        # runs one operation at a time.
+        _wait_sample_op "$update_op" "template update" || { cd ..; return 1; }
     else
         echo "Creating StackSet: $STACK_NAME"
-        aws cloudformation create-stack-set \
-            --stack-set-name "$STACK_NAME" \
-            --template-body "file://${template_path}" \
-            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
-            --permission-model SERVICE_MANAGED \
-            --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
-            --call-as DELEGATED_ADMIN \
-            --profile "$AWS_PROFILE" --region "$AWS_REGION"
+        if ! aws cloudformation create-stack-set \
+                --stack-set-name "$STACK_NAME" \
+                --template-body "file://${template_path}" \
+                --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+                --permission-model SERVICE_MANAGED \
+                --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \
+                --call-as DELEGATED_ADMIN \
+                --profile "$AWS_PROFILE" --region "$AWS_REGION"; then
+            print_error "Could not create StackSet $STACK_NAME (see the aws error above)"
+            cd ..
+            return 1
+        fi
     fi
 
     # Deploy stack instances per target account using INTERSECTION targeting.
@@ -240,27 +295,32 @@ deploy_spoke_stackset() {
         fi
 
         echo "Creating stack instance in $acct/$region (OU: $acct_ou)..."
-        aws cloudformation create-stack-instances \
+        local create_op
+        create_op=$(aws cloudformation create-stack-instances \
             --stack-set-name "$STACK_NAME" \
             --deployment-targets "OrganizationalUnitIds=[\"${acct_ou}\"],Accounts=[\"${acct}\"],AccountFilterType=INTERSECTION" \
             --regions "$region" \
             --operation-preferences MaxConcurrentCount=1,FailureToleranceCount=0 \
             --call-as DELEGATED_ADMIN \
-            --profile "$AWS_PROFILE" --region "$AWS_REGION"
+            --query 'OperationId' --output text \
+            --profile "$AWS_PROFILE" --region "$AWS_REGION") || create_op=""
+        _wait_sample_op "$create_op" "stack instance in $acct/$region" || { cd ..; return 1; }
     done
 
     # Wait for instances to settle (10 min timeout).
     echo "Waiting for stack instance deployments (this may take a few minutes)..."
-    local waited=0
-    while [ $waited -lt 600 ]; do
-        local pending
+    local waited=0 settled=false pending="" limit="${SAMPLE_INSTANCE_TIMEOUT:-600}"
+    while [ $waited -lt "$limit" ]; do
         pending=$(aws cloudformation list-stack-instances \
             --stack-set-name "$STACK_NAME" \
             --call-as DELEGATED_ADMIN \
             --query "Summaries[?StackInstanceStatus.DetailedStatus!='SUCCEEDED' && StackInstanceStatus.DetailedStatus!='CURRENT' && Status!='CURRENT'].Account" \
             --output text \
             --profile "$AWS_PROFILE" --region "$AWS_REGION" 2>/dev/null || true)
-        [ -z "$pending" ] || [ "$pending" = "None" ] && break
+        if [ -z "$pending" ] || [ "$pending" = "None" ]; then
+            settled=true
+            break
+        fi
 
         local failed
         failed=$(aws cloudformation list-stack-instances \
@@ -275,10 +335,16 @@ deploy_spoke_stackset() {
             cd ..
             return 1
         fi
-        sleep 15
-        waited=$((waited + 15))
+        sleep "${STACKSET_POLL_SECONDS:-15}"
+        waited=$((waited + (${STACKSET_POLL_SECONDS:-15} > 0 ? ${STACKSET_POLL_SECONDS:-15} : 1)))
         echo "  Waiting... (${waited}s elapsed)"
     done
+    if [ "$settled" != "true" ]; then
+        print_error "Stack instances in $STACK_NAME were still not current after ${limit}s: $pending"
+        print_warning "Check CloudFormation StackSet operations in the console"
+        cd ..
+        return 1
+    fi
 
     print_status "Sample environment deployed to: $target_accounts"
     cd ..

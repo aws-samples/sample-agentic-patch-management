@@ -10,15 +10,22 @@ Import all tools:
 
 from .vulnerability_tools import get_vulnerability_findings, assess_fleet_impact
 from .patch_tools import (
-    get_patch_compliance, patch_dry_run, execute_patch_operation,
-    get_command_status, rollback_patches, verify_rollback,
-    multi_account_dry_run, multi_account_execute, multi_account_rollback,
-    emergency_stop, get_automation_status,
+    get_patch_compliance, patch_dry_run,
+    get_command_status, verify_rollback,
+    multi_account_dry_run,
+    get_automation_status,
 )
-from .compliance_tools import capture_patch_state, verify_cve_remediation, query_compliance_reports
+from .plan_tools import (
+    execute_patch_operation, rollback_patches,
+    multi_account_execute, multi_account_rollback,
+    create_maintenance_window,
+)
+from .compliance_tools import (
+    capture_patch_state, verify_cve_remediation, query_compliance_reports, forecast_sla_misses,
+)
 from .fleet_tools import get_fleet_overview, resolve_execution_scope
 from .maintenance_tools import (
-    get_maintenance_windows, create_maintenance_window, get_patch_policy,
+    get_maintenance_windows, get_patch_policy,
     check_instance_health, check_cloudwatch_alarms, verify_and_proceed,
 )
 from ._shared import (
@@ -33,9 +40,9 @@ __all__ = [
     'get_patch_compliance', 'patch_dry_run', 'execute_patch_operation',
     'get_command_status', 'rollback_patches', 'verify_rollback',
     'multi_account_dry_run', 'multi_account_execute', 'multi_account_rollback',
-    'emergency_stop', 'get_automation_status',
+    'get_automation_status',
     # Compliance
-    'capture_patch_state', 'verify_cve_remediation', 'query_compliance_reports',
+    'capture_patch_state', 'verify_cve_remediation', 'query_compliance_reports', 'forecast_sla_misses',
     # Fleet
     'get_fleet_overview', 'resolve_execution_scope',
     # Maintenance

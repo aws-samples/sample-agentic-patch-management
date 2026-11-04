@@ -1,5 +1,5 @@
 /** Typed API client for the single /api/dashboard endpoint. */
-// Build: 2026-03-06
+import { apiFetch } from "./http";
 
 export interface PerAccountEnv {
   total: number;
@@ -54,49 +54,53 @@ export interface VulnerabilityFinding {
   instance_count: number;
 }
 
-export interface ActivityItem {
-  report_key: string;
-  timestamp: string;
-  operation_type: "patch" | "rollback";
-  cve_id: string | null;
-  environment: string;
-  severity: string | null;
-  decision: string | null;
-  sla_met: string | null;
-  instance_count?: number;
-  status?: string;
-}
-
 export interface ComplianceSummary {
   total_reports: number;
   sla_met: number;
   sla_breached: number;
-  sla_rate_percent: number;
+  sla_unknown?: number;
+  /** met / (met + breached); null when no run has a known SLA result. */
+  sla_rate_percent: number | null;
   period_days: number;
   by_severity: Record<string, { total: number; met: number; breached: number }>;
   by_environment: Record<string, { total: number; met: number; breached: number }>;
-  by_team: Record<string, { total: number; met: number; breached: number }>;
+  /** SLA results grouped by the first REPORT_TAGS tag. */
+  by_tag?: { key: string | null; groups: Record<string, { total: number; met: number; breached: number }> };
 }
 
-export interface ReportDetail {
+/** One patch or rollback run from the compliance reports (last 30 days). */
+export interface RunRow {
   report_id: string;
   timestamp: string;
+  operation_type: "patch" | "rollback";
+  execution_id: string | null;
+  plan_id: string | null;
   operator: string;
-  cve_id: string;
-  severity: string;
-  cvss_score: number | null;
   environment: string;
-  team: string;
-  product: string;
+  /** REPORT_TAGS values recorded when the run started ("mixed" when the instances differ). */
+  tags: Record<string, string>;
+  tag_values?: Record<string, string[]>;
   instance_count: number;
-  decision: string;
-  sla_hours: number | null;
-  sla_source: string;
-  frameworks: string[];
-  sla_met: boolean | null;
+  cve_id: string | null;
+  severity: string | null;
+  decision: string | null;
+  /** Why a run went ahead now (agent RUN_NOW_REASONS); absent on reports from before it was recorded. */
+  decision_reason?: string | null;
   status: string;
   success_count: number;
   failure_count: number;
+  failure_message: string;
+  duration_seconds: number | null;
+  sla_met: boolean | null;
+  sla_hours: number | null;
+  sla_source: string | null;
+  sla_reason: string | null;
+  /** When the finding was first seen; the SLA deadline is this plus sla_hours. Missing on older servers. */
+  first_observed_at?: string | null;
+  /** The severity a severity run patched (many findings, no single discovery time). */
+  severity_filter?: string | null;
+  frameworks: string[];
+  install_packages: string[];
 }
 
 export interface RunningOperation {
@@ -119,12 +123,16 @@ export interface DashboardData {
   environments: EnvironmentStatus[];
   findings: VulnerabilityFinding[];
   severityCounts: Record<string, number>;
-  activities: ActivityItem[];
+  /** Per severity: distinct finding IDs, affected instances, IDs with a fix. */
+  findingsSummary: Record<string, { ids: number; instances: number; fixable_ids: number }>;
+  /** Accounts and Regions whose instances couldn't be read, so aren't counted. */
+  unreadableLocations: Array<{ account_id: string; region: string; instances: number; error: string }>;
   compliance: ComplianceSummary | null;
-  reportDetails: ReportDetail[];
+  runs: RunRow[];
   runningOperations: RunningOperation[];
   errors: string[];
-  warnings: Array<{ type: string; title: string; message: string }>;
+  /** A read that failed has a `*_unreadable` type and tone "risk"; Explorer errors carry the error code. */
+  warnings: Array<{ type: string; title: string; message: string; tone?: "risk"; code?: string }>;
 }
 
 /** Compute per-environment vuln counts from findings (avoids extra API calls).
@@ -161,7 +169,7 @@ function enrichEnvironments(
  */
 export async function fetchDashboard(force = false): Promise<DashboardData> {
   const url = force ? "/api/dashboard?force=true" : "/api/dashboard";
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) throw new Error(`Dashboard API: ${res.status}`);
 
   const raw = await res.json();
@@ -174,12 +182,12 @@ export async function fetchDashboard(force = false): Promise<DashboardData> {
     environments: enrichEnvironments(raw.environments ?? [], raw.findings ?? []),
     findings: raw.findings ?? [],
     severityCounts: raw.severity_counts ?? {},
-    activities: raw.activities ?? [],
+    findingsSummary: raw.findings_summary ?? {},
+    unreadableLocations: raw.unreadable_locations ?? [],
     compliance: raw.compliance ?? null,
-    reportDetails: raw.report_details ?? [],
+    runs: raw.runs ?? [],
     runningOperations: raw.running_operations ?? [],
     errors: raw.errors ?? [],
     warnings: raw.warnings ?? [],
   };
 }
-// build 1772754702

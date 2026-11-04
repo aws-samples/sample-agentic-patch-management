@@ -1,11 +1,12 @@
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Highlight, themes } from "prism-react-renderer";
-import { useState, useEffect, type ReactNode } from "react";
-import { ExclamationTriangleIcon } from "@heroicons/react/24/solid";
-import { Tooltip } from "./ui/Tooltip";
+import { memo, useMemo, useState, useEffect, type ReactNode } from "react";
 import { CopyButton } from "./ui/CopyButton";
 import type { ChatMessage } from "../hooks/useAgentStream";
+import { toolLabel } from "../lib/toolLabels";
+import { clock, noEmDash, scanFollowUp, shortId } from "../lib/view";
+import ResultCards from "./cards/ResultCards";
+import type { Pane } from "../views/pane";
 
 function extractText(node: ReactNode): string {
   if (typeof node === "string") return node;
@@ -18,27 +19,10 @@ function extractText(node: ReactNode): string {
 
 function CodeBlock(props: React.HTMLAttributes<HTMLPreElement> & { children?: ReactNode }) {
   const text = extractText(props.children).replace(/\n$/, "");
-  // Extract language from className (react-markdown sets "language-xxx")
-  const childProps = (props.children as React.ReactElement)?.props;
-  const langMatch = childProps?.className?.match(/language-(\w+)/);
-  const language = langMatch?.[1] ?? "bash";
-
   return (
     <div className="relative group">
-      <Highlight theme={themes.nightOwl} code={text} language={language}>
-        {({ style, tokens, getLineProps, getTokenProps }) => (
-          <pre style={{ ...style, background: "var(--color-surface-panel)", padding: "0.75rem", borderRadius: "0.5rem", fontSize: "0.85em", margin: "0.5rem 0", border: "1px solid rgba(148,163,184,0.06)", overflowX: "auto" }}>
-            {tokens.map((line, i) => (
-              <div key={i} {...getLineProps({ line })}>
-                {line.map((token, key) => (
-                  <span key={key} {...getTokenProps({ token })} />
-                ))}
-              </div>
-            ))}
-          </pre>
-        )}
-      </Highlight>
-      <CopyButton text={text} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100" label="Copy" />
+      <pre><code>{text}</code></pre>
+      <CopyButton text={text} className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 focus:opacity-100" label="Copy" />
     </div>
   );
 }
@@ -47,130 +31,84 @@ interface Props {
   message: ChatMessage;
   isStreaming: boolean;
   onAction?: (text: string) => void;
+  onOpen: (pane: Pane) => void;
+  current?: Pane;
 }
 
-export default function MessageBubble({ message, isStreaming, onAction }: Props) {
-  const isUser = message.role === "user";
-  const cleaned = !isUser ? cleanAgentText(message.content) : "";
-  const { body, actions } = !isUser && cleaned ? extractActions(cleaned) : { body: cleaned, actions: [] };
-  const showActions = !isStreaming && actions.length > 0;
+// Markdown plugins and renderers, made once so a re-render doesn't rebuild them.
+const PLUGINS = [remarkGfm];
+const RENDERERS = { table: CollapsibleTable, pre: CodeBlock, img: () => null };
 
+/**
+ * One chat message. Memoised: while a reply streams only its own bubble changes,
+ * so earlier messages aren't re-rendered or their markdown parsed again.
+ */
+export default memo(function MessageBubble({ message, isStreaming, onAction, onOpen, current }: Props) {
+  const isUser = message.role === "user";
+  const { body, actions } = useMemo(() => {
+    const cleaned = !isUser ? cleanAgentText(message.content) : "";
+    return !isUser && cleaned ? extractActions(cleaned) : { body: cleaned, actions: [] as string[] };
+  }, [isUser, message.content]);
+  const showActions = !isStreaming && actions.length > 0 && !!onAction;
+  const scan = useMemo(() => (isStreaming ? null : scanFollowUp(message)), [isStreaming, message]);
+  const time = clock(message.timestamp);
+
+  if (isUser) {
+    return (
+      <>
+        <div className="msg me">{message.content}</div>
+      </>
+    );
+  }
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4 animate-fade-in`}>
-      {/* Agent avatar */}
-      {!isUser && (
-        <div className="w-7 h-7 rounded-lg bg-accent-muted border border-accent-border flex items-center justify-center shrink-0 mr-2.5 mt-0.5">
-          <svg className="w-3.5 h-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" />
-            <path d="M9 12l2 2 4-4" />
-          </svg>
+    <div className="msg bot animate-fade-in">
+      {message.tools.length > 0 && (
+        <ul className="steps" aria-label="What Patchy did">
+          {message.tools.map((tool, i) => {
+            const now = isStreaming && i === message.tools.length - 1 && !message.content;
+            return <li key={i} className={now ? "now" : ""} title={tool}>{toolLabel(tool)}</li>;
+          })}
+        </ul>
+      )}
+
+      {message.cards && message.cards.length > 0 && (
+        <div className="mb-2">
+          <ResultCards cards={message.cards} onAction={!isStreaming ? onAction : undefined} onOpen={onOpen} current={current} />
         </div>
       )}
 
-      <div className={`${isUser ? "max-w-[80%]" : "max-w-[calc(100%-40px)]"}`}>
-        {isUser ? (
-          <div className="px-4 py-2.5 rounded-2xl rounded-br-sm bg-teal-600 text-white text-sm leading-relaxed">
-            {message.content}
-          </div>
-        ) : (
-          <>
-            {/* Workflow stepper */}
-            {message.tools.length > 0 && (
-              <div className="mb-2.5 p-3 bg-surface-card rounded-xl border border-edge">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-muted mb-1.5 flex items-center gap-1.5">
-                  <span className="w-1 h-3.5 rounded-full bg-teal-400" />
-                  Workflow
-                </div>
-                {message.tools.map((tool, i) => {
-                  const isLast = i === message.tools.length - 1;
-                  const isDone = !isLast || (isLast && message.content.length > 0);
-                  return (
-                    <div key={i} className="flex gap-2 relative">
-                      {i < message.tools.length - 1 && (
-                        <div className={`absolute left-[7px] top-[18px] bottom-[-2px] w-0.5 ${isDone ? "bg-emerald-500/50" : "bg-slate-700"}`} />
-                      )}
-                      <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 mt-0.5 text-[9px] font-bold ${isDone ? "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/30" : "bg-teal-400/20 text-accent ring-1 ring-accent-border animate-pulse"}`}>
-                        {isDone ? "\u2713" : i + 1}
-                      </div>
-                      <div className={`text-xs py-0.5 pb-2 ${isDone ? "text-fg-muted" : "text-accent font-medium"}`}>
-                        {tool}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Message content */}
-            {body ? (
-              <>
-                <div className="agent-markdown">
-                  <Markdown remarkPlugins={[remarkGfm]} components={{ table: CollapsibleTable, pre: CodeBlock }}>
-                    {body}
-                  </Markdown>
-                </div>
-                {isStreaming && <Spinner activeTool={message.tools[message.tools.length - 1]} />}
-              </>
-            ) : isStreaming ? (
-              <div className="flex items-center gap-2.5 py-2">
-                <Spinner startTime={message.timestamp} activeTool={message.tools[message.tools.length - 1]} />
-              </div>
-            ) : null}
-
-            {/* Action buttons */}
-            {showActions && onAction && (
-              <div className="mt-3 p-3 bg-surface-card rounded-xl border border-edge">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-muted mb-2">
-                  Suggested Actions
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {actions.map((action, i) => {
-                    const short = shortenAction(action);
-                    const needsTooltip = short !== action;
-                    const btn = (
-                      <button
-                        key={i}
-                        onClick={() => onAction(action)}
-                        className="px-3 py-1.5 text-xs font-medium text-fg-secondary bg-input border border-edge rounded-lg hover:border-accent-border hover:text-accent hover:bg-accent-muted transition-all group"
-                      >
-                        <span className="group-hover:translate-x-0.5 inline-block transition-transform">
-                          {short}
-                        </span>
-                      </button>
-                    );
-                    return needsTooltip ? <Tooltip key={i} content={action} side="bottom">{btn}</Tooltip> : btn;
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Error */}
-            {message.error && (
-              <div className="mt-2 flex items-center gap-1.5 text-red-400 text-sm">
-                <ExclamationTriangleIcon className="w-4 h-4" />
-                {message.error}
-              </div>
-            )}
-
-            {/* Duration */}
-            {message.durationMs != null && (
-              <div className="text-[11px] text-fg-faint mt-2 font-mono">
-                {(message.durationMs / 1000).toFixed(1)}s
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Timestamp */}
-      {!isStreaming && (
-        <div className={`text-[10px] text-fg-faint self-end shrink-0 whitespace-nowrap font-mono ${isUser ? "mr-1" : "ml-1"}`}>
-          {new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+      {body ? (
+        <div className="agent-markdown">
+          <Markdown remarkPlugins={PLUGINS} components={RENDERERS}>
+            {body}
+          </Markdown>
         </div>
+      ) : null}
+      {isStreaming && <Spinner startTime={message.timestamp} activeTool={message.tools[message.tools.length - 1]} />}
+
+      {showActions && (
+        <div className="suggest" aria-label="Suggested next steps">
+          {actions.map((action, i) => (
+            <button key={i} type="button" className="btn small" onClick={() => onAction!(action)} title={action}>{shortenAction(action)}</button>
+          ))}
+        </div>
+      )}
+
+      {scan && (
+        <div className="suggest" aria-label="Dry-run scan">
+          <span className="d">Dry-run scan {scan.ids.map((id) => shortId(id, "run")).join(", ")} started. Scans take 2 to 3 minutes and install nothing.</span>
+          {onAction && <button type="button" className="btn small" onClick={() => onAction(scan.prompt)} title={scan.prompt}>Show scan results</button>}
+        </div>
+      )}
+
+      {message.error && <div className="risktxt mt-1" role="alert">{message.error}</div>}
+
+      {!isStreaming && (
+        <div className="stamp">{time}{message.durationMs != null ? `, ${(message.durationMs / 1000).toFixed(1)} s` : ""}</div>
       )}
     </div>
   );
-}
+});
 
 function shortenAction(text: string): string {
   let s = text;
@@ -181,7 +119,7 @@ function shortenAction(text: string): string {
   return s.trim();
 }
 
-function Spinner({ startTime }: { startTime?: number; activeTool?: string }) {
+function Spinner({ startTime, activeTool }: { startTime?: number; activeTool?: string }) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -190,19 +128,11 @@ function Spinner({ startTime }: { startTime?: number; activeTool?: string }) {
     return () => clearInterval(timer);
   }, [startTime]);
 
-  const time = elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : elapsed >= 5 ? `${elapsed}s` : "";
-  const label = elapsed < 1 ? "Thinking..." : time ? `Working... ${time}` : "Working...";
+  const time = elapsed >= 60 ? `${Math.floor(elapsed / 60)} min ${elapsed % 60} s` : elapsed >= 5 ? `${elapsed} s` : "";
+  const step = activeTool ? toolLabel(activeTool) : "";
+  const label = step ? `${step}${time ? `, ${time}` : ""}` : time ? `Working, ${time}` : "Thinking";
 
-  return (
-    <div className="flex items-center gap-2 py-1">
-      <div className="flex gap-1">
-        <div className="w-1.5 h-1.5 bg-accent rounded-full animate-bounce [animation-delay:0ms]" />
-        <div className="w-1.5 h-1.5 bg-accent rounded-full animate-bounce [animation-delay:150ms]" />
-        <div className="w-1.5 h-1.5 bg-accent rounded-full animate-bounce [animation-delay:300ms]" />
-      </div>
-      <span className="text-[12px] text-fg-faint font-mono">{label}</span>
-    </div>
-  );
+  return <div className="working" role="status">{label}</div>;
 }
 
 const VISIBLE_ROWS = 10;
@@ -219,7 +149,7 @@ function CollapsibleTable({ children }: { children?: ReactNode }) {
       </table>
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="text-xs font-semibold text-accent hover:text-accent-hover py-1.5 bg-transparent border-0 cursor-pointer"
+        className="link text-[13px] py-1"
       >
         {expanded ? "Show less" : `Show all ${totalRows} rows`}
       </button>
@@ -259,7 +189,7 @@ function cleanAgentText(raw: string): string {
   for (const tag of ["<answer>", "</answer>", "<thinking>", "</thinking>"]) {
     text = text.replaceAll(tag, "");
   }
-  return text.trim();
+  return noEmDash(text.trim());
 }
 
 function extractActions(text: string): { body: string; actions: string[] } {

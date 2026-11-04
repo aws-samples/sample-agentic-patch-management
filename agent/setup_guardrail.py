@@ -19,8 +19,6 @@ Outputs the guardrail ID and version to add to config.
 """
 
 import os
-import sys
-import json
 import logging
 import boto3
 
@@ -150,13 +148,13 @@ def main():
     version = ver_response['version']
 
     logger.info(f"Created version: {version}")
-    logger.info(f"")
-    logger.info(f"Add these environment variables to enable the guardrail:")
+    logger.info("")
+    logger.info("Add these environment variables to enable the guardrail:")
     logger.info(f"  GUARDRAIL_ID={guardrail_id}")
     logger.info(f"  GUARDRAIL_VERSION={version}")
-    logger.info(f"")
-    logger.info(f"Or set in agentcore/agentcore.json under the agent config.")
-    logger.info(f"The agent will automatically pick these up on next deployment.")
+    logger.info("")
+    logger.info("Or set in agentcore/agentcore.json under the agent config.")
+    logger.info("The agent will automatically pick these up on next deployment.")
 
     return guardrail_id, version
 

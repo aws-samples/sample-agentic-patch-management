@@ -55,29 +55,15 @@ def _last_tool_call(steering_context, tool_name: str) -> dict | None:
 
 _CVE_RE = re.compile(r'CVE-\d{4}-\d{4,7}', re.IGNORECASE)
 _INSTANCE_ID_RE = re.compile(r'\bi-[0-9a-f]{8,17}\b', re.IGNORECASE)
-
-# Words that count as the operator approving an in-flight confirmation prompt.
-# Matched at the start of the message so a long message that happens to contain
-# "yes" elsewhere doesn't accidentally trigger.
-_AFFIRMATIVE_RE = re.compile(
-    r'^\s*(yes|y|yeah|yep|yup|sure|ok|okay|proceed|confirm|confirmed|do it|go ahead|approve|approved|continue)\b',
-    re.IGNORECASE,
-)
-
-
-def _is_affirmative_user_text(text: str) -> bool:
-    """Heuristic: did the operator just say 'yes' (or close enough)?
-
-    Used to detect when the model should be retrying a previously-blocked
-    confirm_execute call rather than asking the operator again.
-    """
-    if not text:
-        return False
-    return bool(_AFFIRMATIVE_RE.search(text.strip()))
-
+# A request that only reads, even when it mentions patching: "Verify health of patch run ... on i-...".
+_READ_REQUEST_RE = re.compile(r'(verify|check|show|list|status|did|has|have|is|are|what|which|how|who|when|get)\b',
+                              re.IGNORECASE)
+# Patching named as a thing, not asked for: a patch run, its state, compliance, plan or report.
+_PATCH_NOUN_RE = re.compile(r'\bpatch(?:es|ing)?\s+(?:run|state|status|compliance|level|plan|report|window|policy)s?\b',
+                            re.IGNORECASE)
 
 def _last_user_text(agent) -> str:
-    """Extract the text of the most recent operator (user) message, or ''."""
+    """Text of the operator's most recent message, skipping tool-result messages."""
     try:
         messages = getattr(agent, "messages", None) or []
     except Exception:
@@ -86,12 +72,61 @@ def _last_user_text(agent) -> str:
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
         content = msg.get("content") or []
-        for block in (content if isinstance(content, list) else [content]):
+        blocks = content if isinstance(content, list) else [content]
+        if blocks and all(isinstance(b, dict) and "toolResult" in b for b in blocks):
+            continue
+        for block in blocks:
             text = block.get("text") if isinstance(block, dict) else str(block)
             if text:
                 return text
         return ""
     return ""
+
+
+def _operator_turn(agent) -> int:
+    """Position of the operator's latest message (tool-result messages skipped): one value per turn."""
+    messages = getattr(agent, "messages", None) or []
+    for n in range(len(messages) - 1, -1, -1):
+        msg = messages[n]
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content") or []
+        blocks = content if isinstance(content, list) else [content]
+        if blocks and all(isinstance(b, dict) and "toolResult" in b for b in blocks):
+            continue
+        return n
+    return -1
+
+
+# After-model Guides make Strands retry the model with no limit of its own, so each
+# handler gets at most this many per operator message; then the answer goes through.
+_GUIDES_PER_TURN = 2
+
+
+class _GuideBudget:
+    def __init__(self):
+        self._turn, self._used = None, 0
+
+    def spend(self, agent) -> bool:
+        turn = _operator_turn(agent)
+        if turn != self._turn:
+            self._turn, self._used = turn, 0
+        if self._used >= _GUIDES_PER_TURN:
+            return False
+        self._used += 1
+        return True
+
+
+# A question about an instance ("why did the patch on i-... fail?") isn't a request to patch it,
+# but "can you patch i-... in dev?" is.
+_INTERROGATIVE_RE = re.compile(r"^\s*(why|what|how|did|does|do|is|was|were|when|which|who|whose|has|have)\b", re.IGNORECASE)
+_POLITE_REQUEST_RE = re.compile(r"^\s*(please\b|(can|could|would|will) you\b)", re.IGNORECASE)
+
+
+def _is_question(text: str) -> bool:
+    if _POLITE_REQUEST_RE.search(text):
+        return False
+    return bool(_INTERROGATIVE_RE.search(text)) or text.rstrip().endswith("?")
 
 
 # Tool family sets keep the gate logic readable and DRY.
@@ -101,12 +136,9 @@ _PATH_B_TOOLS = {"multi_account_dry_run", "multi_account_execute", "multi_accoun
 # forwarding, severity_filter consistency, cross-env progression block).
 _INSTALL_ONLY_TOOLS = {"execute_patch_operation", "multi_account_execute"}
 # Rollback tools — destructive but with their own semantics. Tracked
-# separately so confirmation-retry catches them without inheriting
+# separately so they don't inherit
 # install-specific rules (cve_id forwarding, severity matching, etc).
 _ROLLBACK_TOOLS = {"rollback_patches", "multi_account_rollback"}
-# Destructive tools that require confirm_execute=True. After-model State 1
-# watches these for the "operator approved → LLM forgot to retry" loop.
-_INSTALL_TOOLS = _INSTALL_ONLY_TOOLS | _ROLLBACK_TOOLS
 _PATH_A_TO_PATH_B = {
     "patch_dry_run": "multi_account_dry_run",
     "execute_patch_operation": "multi_account_execute",
@@ -138,30 +170,26 @@ class PatchWorkflowSteering(SteeringHandler):
     - Forward operator-named CVE as cve_id= to keep the audit trail intact.
     - Block cross-environment progression after a failure until resolved.
 
-    Install confirmation (confirm_execute / confirm_no_scan) is enforced by the
-    install tool itself: when called without confirm_execute=True the tool
-    returns status=confirmation_required with the plan. The after-model State 1
-    rule below catches the case where the LLM forgets to retry the tool after
-    the operator approves.
+    Write tools never execute: they return a stored plan that only the
+    operator can approve, through the UI.
     """
 
     name = "patch_workflow"
 
     def __init__(self):
         super().__init__(context_providers=[LedgerProvider()])
+        self._after_model_budget = _GuideBudget()
 
     async def steer_before_tool(self, *, agent, tool_use: ToolUse, **kwargs: Any) -> ToolSteeringAction:
         tool_name = tool_use["name"]
         completed = _completed_tool_names(self.steering_context)
         tool_input = tool_use.get("input", {}) or {}
 
-        # Choose Path A when the operator's current message names instance IDs.
-        # Path A targets EXACTLY those IDs.
+        # Path A targets exactly the instance IDs passed to it, so it needs some.
         if tool_name in _PATH_A_TOOLS:
-            user_text = _last_user_text(agent)
-            if not _INSTANCE_ID_RE.search(user_text):
+            if not tool_input.get("instance_ids"):
                 return Guide(
-                    reason=f"This request is fleet-scoped — the operator's message describes "
+                    reason=f"This request is fleet-scoped: the operator's message describes "
                            f"scope by environment, severity, or CVE. Use "
                            f"{_PATH_A_TO_PATH_B[tool_name]} to target all instances with the "
                            f"matching tags. Instance IDs from earlier turns or analyst replies "
@@ -175,7 +203,7 @@ class PatchWorkflowSteering(SteeringHandler):
             user_text = _last_user_text(agent)
             if _INSTANCE_ID_RE.search(user_text):
                 return Guide(
-                    reason=f"This request is instance-targeted — the operator named instance "
+                    reason=f"This request is instance-targeted: the operator named instance "
                            f"ID(s) in their message. Use {_PATH_B_TO_PATH_A[tool_name]} with "
                            f"those exact instance_ids. Tag-based tools would target every "
                            f"instance with the matching tag, not just the named ones."
@@ -187,13 +215,6 @@ class PatchWorkflowSteering(SteeringHandler):
         # don't need this step.
         if tool_name in ("multi_account_execute", "multi_account_dry_run") and "resolve_execution_scope" not in completed:
             return Guide(reason="Call resolve_execution_scope first to discover accounts.")
-
-        # Confirmation is enforced by the install tool itself: when called
-        # without confirm_execute=True it returns status=confirmation_required
-        # with the plan, forcing the operator into the loop. Layered steering
-        # here would re-block legitimate retries across turns (the ledger is
-        # per-agent-invocation, so a fresh agent has no record of the prior
-        # call) — that caused the loop bug we observed. Trust the tool.
 
         # Severity filter consistency between dry-run and Install (Path A only —
         # multi_account_execute reads from the dry-run's execution_id directly).
@@ -224,9 +245,11 @@ class PatchWorkflowSteering(SteeringHandler):
                            "genuinely unknown."
                 )
 
-        # Cross-environment progression: block dev → staging/prod or staging → prod
-        # only after an UNRESOLVED failure in a lower environment. A failure is
-        # resolved when a subsequent success exists for the same environment.
+        # Cross-environment progression within a conversation: guide the model
+        # away from staging/prod after a write tool errored (raised) in a lower
+        # environment and nothing has succeeded there since. The control that
+        # holds across conversations is the staged promotion check on the plan
+        # (helper/change_controls.py), enforced in code.
         # Same-env retries and Path A single-instance patches are unaffected.
         # Install-only — rollback after a failed install in a lower env should
         # not be blocked (operator may need to roll back THEN move on).
@@ -261,8 +284,7 @@ class PatchWorkflowSteering(SteeringHandler):
                                 stop_reason: StopReason, **kwargs: Any) -> ModelSteeringAction:
         """Force the model to invoke a tool when it renders text instead of acting.
 
-        Confirmation retry (State 1) is handled by ConfirmationGoalHandler.
-        This handler only covers:
+        This handler covers:
 
         Path A invocation:
           1. Operator names instance IDs in their current message (clear Path A intent).
@@ -292,9 +314,12 @@ class PatchWorkflowSteering(SteeringHandler):
         # intent is patch/scan (verbs in the message). The LLM has not yet
         # invoked execute_patch_operation or patch_dry_run for this turn,
         # so it's about to render text instead of acting.
-        if user_text and _INSTANCE_ID_RE.search(user_text):
+        if user_text and _INSTANCE_ID_RE.search(user_text) and not _is_question(user_text) \
+                and not _READ_REQUEST_RE.match(user_text.strip()):
+            # "patch run 0b3965e9" names a run; it isn't a request to patch (disruption round, 2 Nov).
+            action_text = _PATCH_NOUN_RE.sub(" ", user_text)
             verb = re.search(r'\b(patch|fix|remediate|apply|execute|install|scan|dry[\s-]?run|preview)\b',
-                             user_text, re.IGNORECASE)
+                             action_text, re.IGNORECASE)
             if verb:
                 wanted_tool = "patch_dry_run" if verb.group(0).lower() in {"scan", "dry-run", "dryrun", "dry run", "preview"} \
                     else "execute_patch_operation"
@@ -304,17 +329,16 @@ class PatchWorkflowSteering(SteeringHandler):
                     if call.get("tool_name") == wanted_tool:
                         last_attempt = call
                         break
-                if last_attempt is None:
+                if last_attempt is None and self._after_model_budget.spend(agent):
                     return Guide(
                         reason=f"The operator's message names instance ID(s) and asks to "
-                               f"{verb.group(0).lower()}. Do NOT respond with text or render "
-                               f"a confirmation message yourself. Call {wanted_tool} with "
+                               f"{verb.group(0).lower()}. Do NOT respond with text or describe "
+                               f"a plan yourself. Call {wanted_tool} with "
                                "instance_ids=[the IDs the operator named] and the relevant "
-                               "kwargs (cve_id, severity, environment, etc.) — without "
-                               "confirm_execute on the first call. The tool returns a "
-                               "confirmation request scoped to those instances; render that "
-                               "verbatim. Do NOT call get_patch_compliance, "
-                               "resolve_execution_scope, or any tag-based discovery tool — "
+                               "kwargs (cve_id, severity, environment, etc.). It returns a "
+                               "plan card scoped to those instances for the operator to "
+                               "approve. Do NOT call get_patch_compliance, "
+                               "resolve_execution_scope, or any tag-based discovery tool; "
                                "Path A targets the named instances directly."
                     )
 
@@ -336,6 +360,7 @@ class ComplianceOutputSteering(SteeringHandler):
 
     def __init__(self):
         super().__init__(context_providers=[LedgerProvider()])
+        self._after_model_budget = _GuideBudget()
 
     async def steer_after_model(self, *, agent, message: Message,
                                 stop_reason: StopReason, **kwargs: Any) -> ModelSteeringAction:
@@ -358,7 +383,7 @@ class ComplianceOutputSteering(SteeringHandler):
             result_str = str(result)
             has_zero_reports = "'total_count': 0" in result_str or '"total_count": 0' in result_str
 
-            if has_zero_reports and "100%" in text:
+            if has_zero_reports and "100%" in text and self._after_model_budget.spend(agent):
                 return Guide(
                     reason="Do not claim '100% compliance' when total_reports is 0. "
                            "Zero reports means no patching activity was recorded, not compliance. "

@@ -1,27 +1,26 @@
 """Cross-account client factory and scope resolution.
 
 Provides STS assume-role with thread-safe credential caching, Organizations-based
-account discovery, bounded-concurrency fan-out across accounts, and SSM
-TargetLocations builder for cross-account command execution.
+account discovery (child OUs included), scope resolution, and the rollout limits
+per environment.
 
 Single-account mode: when MULTI_ACCOUNT_ENABLED is not set, all functions
-gracefully degrade — resolve_scope returns the hub account only, get_client
-returns a standard boto3 client, and build_target_locations returns None.
+gracefully degrade — resolve_scope returns the hub account only, and
+get_client returns a standard boto3 client.
 """
 
 import boto3
 import logging
 import os
+import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
-from typing import Optional, Dict, List, Any, Callable, TypeVar
+from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
 
 AWS_REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 MULTI_ACCOUNT_ENABLED = os.environ.get('MULTI_ACCOUNT_ENABLED', '').lower() == 'true'
@@ -75,11 +74,66 @@ EXECUTION_DEFAULTS = {
     'send_command_max_concurrency': '50%',
     'send_command_max_errors':      '100%',
 
-    # Aliases used by format_execution_plan when an operator passes overrides.
-    # When unset, they fall back to the account-level values above.
+    # Generic aliases for callers that take max_concurrency/max_errors; when unset
+    # they fall back to the account-level values above.
     'max_concurrency': '75%',
     'max_errors':      '100%',
 }
+
+# Rollout limits for changes (install and rollback), by environment. They stop
+# a run as soon as errors pass the threshold instead of letting a bad patch
+# reach every instance. Environments not listed get the prod limits. Scans
+# change nothing and keep EXECUTION_DEFAULTS.
+ENVIRONMENT_LIMITS = {
+    'dev': {
+        'account_max_concurrency': '100%', 'account_max_errors': '25%',
+        'instance_max_concurrency': '50%', 'instance_max_errors': '25%',
+        'send_command_max_concurrency': '50%', 'send_command_max_errors': '25%',
+    },
+    'staging': {
+        'account_max_concurrency': '50%', 'account_max_errors': '1',
+        'instance_max_concurrency': '25%', 'instance_max_errors': '1',
+        'send_command_max_concurrency': '25%', 'send_command_max_errors': '1',
+    },
+    'prod': {
+        'account_max_concurrency': '1', 'account_max_errors': '0',
+        'instance_max_concurrency': '10%', 'instance_max_errors': '0',
+        'send_command_max_concurrency': '10%', 'send_command_max_errors': '0',
+    },
+}
+
+
+REBOOT_OPTIONS = ('NoReboot', 'RebootIfNeeded')
+
+
+def reboot_option(environment: Optional[str]) -> str:
+    """Reboot setting for an install in an environment.
+
+    REBOOT_POLICY lists environments that may reboot, e.g.
+    "dev=RebootIfNeeded,staging=RebootIfNeeded". Anything not listed, or set to
+    an unknown value, doesn't reboot.
+    """
+    policy = {}
+    for item in os.environ.get('REBOOT_POLICY', '').split(','):
+        env, _, value = item.partition('=')
+        if value.strip() in REBOOT_OPTIONS:
+            policy[env.strip().lower()] = value.strip()
+    return policy.get((environment or '').lower(), 'NoReboot')
+
+
+def execution_limits(environment: Optional[str]) -> dict:
+    """Rollout limits for a change in an environment.
+
+    Args:
+        environment: Normalised environment, or None for operations that change nothing.
+
+    Returns:
+        EXECUTION_DEFAULTS overlaid with the environment's limits (prod's when unknown).
+    """
+    if not environment:
+        return dict(EXECUTION_DEFAULTS)
+    return {**EXECUTION_DEFAULTS, **ENVIRONMENT_LIMITS.get(environment.lower(), ENVIRONMENT_LIMITS['prod'])}
+
 
 # Fan-out concurrency for assume-role read paths (hidden from operator)
 _READ_FAN_OUT_WORKERS = 10
@@ -112,6 +166,20 @@ def is_multi_account() -> bool:
 # STS CREDENTIAL CACHE
 # ============================================================================
 
+def _session_name(operator: str, account_id: str, region: str) -> str:
+    """RoleSessionName naming the operator, so spoke CloudTrail shows who a call was for."""
+    who = re.sub(r"[^\w+=,.@-]", "-", operator or "unknown").strip("-") or "unknown"
+    return f"patchy-{who}"[:64 - 14] + f"-{account_id}"[:14]
+
+
+def _current_operator() -> str:
+    try:
+        from helper.tools._shared import get_operator
+        return get_operator()
+    except Exception:
+        return "unknown"
+
+
 class _CredentialCache:
     """Thread-safe STS credential cache with expiry-aware refresh.
 
@@ -125,7 +193,10 @@ class _CredentialCache:
 
     def get_credentials(self, account_id: str, region: str,
                         role_name: str = SPOKE_EXECUTION_ROLE) -> Dict[str, str]:
-        key = f"{account_id}:{region}"
+        operator = _current_operator()
+        # Keyed by role and operator too: the read and write roles must not share
+        # credentials, and each session name carries its operator.
+        key = f"{role_name}:{account_id}:{region}:{operator}"
         now = time.time()
 
         with self._lock:
@@ -135,11 +206,10 @@ class _CredentialCache:
 
         # Assume role outside the lock (network call)
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
-        sts = boto3.client('sts', region_name=AWS_REGION, config=_aws_config)
         try:
-            resp = sts.assume_role(
+            resp = _sts_client().assume_role(
                 RoleArn=role_arn,
-                RoleSessionName=f"patchy-{account_id}-{region}",
+                RoleSessionName=_session_name(operator, account_id, region),
                 DurationSeconds=3600,
             )
         except ClientError as e:
@@ -170,10 +240,28 @@ class _CredentialCache:
 
 _credential_cache = _CredentialCache()
 
+# One hub STS client for every assume-role (building a client per credential miss was costly).
+_sts = None
+_sts_lock = threading.Lock()
+
+
+def _sts_client():
+    global _sts
+    with _sts_lock:
+        if _sts is None:
+            _sts = boto3.client('sts', region_name=AWS_REGION, config=_aws_config)
+        return _sts
+
 
 # ============================================================================
 # CLIENT FACTORY
 # ============================================================================
+
+# boto3 clients are thread-safe and slow to build; reuse them per service,
+# region and credentials.
+_client_cache: Dict[tuple, Any] = {}
+_client_cache_lock = threading.Lock()
+
 
 def get_client(service: str, account_id: Optional[str] = None,
                region: Optional[str] = None,
@@ -188,10 +276,26 @@ def get_client(service: str, account_id: Optional[str] = None,
 
     # Hub account — no assume-role needed
     if not account_id or account_id == get_hub_account_id():
-        return boto3.client(service, region_name=region, config=_aws_config)
-
-    creds = _credential_cache.get_credentials(account_id, region, role_name)
-    return boto3.client(service, region_name=region, config=_aws_config, **creds)
+        key = (service, region, None, None)
+        creds = {}
+    else:
+        creds = _credential_cache.get_credentials(account_id, region, role_name)
+        # Keyed on the session token so a refreshed role session gets a new client.
+        key = (service, region, account_id, creds.get('aws_session_token'))
+    client = _client_cache.get(key)
+    if client is None:
+        # Built under the lock: concurrent first uses would each build one, and boto3's
+        # default session isn't safe to build clients from in parallel.
+        with _client_cache_lock:
+            client = _client_cache.get(key)
+            if client is None:
+                client = boto3.client(service, region_name=region, config=_aws_config, **creds)
+                # One client per service, region and account: a refreshed role
+                # session replaces the client built on the expired one.
+                for old in [k for k in _client_cache if k[:3] == key[:3] and k != key]:
+                    del _client_cache[old]
+                _client_cache[key] = client
+    return client
 
 
 # ============================================================================
@@ -208,11 +312,18 @@ def discover_accounts(ou_ids: Optional[List[str]] = None,
     org_client = boto3.client('organizations', region_name='us-east-1', config=_aws_config)
 
     if ou_ids:
+        # An OU's accounts include those in its child OUs, as in the console.
         accounts = []
-        for ou_id in ou_ids:
-            paginator = org_client.get_paginator('list_accounts_for_parent')
-            for page in paginator.paginate(ParentId=ou_id):
+        pending, seen = list(ou_ids), set()
+        while pending:
+            ou_id = pending.pop()
+            if ou_id in seen:
+                continue
+            seen.add(ou_id)
+            for page in org_client.get_paginator('list_accounts_for_parent').paginate(ParentId=ou_id):
                 accounts.extend(page['Accounts'])
+            for page in org_client.get_paginator('list_organizational_units_for_parent').paginate(ParentId=ou_id):
+                pending.extend(ou['Id'] for ou in page.get('OrganizationalUnits', []))
     else:
         paginator = org_client.get_paginator('list_accounts')
         accounts = []
@@ -253,6 +364,35 @@ def _filter_accounts_by_tags(org_client, accounts: List[Dict],
 # SCOPE RESOLUTION
 # ============================================================================
 
+def _scope_request_error(account_ids: Optional[List[str]], regions: Optional[List[str]],
+                         ou_ids: Optional[List[str]]) -> Optional[Dict[str, Any]]:
+    """An error when a scope request names accounts, regions or OUs outside the configured scope."""
+    configured_regions = SPOKE_REGIONS if MULTI_ACCOUNT_ENABLED else [AWS_REGION]
+    bad_regions = [r for r in regions or [] if r not in configured_regions]
+    configured_ous = [o.strip() for o in os.environ.get('SPOKE_OU_IDS', '').split(',') if o.strip()]
+    bad_ous = [o for o in ou_ids or [] if o not in configured_ous]
+    bad_accounts: List[str] = []
+    if account_ids:
+        hub = get_hub_account_id()
+        if not MULTI_ACCOUNT_ENABLED:
+            allowed = {hub}
+        elif configured_ous:
+            # The cached scope, not a fresh walk of the OU tree on every request.
+            from helper.tools._shared import _get_configured_scope_accounts
+            allowed = set(_get_configured_scope_accounts()) | {hub}
+        else:
+            allowed = {a.strip() for a in os.environ.get('SPOKE_ACCOUNT_IDS', '').split(',') if a.strip()} | {hub}
+        bad_accounts = [a for a in account_ids if a not in allowed]
+    if not (bad_regions or bad_ous or bad_accounts):
+        return None
+    parts = [f"accounts {bad_accounts}" if bad_accounts else "", f"regions {bad_regions}" if bad_regions else "",
+             f"OUs {bad_ous}" if bad_ous else ""]
+    return {"error": "Outside the configured scope: " + "; ".join(p for p in parts if p) + ".",
+            "error_code": "OutOfScope", "category": "ABORT", "retryable": False,
+            "next_action": "Use the configured accounts, regions and OUs (SPOKE_ACCOUNT_IDS, SPOKE_OU_IDS, "
+                           "SPOKE_REGIONS)."}
+
+
 def resolve_scope(environment: Optional[str] = None,
                   account_ids: Optional[List[str]] = None,
                   regions: Optional[List[str]] = None,
@@ -270,6 +410,9 @@ def resolve_scope(environment: Optional[str] = None,
             'execution_defaults': {...},
         }
     """
+    refused = _scope_request_error(account_ids, regions, ou_ids)
+    if refused:
+        return refused
     if not MULTI_ACCOUNT_ENABLED:
         return {
             'accounts': [{'account_id': get_hub_account_id(), 'regions': [AWS_REGION]}],
@@ -333,107 +476,7 @@ def resolve_scope(environment: Optional[str] = None,
 # BOUNDED FAN-OUT
 # ============================================================================
 
-def fan_out(func: Callable[..., T],
-            accounts: List[Dict[str, Any]],
-            max_workers: int = _READ_FAN_OUT_WORKERS) -> List[Dict[str, Any]]:
-    """Execute a function across accounts with bounded concurrency.
-
-    func receives (account_id, regions, **account_dict) and should return a dict.
-    Results are collected per-account with success/failure status.
-    """
-    results = []
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for acct in accounts:
-            future = executor.submit(
-                func,
-                account_id=acct['account_id'],
-                regions=acct.get('regions', [AWS_REGION]),
-            )
-            futures[future] = acct['account_id']
-
-        for future in as_completed(futures):
-            account_id = futures[future]
-            try:
-                result = future.result()
-                results.append({
-                    'account_id': account_id,
-                    'status': 'success',
-                    'data': result,
-                })
-            except Exception as e:
-                logger.error(f"[CROSS_ACCOUNT] Fan-out failed for {account_id}: {e}")
-                results.append({
-                    'account_id': account_id,
-                    'status': 'error',
-                    'error': str(e),
-                })
-
-    succeeded = sum(1 for r in results if r['status'] == 'success')
-    logger.info(f"[CROSS_ACCOUNT] Fan-out complete: {succeeded}/{len(accounts)} succeeded")
-    return results
-
-
 # ============================================================================
 # SSM TARGET LOCATIONS BUILDER
 # ============================================================================
 
-def build_target_locations(account_ids: List[str],
-                           regions: List[str],
-                           max_concurrency: Optional[str] = None,
-                           max_errors: Optional[str] = None,
-                           role_name: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
-    """Build SSM TargetLocations for cross-account command execution.
-
-    Returns None in single-account mode (caller uses standard send_command).
-    Returns the TargetLocations list for multi-account send_command/register_task.
-    """
-    if not account_ids or len(account_ids) <= 1:
-        # Single account — no TargetLocations needed, caller uses standard path
-        if len(account_ids) == 1 and account_ids[0] == get_hub_account_id():
-            return None
-
-    role = role_name or SPOKE_EXECUTION_ROLE
-    concurrency = max_concurrency or EXECUTION_DEFAULTS['account_max_concurrency']
-    errors = max_errors or EXECUTION_DEFAULTS['account_max_errors']
-
-    return [{
-        'Accounts': account_ids,
-        'Regions': regions,
-        'ExecutionRoleName': role,
-        'TargetLocationMaxConcurrency': concurrency,
-        'TargetLocationMaxErrors': errors,
-    }]
-
-
-def format_execution_plan(scope: Dict[str, Any],
-                          operation: str,
-                          max_concurrency: Optional[str] = None,
-                          max_errors: Optional[str] = None) -> Dict[str, Any]:
-    """Build an execution plan summary for operator confirmation.
-
-    The agent MUST present this to the operator and wait for confirmation
-    before executing any cross-account write operation (patch, rollback, etc.).
-
-    Returns a structured plan the agent can render as a confirmation prompt,
-    including the command_id field (populated after execution).
-    """
-    defaults = EXECUTION_DEFAULTS
-    concurrency = max_concurrency or defaults['max_concurrency']
-    errors = max_errors or defaults['max_errors']
-
-    return {
-        'operation': operation,
-        'total_accounts': scope['total_accounts'],
-        'regions': scope['regions'],
-        'account_ids': [a['account_id'] for a in scope['accounts']],
-        'max_concurrency': concurrency,
-        'max_errors': errors,
-        'account_max_concurrency': defaults['account_max_concurrency'],
-        'account_max_errors': defaults['account_max_errors'],
-        'instance_max_concurrency': defaults['instance_max_concurrency'],
-        'instance_max_errors': defaults['instance_max_errors'],
-        'confirmation_required': True,
-        'command_id': None,  # Populated after execution
-    }

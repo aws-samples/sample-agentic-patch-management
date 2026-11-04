@@ -1,344 +1,306 @@
-# Operations — Intelligent Patch Automation
+# Operations
 
-Post-deployment setup, configuration, and day-to-day running.
+How to use Patchy day to day: asking, reviewing and approving a change, following and stopping a run, and reading findings and reports. It also covers the tags Patchy works from and how to manage users. To deploy or configure Patchy, see [Deploying](deploying.md).
 
-## Contents
+- [The screen](#the-screen)
+- [Asking](#asking)
+- [Reviewing and approving a change](#reviewing-and-approving-a-change)
+- [Following and stopping a run](#following-and-stopping-a-run)
+- [After a run](#after-a-run)
+- [Findings and reports](#findings-and-reports)
+- [Tags and SLAs](#tags-and-slas)
+- [Users and roles](#users-and-roles)
+- [Bedrock Guardrails](#bedrock-guardrails)
 
-- [Environment Configuration (`.env`)](#environment-configuration-env)
-- [Operator Command Reference](#operator-command-reference)
-- [Tagging Your Fleet](#tagging-your-fleet)
-- [SLA Configuration](#sla-configuration)
-- [User Management](#user-management)
-- [Bedrock Guardrails (Optional)](#bedrock-guardrails-optional)
+## The screen
 
----
+The chat sits on the left and the detail pane on the right. The rail down the left edge chooses what the detail pane shows:
 
-## Environment Configuration (`.env`)
+- Overview: instances, critical findings, patch compliance and SLA results; what needs attention; each environment, with its critical and high findings and its patch compliance as a percentage with the count ("80% (4 of 5)"); recent changes. Each environment row has **Instances**, **Scan…**, which puts a dry-run scan request in the chat box for you to send, and **SLA risk**, which asks which findings will miss their deadline.
+- Changes: plans and runs from this conversation, one row per change (a plan reads as its run once approved), and every Patchy run in progress across all operators, including a stopped run whose commands are still finishing. Auditors also see every operator's plans from the last seven days.
+- Findings: every open Inspector finding on in-scope instances.
+- Reports: every patch and rollback run of the last 30 days.
 
-All configuration lives in a single `.env` file. Copy the template and fill it in before your first deploy:
+A plan or a run opens in the detail pane as soon as it appears in the chat, and the chat keeps a link back to it. The browser's Back and Forward buttons move between the panes you opened, and a reload reopens the last one. Times always show the date. **New conversation** asks you to confirm before it starts a new one, and while an earlier conversation loads, the chat says so. **Open in new window** on a change record or run shows it in a window of its own (see [Pop-out windows](#pop-out-windows)).
 
-```bash
-cp .env.example .env
-```
+The top bar holds the account picker, the theme switch and your role. With more than one account, the picker narrows Overview and Findings to one account; Reports and the SLA figure always cover every account. The theme follows your operating system until you choose one, and the browser remembers the choice. Your role comes from your Cognito group and can't be changed here.
 
-For most single-account deployments you only need to set two values — `AWS_PROFILE` and `AWS_REGION`. Everything else has a sensible default. The sections below group the variables by what they do, so you can skim to the ones that matter for your setup. Anything not listed here can stay commented out.
+For operators, Cmd+K or Ctrl+K opens a list of things to ask. With Cognito sign-in, Patchy signs you out after 60 minutes without activity in any of its windows.
 
-### Required
+## Asking
 
-- `AWS_PROFILE` (default `default`) — the AWS CLI named profile to deploy with. Its credentials need permissions for Bedrock, SSM, EC2, S3, ECS, and Inspector.
-- `AWS_REGION` (default `us-east-1`) — the target region. The solution is region-agnostic; it runs wherever these services are enabled.
+Type in the chat and press Enter. Name the environment ("in dev"), the CVE or severity, and account IDs or instance IDs when you mean specific ones. The agent works best with requests like these:
 
-### Agent
+| To | Ask |
+|---|---|
+| See the fleet | `Show instances in dev` |
+| See findings | `What critical vulnerabilities do we have in prod?` |
+| See where a CVE is | `How widespread is CVE-2026-40553?` |
+| Check compliance | `Show patch compliance status for staging` |
+| See SLA risk | `Which findings in prod will miss their SLA?` |
+| Preview | `Preview patches in prod` (a dry-run scan; installs nothing) |
+| Patch a CVE | `Patch CVE-2026-40553 in dev` |
+| Patch by severity | `Patch HIGH and above in staging` |
+| Patch instances | `Patch i-0abc1234567890def in dev` |
+| Patch now despite a window | `Patch CVE-2026-40553 in prod now, don't wait for the window` |
+| Roll back | `Roll back the last dev patch run` or `Roll back i-0abc1234567890def` |
+| Check a run | `Check status of 0f8b2a1c-...` |
+| Check a fix | `Did CVE-2026-40553 get fixed on i-0abc1234567890def?` |
+| Check before promoting | `Verify health` |
+| Create a window | `Create a maintenance window for staging, Sundays at 3 am for 3 hours` |
+| Look back | `Show SLA breaches this week` or `Who patched prod last week?` |
 
-- `AGENT_NAME` (default `patchy`) — name of the AgentCore runtime.
-- `BYPASS_TOOL_CONSENT` (default `true`) — skips the per-tool consent prompt. Leave `true` for autonomous operation.
-- `BEDROCK_MODEL_ID` (default `us.anthropic.claude-sonnet-5`) — override to run a different Bedrock model.
-- `PROJECT_NAME` (default `patchy`) — used to derive CloudFormation stack names (`AgentCore-<PROJECT_NAME>-default`). Only change it if you're running more than one instance of the solution in the same account.
-- `MAX_FLEET_SIZE` (default `5000`) — soft cap on how many EC2 instances the fleet cache enriches per refresh. Raise it for larger fleets.
+Buttons in the detail pane, on cards in the chat, and in the Cmd+K list follow one rule. If the prompt only reads, it sends straight away. If it could change something, it fills the chat box for you to check and send.
 
-### Instance scope (security / blast radius)
+A dry-run scan starts an SSM scan as soon as you ask, without a plan. It installs nothing. The reply names the scan and offers **Show scan results**, which asks for them once the scan has had time to finish. Patchy creates maintenance windows in the hub account and Region only.
 
-- `SSM_SCOPE_TAG_KEY` (default `PatchAutomation`) — tag key that marks an instance as in-scope. The agent, and the IAM policy, refuse to touch anything without it.
-- `SSM_SCOPE_TAG_VALUE` (default `enabled`) — required value for the scope tag.
-- `INSPECTOR_RESOURCE_TYPES` (default `EC2`) — which resource types Inspector scans. Comma-separated: `EC2`, `ECR`, `LAMBDA`. Add `ECR` for container image findings.
+## Reviewing and approving a change
 
-### Web UI authentication
+A patch, rollback or maintenance window request never runs straight away. Patchy makes its checks, stores the exact parameters as a plan, and opens the plan's **change record**:
 
-- `DEFAULT_ROLE` (default `viewer`) — role assigned when no auth is configured. Set to `operator` only for a trusted pilot/tunnel setup where everyone should have full access.
-- `API_KEY` (unset) — enables API-key auth on the UI. When set alone, it grants operator role (backward compatible).
-- `API_KEY_OPERATOR` (unset) — explicit operator key: full access (dashboard + chat + patching).
-- `API_KEY_VIEWER` (unset) — viewer key: read-only (dashboard + health, no chat).
+- The headline and status say what the change is and how long the plan has left. A plan expires 15 minutes after it's made.
+- The summary says what installs, where and when, in one sentence.
+- Checks lists what Patchy checked before making the plan:
 
-With no Cognito and no API keys set, auth is disabled and everyone defaults to `DEFAULT_ROLE`. See [Security — Authentication Modes](security.md#authentication-modes) for the full picture.
+  | Check | Means |
+  |---|---|
+  | In scope | Every target carries the scope tag in a configured account and Region |
+  | Change calendar open, or Change calendar | The calendar is open now, or none is configured. [`CHANGE_CALENDAR`](deploying.md#scope-and-change-controls) says what happens to a run when it closes |
+  | Only the CVE's packages, or Patch level | What installs |
+  | Window and SLA | Why it runs now: no maintenance window or patch policy patches every target before the SLA deadline, you asked to patch now, or it's a severity plan |
+  | dev verified, or staging verified | Every environment except dev: a run in the previous environment with the same patch scope (the CVE, the severity and higher, or all approved patches) finished in the last 14 days and was verified healthy. The check gives the date the run finished. The 14 days count from when the run finished, not from when it was verified. |
+  | Dry-run scan first, or No dry-run for this plan | Whether a dry-run scan ran for this plan. It's optional, so not running one is a note, not a warning. Without one, the check says when Systems Manager last scanned the targets, as a range when their latest scans are more than an hour apart. With one, Patchy checks the scan when it makes the plan, and again when the plan runs: it refuses the plan if the scan didn't succeed, is more than two hours old, or wasn't a Patchy scan of these targets (another environment, account or Region, or none of the named instances). A scan that covered only some of the named instances, or an environment scan used for a plan by instance ID, shows as a warning instead, since Patchy can't confirm it covered every target |
+  | Stop alarm present, or Stop alarm | Whether the stop alarm exists in every target account and Region and isn't already firing, or that none is configured |
+  | Not in the fleet view yet | Shown only when some targets aren't in SSM Explorer yet. Patchy read them from EC2, so it has their tags but no patch state; the run includes them, and **Where** marks each one as pending sync |
 
-### TLS and Cognito
+  A tick means the check passed, an exclamation mark is a warning you should read, and a dash is information.
+- What changes, Where, When, How it rolls out, Reboot, Stops if, Undo describe the run. When a schedule covers some of a CVE plan's targets, **When** adds a coverage table by account and Region. **Where** shows a grid of accounts and Regions and lists every target instance with its name, account and Region (the first 500, with the total).
 
-- `ACM_CERTIFICATE_ARN` (auto) — ACM certificate for the ALB. `deploy.sh` runs `setup-tls.sh` to generate a self-signed cert if this is unset. For production, point it at a public ACM cert.
-- `COGNITO_ENABLED` (default `true` when a cert is set) — when enabled, the ALB is internet-facing and requires Cognito login. Set `false` to use an internal ALB + bastion host instead.
-- `COGNITO_DOMAIN_PREFIX` (default `patchy-<account_id>`) — hosted-UI domain prefix. Override only if you need a custom, globally unique prefix.
+**Approve and run** records your approval and starts the plan once, with exactly the parameters shown. If anything about the request changes, ask again: Patchy makes a new plan. **Cancel plan** throws the plan away. Typing "yes" or "approve" in the chat does nothing.
 
-### Container runtime
+An approval is refused when:
 
-- `CDK_DOCKER` (auto) — CDK builds the UI container image locally with Docker or Finch. `deploy.sh` auto-detects Finch; set `CDK_DOCKER=finch` to force it.
-- `EXISTING_VPC_ID` (unset) — use your own VPC instead of creating one. Needs private subnets with NAT (`PRIVATE_WITH_EGRESS`) for Fargate. When set, the `Patchy-Network` stack is skipped.
+- the plan has expired;
+- someone else already approved or cancelled it;
+- the plan changed after the record was shown;
+- `REQUIRE_SEPARATE_APPROVER=true` and you asked for the plan yourself.
 
-### Multi-account (hub-and-spoke)
+Viewers see the record but no approve button.
 
-Only relevant if you're patching across more than one AWS account. See [Multi-account setup](../README.md#multi-account-setup) for the full walkthrough.
+If a maintenance window or Quick Setup patch policy will patch every target before the CVE's SLA deadline, Patchy says so and makes no plan. Ask to patch now if you don't want to wait. If a schedule covers only some targets, the plan patches all of them now, and the change record's **When** section shows which schedule covers which targets (see [SLA](#sla)). A plan by severity always runs now, because each finding it covers has its own deadline.
 
-- `MULTI_ACCOUNT_ENABLED` (unset) — set `true` to turn on cross-account operations via STS assume-role and SSM `TargetLocations`.
-- `AWS_ORG_ID` (unset) — required when multi-account is on. Scopes the cross-account assume-role and S3 bucket policies to your org (`aws:PrincipalOrgID`).
-- `SPOKE_EXECUTION_ROLE` (default `PatchySpokeRole`) — name of the IAM role deployed into each spoke account.
-- `SPOKE_ACCOUNT_IDS` (unset) — comma-separated explicit account list (self-managed StackSet).
-- `SPOKE_OU_IDS` (unset) — OU-based targeting (service-managed StackSet); auto-enrols new accounts joining the OU. Use this or `SPOKE_ACCOUNT_IDS`, not both.
-- `SPOKE_REGIONS` (default `AWS_REGION`) — comma-separated regions to fan out into. Inspector must be enabled in each.
-- `SAMPLE_ENV_ACCOUNTS` (default: first spoke) — accounts that `./sample-env.sh` deploys demo EC2 instances into.
+### Pop-out windows
 
-### Observability
+**Open in new window** shows a change record or run in its own window, which is useful on a second screen or in a change review call. The pop-out stays in step with the main window: approving, cancelling or stopping there is carried out by the main window, which owns the conversation, and both windows show the result. If the main window is closed, the pop-out acts on its own, with the same checks.
 
-- `ENABLE_RUNTIME_LOGS` (off) — delivers the runtime's stdout/stderr to CloudWatch Logs with 14-day retention.
-- `ENABLE_TRACING` (off) — enables account-level Transaction Search and per-runtime trace spans, required to populate the GenAI Observability dashboard. Spans take ~10 min to appear.
+## Following and stopping a run
 
-See [`docs/observability.md`](observability.md) for what these unlock.
+Once a plan starts, the run view opens. It shows:
 
-### Guardrails
+- progress, counted by location, since SSM reports progress per account and Region;
+- the status in each account and Region;
+- a timeline of what has happened.
 
-- `GUARDRAIL_ID` (unset) — Bedrock guardrail to apply. Run `python agent/setup_guardrail.py` to create a sample one; it prints the values to set here.
-- `GUARDRAIL_VERSION` (unset) — version of the guardrail above.
+It refreshes every 10 seconds while the run is active. If the status can't be read, the view keeps the last status it had, says "Status not updated", and keeps trying, less often each time. It stops refreshing once every location has ended and no patch command the run sent is still going.
 
-See [Bedrock Guardrails](#bedrock-guardrails-optional).
+If a location didn't start, the run view says which one and why. The plan's approval is spent by then, so make a new plan for the locations that didn't start.
 
-### Teardown gates (opt-in)
+**Stop run** asks for confirmation, then cancels the run in every account and Region the plan started. Only an operator can stop a run, and only from the conversation that started it. The agent can't stop runs, so asking it to stop does nothing.
 
-These protect resources with org-wide blast radius. They're preserved by default on `./deploy.sh destroy`. See `./deploy.sh destroy --help`.
+A stop doesn't halt everything at once:
 
-- `DESTROY_SPOKE_STACKSET` (default `false`) — also destroys the `Patchy-SpokeRole` StackSet across every spoke account/region.
-- `DESTROY_FLEET_SYNC` (default `false`) — also deletes the `patchy-fleet-sync` Resource Data Sync. Re-creating it triggers a multi-hour ingestion window.
+- Locations not yet started don't start.
+- In a location already started, Run Command may still reach the instances it hasn't yet, and an instance already being patched finishes, and stays patched.
+- SSM marks the run Cancelled straight away, so a location can read as stopped while its instances are still patching. While they are, for up to three hours after the stop, the run view says "Stopped; instances already patching are finishing" and keeps refreshing, and the run stays under "Running now" in Changes until they finish.
 
----
+### Stop alarms
 
-## Operator Command Reference
+`ABORT_ALARMS` names one CloudWatch alarm, because SSM watches one alarm per run. To watch several metrics, combine them in a [composite alarm](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Create_Composite_Alarm.html) and name that. Each location of a run polls the alarm in its own account and Region:
 
-These are the prompt patterns the system is tuned for. Stick close to them and you'll get the most reliable results.
+- When the alarm goes into ALARM mid-run, SSM cancels the instances not yet started. One already being patched finishes, even though its step may show as Cancelled.
+- A location whose alarm is already in ALARM doesn't start.
+- A location without the alarm stops at the start, which is why the change record checks every location first.
 
-### Workflows
+A plan keeps the alarm it was made with, so a change to `ABORT_ALARMS` applies only to new plans.
 
-Critical vulnerability response:
+## After a run
 
-| Step | Prompt | What happens |
-|------|--------|-------------|
-| 1 | `Show CRITICAL vulnerabilities in prod` | CVEs affecting production, CVSS scores, instance count |
-| 2 | `How widespread is CVE-2026-33811?` | Fleet impact — environments, SLA deadlines |
-| 3 | `Patch CVE-2026-33811 in prod` | Scope → SLA decision → execute |
-| 4 | `Check status` | Automation progress per account |
-| 5 | `Verify health` | SSM connectivity + CloudWatch alarms |
+### Report
 
-Staged rollout: `Patch CVE-X in dev` → `Check status` → `Patch CVE-X in staging` → `Check status` → `Patch CVE-X in prod`
+When a run ends, the report Lambda writes its compliance report, usually within a minute and at most about 5 minutes later. It appears under Reports, and with `NOTIFY_TOPIC=true` the outcome also goes to the SNS topic.
 
-Routine compliance: `Preview patches in prod` → `Check status` → `Patch all prod` → `Verify health`
+Two cases wait longer. For a stopped run, the report waits until the patch commands the run had already sent have finished, so it counts those instances. When some locations' outcomes can't be read, the report waits for them. Either way, after three hours the report is written as it stands; one with unread locations is marked incomplete, names them, and has no SLA result.
 
-### Command Patterns
+### Verify
 
-| Category | Prompt | Scope |
-|----------|--------|-------|
-| Discovery | `Show instances in dev` | All managed dev instances |
-| | `Show vulnerabilities in staging` | Active CVEs in staging |
-| | `What's the patch compliance for prod?` | Missing patch counts |
-| Preview | `Preview patches in prod` | Dry-run, no changes |
-| | `Dry-run on i-xxx, i-yyy` | Specific instances only |
-| Patch | `Patch CVE-2026-6772 in dev` | Severity-scoped |
-| | `Patch all prod` | All severities |
-| | `Patch HIGH severity in staging` | HIGH+ only |
-| | `Patch instance i-0ea66eea856a9028d` | Single instance |
-| Rollback | `Rollback i-0ea66eea856a9028d` | Single instance |
-| | `Rollback dev patches` | Environment-wide |
-| Status | `Check status` | Last automation |
-| | `Check status of execution f5da8b53-...` | Specific execution |
-| | `Verify health` | SSM + CloudWatch post-patch |
-| Compliance | `Show SLA breaches this week` | Violations only |
-| | `Show compliance reports` | Recent reports from S3 |
-| Windows | `Show maintenance windows for prod` | Configured schedules |
-| Emergency | `Emergency stop` | Cancel active automation |
+`Verify health` checks that every location of the plan has finished, that the instances are online in SSM, and that their CloudWatch alarms are quiet. A healthy result records the environment as verified for that CVE or severity, which the next environment's plan checks.
 
-### Tips
+- While a location is still running, it says to wait.
+- Alarms are given time to settle from when the last location finished: 2 minutes, or longer when an instance's alarm takes longer to evaluate (its period times its evaluation periods, plus a minute), up to 30 minutes.
+- A failed run, or instances SSM reports unhealthy, gives a rollback recommendation.
+- It holds, without recommending a rollback, when:
+  - an operator stopped the run, since stopping is the operator's decision and not a failure;
+  - the run partly failed, or another location of the plan failed or can't be read;
+  - alarms are firing, or an instance alarm went to INSUFFICIENT_DATA after the run started (the metric may have stopped because of the run);
+  - health couldn't be read, for example when Systems Manager can't be reached in one account. Unread health is never a reason to roll back.
 
-- Name the environment — "in dev", "in prod", "in staging".
-- Include account IDs when you need them — "in account 111122223333".
-- Use CVE IDs for targeted patching — "Patch CVE-X in dev".
-- "Preview" reads only; "Patch" executes.
+### Check a fix
 
----
+`Did CVE-X get fixed on i-...?` asks Inspector per instance. When a finding is still open, it says why: a reboot is pending, Inspector hasn't rescanned yet, or the fixed version isn't installed. For a CVE in several packages, the fix counts as installed only when every package is at its fixed version. An instance EC2 reports terminated isn't counted; one Patchy can't find where it looked reads "Couldn't locate" rather than terminated.
 
-## Tagging Your Fleet
+### Promote
 
-The agent's behaviour is driven entirely by EC2 instance tags. No code changes and no config files — set the tags and the agent works from them.
+Patch the next environment as a new request, for example dev, then staging, then prod. Each environment is its own plan and approval.
 
-How the agent reads them depends on what it's doing:
+### Roll back
 
-- Scoping and SLA decisions read tags straight from EC2 `describe_instances` at request time. Change a tag value (say, bump `SLA-HIGH` from 72 to 24) and the next request sees it — no redeploy, no waiting.
-- Fleet discovery — which instances exist, and the dashboard's environment view — flows through SSM Explorer, which has propagation lag (minutes to hours, and up to 6 hours the first time AWS Config is activated). A newly launched instance won't show up until Explorer ingests it, even though its tags are already correct.
+A rollback undoes the yum or dnf transactions that began during the last finished Patchy patch run on the targets in the last 30 days, including a failed or stopped run. Because the window is time-based, another package change made on an instance during that run's window is undone too. Instances with no transactions in the window are left as they are. The change record names the run it undoes and how that run ended, for example "ended Failed after 28 s": the last run can be one that changed nothing, such as a run that failed at the start, and then the rollback changes nothing either.
 
-In practice: existing instances react to tag changes immediately, but a brand-new instance takes a beat to become visible. See [`docs/architecture.md`](architecture.md#fleet-discovery) for the two discovery paths in detail.
+Patchy refuses a rollback when there is no such run, and while a newer patch run on the same targets has no report yet, for example a run you just stopped, because the last reported run would then be the wrong one to undo.
 
-### Required tags (the instance is invisible without them)
+Asked whether a rollback worked, Patchy checks the run and, when it has the patch state captured around the patch run, scans the instances and compares patch counts. It confirms the rollback only when every location succeeded, the comparison ran and shows the patches reverted on every instance, every instance is online in SSM, and no CloudWatch alarms are firing. Otherwise it lists what it couldn't confirm, for example a scan that failed or health it couldn't read, and recommends a look. Without that patch state, it says only that the rollback run succeeded and the instances are healthy, and that it can't confirm the patches were reverted.
 
-| Tag | Required value | Purpose |
-|-----|---------------|---------|
-| `PatchAutomation` | `enabled` | Security scope. The agent won't touch any instance that lacks this tag. Configurable via `SSM_SCOPE_TAG_KEY` / `SSM_SCOPE_TAG_VALUE` in `.env`. |
-| `Environment` | `dev`, `staging`, or `prod` | Routing label. Decides which fleet bucket the instance lands in for "patch all dev" style queries. |
+## Findings and reports
 
-Without these two, the instance is skipped by every patch operation — compliance, dry-run, install, rollback, all of it.
+**Findings** lists each open Inspector finding with its severity, CVSS score and whether a patch fixes it (fully, or partly when Inspector says a fix covers only some of the affected packages), and where it is. Filter by severity or to fixable findings, search by ID or title, and export the filtered list as CSV. Operators get **Plan patch** on findings a patch fixes, which fills the chat box with a request for that CVE in the lowest environment it affects (dev first, prod last), and **Instances**, which asks for the instances with their account and Region.
 
-### SLA tags (drive the EMERGENCY vs SCHEDULED decision)
+**Reports** lists every patch and rollback run of the last 30 days, with:
 
-| Tag | Example | Meaning |
-|-----|---------|---------|
-| `SLA-CRITICAL` | `6` | Patch CRITICAL CVEs within 6 hours |
-| `SLA-HIGH` | `24` | Patch HIGH CVEs within 24 hours |
-| `SLA-MEDIUM` | `168` | Patch MEDIUM CVEs within 168 hours (7 days) |
-| `SLA-LOW` | `720` | Patch LOW CVEs within 720 hours (30 days) |
+- its result (patched, failed or stopped, with counts);
+- its SLA result: met, breached, or no result when the run didn't succeed on every instance, the finding had no discovery time, or the run patched by severity (its findings have different deadlines, so there is no single result);
+- when it ran.
 
-If a tag is missing, the agent falls back to global defaults (24h / 72h / 168h / 720h), defined in `agent/helper/tools/_shared.py` (`_DEFAULT_SLA`). It reads the tag matching the CVE's severity, compares it against the next maintenance window, and routes EMERGENCY (immediate) or SCHEDULED (defer to the existing patch policy).
+Filter to patches, rollbacks or breached SLAs, and by environment. **Details** on a row shows:
 
-### Audit and attribution tags (recommended)
+- the CVE and the packages installed;
+- why the run went when it did. For a run that went ahead at once, the reason the plan found: you asked to patch now, it was a severity plan, no SLA applied, the schedules couldn't be checked, no maintenance window or patch policy patches the targets before the SLA deadline, or some targets aren't covered by one. Reports written before this was recorded say only that no window met the SLA or you asked to patch now;
+- the SLA hours and where they came from, and for a met or breached SLA the arithmetic: the deadline (first seen plus the SLA hours) against when the run finished, and how early or late that was;
+- the compliance frameworks;
+- the [report tags](#report-tags);
+- the outcome counts and any failure message;
+- the approver, the plan ID, and the run's SSM Automation execution ID in full, to copy.
 
-These don't change any decision, but they populate the compliance reports and dashboard.
+A run ID in **Recent changes** on Overview opens Reports filtered to that run, with its details open.
 
-| Tag | Example | Where it appears |
-|-----|---------|-----------------|
-| `ComplianceFrameworks` | `PCI-DSS,SOC2` | Compliance dashboard "Framework" column. Comma-separated. Optional — the solution has no built-in framework knowledge; this is just audit context that tells auditors why the SLA was set. |
-| `Team` | `platform` | Team breakdown in compliance reports. Lets you see SLA met/breached counts per team. |
-| `Product` | `api-gateway` | Audit trail attribution. |
-| `Owner` | `platform-lead@example.com` | Audit trail attribution. |
-| `PatchGroup` | `dev-patch-group` | Used by [SSM Patch Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/patch-manager.html) for baseline association. Required if you use SSM Patch Policies for SCHEDULED patching. |
+Export writes the filtered runs as CSV.
 
-For tag-related issues, see [`docs/troubleshooting.md`](troubleshooting.md#what-happens-when-tags-are-missing).
+## Tags and SLAs
 
----
+Patchy works from EC2 instance tags.
 
-## SLA Configuration
+| Tag | Values | Effect |
+|---|---|---|
+| `PatchAutomation` | `enabled` | In scope. Without it Patchy can't see, scan or patch the instance. Change the tag with `SSM_SCOPE_TAG_KEY` and `SSM_SCOPE_TAG_VALUE`. |
+| `Environment` | `dev`, `staging`, `prod` | The environment's rollout limits, reboot policy and promotion order. |
+| `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` | Hours, as a whole number | The SLA for findings of that severity. Defaults: 24, 72, 168 and 720. |
+| `ComplianceFrameworks` | For example `PCI-DSS,SOC2` | Recorded in reports as audit context. It doesn't change any decision. |
+| `Team`, `Product`, or the tags in `REPORT_TAGS` | Any | Recorded in reports. See [Report tags](#report-tags). |
 
-SLA thresholds come entirely from EC2 instance tags — the solution has no built-in compliance framework knowledge.
+### Environment
 
-| Tag | Example | Meaning |
-|-----|---------|---------|
-| `SLA-CRITICAL` | `12` | Patch within 12 hours |
-| `SLA-HIGH` | `48` | Patch within 48 hours |
-| `SLA-MEDIUM` | `168` | Patch within 168 hours (7 days) |
-| `SLA-LOW` | `720` | Patch within 720 hours (30 days) |
+Patchy accepts common spellings and treats them as one environment:
 
-Missing tags fall back to defaults (24/72/168/720h), defined in `agent/helper/tools/_shared.py` (`_DEFAULT_SLA`).
+- `development` and `non prod` count as dev;
+- `stage` and `uat` count as staging;
+- `production` counts as prod.
 
-The `ComplianceFrameworks` tag (for example `PCI-DSS,SOC2`) is optional. It's included in compliance reports for audit context — it tells auditors why a given SLA was set — but it doesn't drive the SLA calculation.
+`test`, `testing` and `qa` form a test environment, which gets prod's limits. So does any other value.
 
-Sample environment SLA configuration:
+Rollout limits for each environment:
 
-| Environment | Framework | CRITICAL | HIGH | MEDIUM | LOW |
-|-------------|-----------|----------|------|--------|-----|
-| dev (all) | SOC2 | 24h | 72h | 168h | 720h |
-| staging (PCI-DSS) | PCI-DSS | 12h | 48h | 168h | 720h |
-| staging (others) | SOC2 | 24h | 72h | 168h | 720h |
-| prod (PCI-DSS) | PCI-DSS | 6h | 24h | 168h | 720h |
-| prod (others) | SOC2/HIPAA | 24h | 72h | 168h | 720h |
+| Environment | Locations (account and Region) at a time | Stop after failed locations | Instances at a time in each | Stop after failed instances |
+|---|---|---|---|---|
+| dev | 100% | 25% | 50% | 25% |
+| staging | 50% | 1 | 25% | 1 |
+| prod | 1 | 0 | 10% | 0 |
 
-> Enterprise tip: push SLA hours to EC2 tags via AWS Organizations tag policies, Service Catalog, or your CI/CD pipeline. The agent reads them at runtime, so you don't need to redeploy when thresholds change.
+The tag drives some further rules:
 
----
+- An instance without an `Environment` tag counts as prod: it gets prod's limits and reboot policy. A plan that names it under any other environment is refused. Environment-wide runs match the tag, so they don't reach untagged instances.
+- A request can't file an instance under another environment. A plan naming a prod instance "in dev" is refused.
+- If instances in one environment carry two spellings, such as `prod` and `Production`, an environment-wide plan is refused until they're retagged to one value. A run matches one value.
+- Outside dev, a plan by instance ID can't span more than one account and Region. Patch by environment instead, or make one plan per location.
 
-## User Management
+### SLA
 
-The web UI makes users sign in through Amazon Cognito. The deploy script creates the Cognito User Pool and two permission groups for you — all you have to do is create the actual user accounts.
+For each finding, the SLA is the instance's tag for that severity, or the default. Across several instances the strictest applies. The deadline runs from when Inspector first observed the finding on the plan's own targets, in the configured scope; a sighting on some other instance doesn't start this plan's clock.
 
-### Roles
+When Patchy can't read what the SLA depends on, it doesn't wait for a window:
 
-| Role | Group name | What the user can do |
-|------|-----------|---------------------|
-| Operator | `operators` | Full access — dashboard, chat, patch execution, compliance reports |
-| Viewer | `viewers` | Read-only — dashboard and compliance reports only, no chat or patching |
+- If some instances' tags can't be read, their SLA could be stricter than anything read, so the plan patches now and says the tags couldn't be read.
+- If Inspector can't be read for the first-observed time, Patchy can't show any schedule meets the deadline, so the plan patches now and says why.
+- If Inspector can't be read for the CVE's severity, Patchy makes no plan, because the SLA would otherwise rest on the agent's guess.
 
-Every user needs to belong to at least one group.
+Before planning a run, Patchy checks whether something already scheduled would patch each target in time. Two kinds of schedule count: a maintenance window in the instance's own account and Region, and a Quick Setup patch policy the hub can read, which means the hub's own policies and organisation policies (a delegated administrator can read organisation policies but only the management account can create them). Policies created locally in a spoke account aren't visible from the hub and don't count. A schedule covers an instance only when Patchy can show all of the following:
 
-### Quick method: interactive CLI
+- It installs: a window with an `AWS-RunPatchBaseline` task whose operation is Install, or a policy set to scan and install. A policy must have deployed successfully, with no failed or unfinished async executions.
+- It targets the instance. For a policy, that means the instance's account or an OU above it (nested OUs count), its Region, and either all instances or the policy's tag.
+- Its next run finishes before the deadline. Windows use their duration; a policy's run is given two hours.
+- It reboots if the fix needs one. A schedule that installs without rebooting covers the instance only when the plan wouldn't reboot either, or when the CVE's packages are known and none is a kernel package.
+- For a CVE, the patch baseline approves the fix: the instance's last patch scan lists a missing patch for that CVE. Above 100 instances this isn't checked, and the plan runs now.
 
-The easiest way to create a user:
+If every target is covered, Patchy recommends waiting and names the schedules. Otherwise the plan patches every target now, and the change record shows a coverage table by account and Region: the instances there, the schedule that covers them, whether it finishes before the deadline, and why the rest aren't covered. Cancelling that plan means waiting, and the uncovered instances breach their SLA.
 
-```bash
-./deploy.sh create-user
-```
+A window counts when its targets match the instance, however it targets it (an `Environment` tag, a Patch Group tag or instance IDs). Windows and policies are read at most every five minutes.
 
-It prompts for email, password, and role, then creates the user with a temporary password and drops them in the right group. On first login, Cognito asks the user to set a permanent password.
+Anything Patchy can't read or prove leaves the instance uncovered, for example a policy it can't open, an OU lookup that fails or a cron expression it can't evaluate. The plan names any policy, or any account and Region's maintenance windows, that it couldn't read. A delegated administrator can be refused some organisation policies (`UnauthorizedException` on `GetConfigurationManager`) while it reads others.
 
-### Manual method: AWS CLI
+Patchy looks for policies in the hub's Region and in each Region in `SPOKE_REGIONS`, because a policy is listed only in the Region it was created in. A policy created elsewhere isn't seen, so its instances are patched now. Patching only the uncovered instances isn't offered in this release: outside dev a plan by instance ID can't span more than one account and Region.
 
-Use this when you need scripted or automated provisioning.
+### Report tags
 
-Step 1 — get the User Pool ID from the deployed Patchy-UI stack outputs:
+Each report records the instance tags named in `REPORT_TAGS`, `Team,Product` by default, as they were when the run started. Set it to the tags your organisation uses to assign ownership, such as `REPORT_TAGS=CostCentre,Owner,Application`, and run `./deploy.sh agent`. Reports written before the change keep the tags they recorded.
+
+- When every instance in a run has the same value, the report records it. When they differ, it records `mixed` and the list of values. An instance without the tag shows as not tagged.
+- **Details** shows each tag, the CSV export has a column for each, and the SLA summary above the list is grouped by the first tag.
+- The tags don't change any decision.
+
+### When tag changes take effect
+
+SLA and `Environment` tags are read from EC2 on each request, so a change takes effect on the next one. The scope check and the list of instances in an environment use the agent's fleet view from SSM Explorer, which it refreshes every five minutes; an instance not in that view is checked against EC2 directly. So Patchy can still plan for an instance up to five minutes after its scope tag is removed.
+
+When the plan starts, each targeted instance's scope tag is checked in EC2 again, so it isn't patched once the tag is gone, and the spoke role's permission refuses it too.
+
+Plans for an environment and the Overview dashboard also ask EC2 for scope-tagged instances, so a newly launched instance counts straight away, in plans, change records and Overview. A run targets the `Environment` tag, so it patches those instances too. The fleet answers list such an instance as pending sync, with no patch state, until Explorer ingests it, which can take minutes or hours.
+
+## Users and roles
+
+| Role | Cognito group | Can |
+|---|---|---|
+| Operator | `operators` | Everything: chat, approve and cancel plans, stop runs |
+| Viewer | `viewers` | Overview, Findings and Reports. No chat, no plans, no changes. |
+| Auditor | `auditors`, alongside either role | Also a read-only list in **Changes** of every operator's plans from the last seven days: the change, who asked, whether it was approved, cancelled or left to expire and by whom, and the run it started, which links to its report. An auditor can't open another operator's conversation, approve or cancel. |
+
+A user in neither group is a viewer.
+
+To add a user, run `./deploy.sh create-user`. It asks for the email address, a temporary password, the role (operator unless you type `viewer`) and whether the user is also an auditor, and adds the user to the groups without sending an email. The user sets a new password at first sign-in. Passwords need at least 12 characters, with an upper-case letter, a lower-case letter and a digit.
+
+To script it instead:
 
 ```bash
 POOL_ID=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
   --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text)
-```
-
-Step 2 — create the user:
-
-```bash
-aws cognito-idp admin-create-user --user-pool-id $POOL_ID \
-  --username user@example.com \
+aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" --username user@example.com \
   --user-attributes Name=email,Value=user@example.com Name=email_verified,Value=true \
-  --temporary-password '<password>!' --message-action SUPPRESS
-```
-
-`--message-action SUPPRESS` stops Cognito from sending a welcome email. Drop it if you want the user to get their temporary password by email.
-
-Step 3 — set a permanent password (skips the forced-change-on-first-login flow):
-
-```bash
-aws cognito-idp admin-set-user-password --user-pool-id $POOL_ID \
-  --username user@example.com --password '<PermanentPassword>!' --permanent
-```
-
-Password rules: at least 8 characters, with an uppercase letter, a lowercase letter, and a number.
-
-Step 4 — assign the user to a role:
-
-```bash
-# For operator access:
-aws cognito-idp admin-add-user-to-group --user-pool-id $POOL_ID \
+  --message-action SUPPRESS --temporary-password '<temporary-password>'
+aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" \
   --username user@example.com --group-name operators
-
-# For viewer access:
-aws cognito-idp admin-add-user-to-group --user-pool-id $POOL_ID \
-  --username user@example.com --group-name viewers
 ```
 
-### Verifying users
+A password on the command line is visible to other users of the machine; `create-user` avoids that. Remove a user with `aws cognito-idp admin-delete-user`.
+
+Some points to watch:
+
+- MFA. `COGNITO_MFA=optional` lets users add an authenticator app, and `required` makes it mandatory. `required` can only be set when the pool is created.
+- Federation. To use an existing identity provider (Okta, Microsoft Entra ID, IAM Identity Center), federate the user pool through SAML or OIDC and map the provider's groups to `operators`, `viewers` and `auditors`.
+- Replacing the pool. A change that replaces the user pool deletes every user, and so does setting `COGNITO_ENABLED=false`. Check the change set before deploying changes to `Patchy-UI`.
+
+## Bedrock Guardrails
+
+`agent/setup_guardrail.py` creates a sample Bedrock guardrail. It turns away questions unrelated to patching, filters harmful content, blocks prompt-injection attempts, and masks AWS account IDs and IP addresses in replies.
 
 ```bash
-# List all users in the pool
-aws cognito-idp list-users --user-pool-id $POOL_ID --output table
-
-# Check which group a specific user belongs to
-aws cognito-idp admin-list-groups-for-user --user-pool-id $POOL_ID --username user@example.com
+venv/bin/python agent/setup_guardrail.py   # the venv exists after a first deploy
 ```
 
-### Removing a user
-
-```bash
-aws cognito-idp admin-delete-user --user-pool-id $POOL_ID --username user@example.com
-```
-
-### Worth knowing
-
-- Recreating the User Pool destroys all users. If a CDK change forces the Cognito User Pool to be replaced (a replacement, not an update), every existing user is gone for good. Always check the CloudFormation changeset before deploying CDK changes that touch the UI stack.
-- Federated identity: in production, where you already manage users through an identity provider (Okta, Azure AD, Ping, AWS IAM Identity Center), federate the Cognito User Pool via OIDC or SAML and map your IdP groups to `operators` and `viewers`. See [Security — Authentication Modes](security.md#authentication-modes).
-
----
-
-## Bedrock Guardrails (Optional)
-
-Creates a sample guardrail with topic filtering, content safety, and sensitive data masking.
-
-```bash
-source venv/bin/activate
-python agent/setup_guardrail.py
-```
-
-Add the output values to `.env` and redeploy:
-
-```bash
-GUARDRAIL_ID=<guardrail-id-from-output>
-GUARDRAIL_VERSION=<version-from-output>
-```
-
-```bash
-./deploy.sh agent
-```
-
-The sample guardrail includes:
-
-- A denied topic covering non-patching queries (general knowledge, unrelated AWS services)
-- Content filters that block harmful content at the HIGH threshold
-- Sensitive-data handling that anonymizes AWS account IDs and IP addresses in responses
-- Prompt-attack detection that blocks prompt injection attempts
-
-Extend it in the Bedrock console or via the API with whatever additional policies your compliance requirements call for.
+Put the `GUARDRAIL_ID` and `GUARDRAIL_VERSION` it prints into `.env` and run `./deploy.sh agent`. The runtime applies the guardrail to the latest message in each turn. Adjust its policies in the Bedrock console to suit your requirements.

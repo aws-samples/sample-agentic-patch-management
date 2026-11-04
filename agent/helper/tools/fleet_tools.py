@@ -1,23 +1,20 @@
 """Fleet discovery and scope resolution tools."""
 
 from strands import tool
-from typing import Optional, List, Dict, Any
+
+from helper.display import fleet_card
+from typing import Optional, List, Dict
 
 from . import _shared
 from ._shared import (
-    logger, os,
-    classify_error,
+    logger, classify_error,
     ClientError,
-    get_client, get_hub_account_id,
     resolve_scope,
     _normalize_environment,
     _get_configured_scope_accounts,
-    _get_query_targets,
     _get_fleet_summary,
     _direct_describe_scoped_instances,
-    AWS_REGION,
-    SCOPE_TAG_KEY, SCOPE_TAG_VALUE,
-    EXECUTION_DEFAULTS, SPOKE_REGIONS,
+    execution_limits,
 )
 
 
@@ -26,29 +23,45 @@ from ._shared import (
 # ============================================================================
 
 
+# Instances per environment the model sees; the card and counts cover all of them.
+MODEL_INSTANCES_PER_ENV = 15
+
+
+def _env_matches(tag_value: Optional[str], environment: str) -> bool:
+    """Whether an instance's Environment tag means this environment (Production is prod)."""
+    return bool(tag_value) and _normalize_environment(tag_value) == environment
+
+
+def _instances_for_model(instances_by_env: Dict[str, list]) -> Dict[str, dict]:
+    """Per environment: counts plus the instances most worth mentioning (missing patches first)."""
+    out = {}
+    for env, insts in instances_by_env.items():
+        ranked = sorted(insts, key=lambda i: -(i.get('missing_patches') or 0))
+        out[env] = {
+            'count': len(insts),
+            'with_missing_patches': sum(1 for i in insts if (i.get('missing_patches') or 0) > 0),
+            'pending_sync': sum(1 for i in insts if i.get('data_source') == 'ec2_direct'),
+            'instances': ranked[:MODEL_INSTANCES_PER_ENV],
+        }
+        if len(insts) > MODEL_INSTANCES_PER_ENV:
+            out[env]['instances_omitted'] = len(insts) - MODEL_INSTANCES_PER_ENV
+    return out
+
+
 @tool
 def get_fleet_overview(environment: Optional[str] = None,
                        account_id: Optional[str] = None) -> dict:
-    """Fleet overview via SSM Explorer + direct EC2 describe (hybrid). Cross-account, cross-region.
+    """Instances in scope by environment and account, with patch state.
 
-    Explorer (Resource Data Sync) is the bulk source -- it has tags, patch
-    state, and SSM-managed status for every instance it knows about. It lags
-    real-world state by 30 min to ~1 day. We supplement with direct EC2
-    describe across configured (account, region) so newly launched instances
-    show up before Explorer ingests them. Pending-ingestion rows are tagged
-    with `data_source='ec2_direct'` and have `missing_patches=None` since we
-    can't read patch state without Explorer.
+    Use for inventory and broad questions: "show instances", "overall security posture".
 
     Args:
-        environment: Filter by environment (dev, staging, prod). None=all.
-        account_id: Restrict to a specific account (e.g., '111122223333').
-                    Only pass when the user explicitly names an account.
-                    Must be in the configured scope. None = all accounts.
-
-    Returns:
-        dict: {environments, accounts, instances_by_environment, instance_count,
-               explorer_available, pending_ingestion_count}
+        environment: dev, staging or prod. Omit for all.
+        account_id: Only when the operator names an account.
     """
+    # Explorer (Resource Data Sync) is the bulk source but lags 30 min to a day, so
+    # direct EC2 describes fill in new instances (data_source='ec2_direct',
+    # missing_patches=None until Explorer ingests them).
     try:
         # Validate account_id against configured scope
         if account_id:
@@ -67,10 +80,10 @@ def get_fleet_overview(environment: Optional[str] = None,
 
         instances_by_env: Dict[str, list] = {}
         seen_ids: set = set()
-        for iid, inst in (_shared._fleet_instances_cache or {}).items():
+        for iid, inst in _shared.fleet_instances().items():
             if not inst.get('managed'):
                 continue
-            if env_value and inst.get('environment') != env_value:
+            if env_value and not _env_matches(inst.get('environment'), env_value):
                 continue
             # Filter by account_id when specified
             if account_id and inst.get('account_id') != account_id:
@@ -81,7 +94,8 @@ def get_fleet_overview(environment: Optional[str] = None,
                 'name': inst.get('name', ''),
                 'account_id': inst.get('account_id', 'unknown'),
                 'status': inst.get('ping_status', 'Unknown'),
-                'missing_patches': inst.get('missing_count', 0),
+                # None when Systems Manager has no patch state for it: not scanned, not "0 missing".
+                'missing_patches': inst.get('missing_count', 0) if inst.get('scanned', True) else None,
                 'data_source': 'explorer',
             })
             seen_ids.add(iid)
@@ -99,8 +113,9 @@ def get_fleet_overview(environment: Optional[str] = None,
             if info.get('state') not in ('running', 'pending', 'stopping', 'stopped'):
                 continue
             inst_env = (info.get('tags') or {}).get('Environment', 'unknown')
-            if env_value and inst_env != env_value:
+            if env_value and not _env_matches(inst_env, env_value):
                 continue
+            inst_env = _normalize_environment(inst_env) if inst_env != 'unknown' else inst_env
             instances_by_env.setdefault(inst_env, []).append({
                 'instance_id': iid,
                 'name': info.get('name', ''),
@@ -112,7 +127,9 @@ def get_fleet_overview(environment: Optional[str] = None,
                          'in EC2 + Inspector, but has not yet been aggregated into '
                          'the Resource Data Sync that powers the fleet view '
                          '(typical lag: 30 min to several hours after launch). '
-                         'Patch state will appear once the sync ingests it.'),
+                         'Patch state will appear once the sync ingests it. Plans '
+                         'and runs for its environment already include it: a run '
+                         'targets the Environment tag, not the fleet view.'),
             })
             pending_count += 1
 
@@ -129,12 +146,25 @@ def get_fleet_overview(environment: Optional[str] = None,
             'summary': _s_summary,
             'environments': fleet.get('environments', {}),
             'accounts': fleet.get('accounts', {}),
-            'instances_by_environment': instances_by_env,
+            'instances_by_environment': _instances_for_model(instances_by_env),
             'instance_count': total,
             'pending_ingestion_count': pending_count,
             'explorer_available': fleet.get('explorer_available', False),
-            'next_action': "Present the fleet overview using the fleet_overview response template.",
+            'next_action': "Summarise the fleet by environment.",
+            'display': fleet_card(instances_by_env, env_value),
         }
+        # Locations whose instances couldn't be read are missing from these counts (disruption
+        # round, 3 Nov: an IAM deny in one Region left dev at "4 instances, all online").
+        unreadable = _shared.location_names(list(_shared.fleet_view_unreadable()) + list(getattr(direct, 'unreadable', None) or []))
+        if unreadable:
+            result['unreadable_locations'] = unreadable
+            result['next_action'] = (f"Say first that instances in {', '.join(unreadable[:3])} couldn't be read, "
+                                     "so they aren't in these counts and the fleet may be larger. "
+                                     + result['next_action'])
+            card = result.get('display')
+            if isinstance(card, dict):
+                card['subtitle'] = ((card.get('subtitle') + '. ') if card.get('subtitle') else '') + \
+                    f"Couldn't read {', '.join(unreadable[:3])}; instances there aren't counted"
         if pending_count > 0:
             result['discovery_note'] = (
                 f"{pending_count} instance(s) found via direct EC2 only (not yet in Explorer). "
@@ -151,18 +181,15 @@ def resolve_execution_scope(environment: str,
                             account_ids: Optional[List[str]] = None,
                             regions: Optional[List[str]] = None,
                             ou_ids: Optional[List[str]] = None) -> dict:
-    """Resolve accounts and count instances for a cross-account operation.
+    """Accounts and instance counts for an environment, with rollout limits.
 
-    Decision: Always call before multi_account_dry_run or multi_account_execute.
+    Call before multi_account_execute, multi_account_rollback or multi_account_dry_run.
 
     Args:
-        environment: Target environment (dev, staging, prod)
-        account_ids: Explicit account IDs (skips discovery)
-        regions: Target regions (default: hub region)
-        ou_ids: Organizations OU IDs for account discovery
-
-    Returns:
-        dict: {accounts, total_accounts, total_instances, execution_defaults, confirmation_required}
+        environment: dev, staging or prod.
+        account_ids: Only when the operator names accounts.
+        regions: Only when the operator names regions.
+        ou_ids: Only when the operator names OUs.
     """
     try:
         env_value = _normalize_environment(environment)
@@ -171,24 +198,23 @@ def resolve_execution_scope(environment: str,
 
         scope = resolve_scope(environment=env_value, account_ids=account_ids,
                               regions=regions, ou_ids=ou_ids)
+        if scope.get('error_code'):
+            return scope  # an OutOfScope refusal names what was asked for and what's allowed
 
         fleet = _get_fleet_summary(environment=env_value)
         fleet_accounts = fleet.get('accounts', {})
 
-        # Get per-environment instance counts from the fleet cache
-        # fleet_accounts has totals across ALL environments per account.
-        # For accurate per-environment counts, filter from the instance cache.
+        # Per-environment counts from the same instances a plan targets: the fleet view and
+        # new ones EC2 reports. Never the account's totals across every environment when the
+        # environment has none (2 Nov review, L7).
         env_instance_counts: Dict[str, int] = {}
         env_missing_counts: Dict[str, int] = {}
-        if _shared._fleet_instances_cache and env_value:
-            for iid, inst in _shared._fleet_instances_cache.items():
-                if not inst.get('managed'):
-                    continue
-                if inst.get('environment') != env_value:
-                    continue
+        if env_value:
+            cache = _shared.fleet_instances()
+            for iid, inst in _shared.environment_instances(env_value).items():
                 acct = inst.get('account_id', '')
                 env_instance_counts[acct] = env_instance_counts.get(acct, 0) + 1
-                env_missing_counts[acct] = env_missing_counts.get(acct, 0) + inst.get('missing_count', 0)
+                env_missing_counts[acct] = env_missing_counts.get(acct, 0) + (cache.get(iid) or {}).get('missing_count', 0)
 
         accounts = []
         total_instances = 0
@@ -197,8 +223,7 @@ def resolve_execution_scope(environment: str,
         total_unmanaged = 0
         for acct_id in scope_account_ids:
             acct_data = fleet_accounts.get(acct_id, {})
-            # Use environment-filtered counts if available, otherwise fall back to account totals
-            if env_value and env_instance_counts:
+            if env_value:
                 count = env_instance_counts.get(acct_id, 0)
                 missing = env_missing_counts.get(acct_id, 0)
             else:
@@ -236,9 +261,12 @@ def resolve_execution_scope(environment: str,
             'total_missing': total_missing,
             'regions': scope['regions'],
             'multi_account': scope['multi_account'],
-            'execution_defaults': EXECUTION_DEFAULTS,
-            'confirmation_required': scope['multi_account'],
-            'next_action': "Present the account plan to the operator. Then call multi_account_dry_run or multi_account_execute with these account_ids.",
+            # The environment's rollout policy; plans always use it, so it's shown, not passed.
+            'rollout_policy': execution_limits(env_value),
+            'next_action': ("Now call the write tool the operator asked for (multi_account_execute or "
+                            "multi_account_rollback) with these account_ids. "
+                            "It returns a plan card for the operator to approve, so don't stop to confirm first. "
+                            "Call multi_account_dry_run instead only if they asked for a scan or preview."),
         }
 
     except ClientError as e:

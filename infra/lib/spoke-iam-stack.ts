@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
+import { scopeTagCondition } from './common';
 
 export interface SpokeIamStackProps extends cdk.StackProps {
   /** Hub account ID that is allowed to assume this role. */
@@ -11,6 +12,8 @@ export interface SpokeIamStackProps extends cdk.StackProps {
   roleName?: string;
   /** Read-only role for the dashboard — must match SPOKE_READ_ROLE (default: PatchySpokeReadRole). */
   readRoleName?: string;
+  /** Hub roles that read spokes: the UI task role and the report Lambda role (Patchy-UI outputs). */
+  uiReaderRoleArns?: string[];
 }
 
 /**
@@ -33,7 +36,8 @@ export class SpokeIamStack extends cdk.Stack {
     // it (spoke deployed before the agent), fall back to the runtime role
     // name patterns and warn, because any hub principal that can create a
     // role with a matching name could then assume this role.
-    // The SSM service principal is always trusted (Automation execution).
+    // The SSM service principal is trusted for Automation executions started
+    // from the hub or in this account (aws:SourceAccount).
     const runtimeTrust = props.agentCoreRoleArn
       ? { ArnEquals: { 'aws:PrincipalArn': props.agentCoreRoleArn } }
       : {
@@ -53,22 +57,36 @@ export class SpokeIamStack extends cdk.Stack {
     }
     const spokeRole = new iam.Role(this, 'SpokeRole', {
       roleName,
-      assumedBy: new iam.CompositePrincipal(
-        new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions(runtimeTrust),
-        new iam.ServicePrincipal('ssm.amazonaws.com'),
-      ),
+      assumedBy: new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions(runtimeTrust),
       maxSessionDuration: cdk.Duration.hours(1),
       description: 'Cross-account role for Patchy patch automation',
     });
+    const sourceAccounts = Array.from(new Set([props.hubAccountId, cdk.Aws.ACCOUNT_ID]));
+    spokeRole.assumeRolePolicy!.addStatements(new iam.PolicyStatement({
+      actions: ['sts:AssumeRole'],
+      principals: [new iam.ServicePrincipal('ssm.amazonaws.com')],
+      conditions: { StringEquals: { 'aws:SourceAccount': sourceAccounts } },
+    }));
 
-    // Read role for the dashboard (Patchy-UI-* task role). It carries the
-    // read statements below and nothing that can change an instance, so a
+    // Read role for the dashboard and the report Lambda. It carries the read
+    // statements below and nothing that can change an instance, so a
     // compromise of the internet-facing UI can't patch or run commands.
+    // With their exact ARNs (deploy.sh reads them from the Patchy-UI stack),
+    // no other hub role can assume it; before the UI exists it falls back to
+    // the Patchy-UI-* name pattern and warns, and deploy.sh redeploys this
+    // stack once the UI is up.
+    const readers = (props.uiReaderRoleArns || []).filter((a) => a);
+    if (!readers.length) {
+      console.warn(
+        '[Patchy-SpokeIam] uiReaderRoleArns not set: PatchySpokeReadRole trusts any hub role named ' +
+        'Patchy-UI-*. Deploy the UI, then ./deploy.sh spoke, to trust the UI roles only.'
+      );
+    }
     const readRole = new iam.Role(this, 'SpokeReadRole', {
       roleName: readRoleName,
-      assumedBy: new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions({
-        ArnLike: { 'aws:PrincipalArn': `arn:aws:iam::${props.hubAccountId}:role/Patchy-UI-*` },
-      }),
+      assumedBy: new iam.ArnPrincipal(`arn:aws:iam::${props.hubAccountId}:root`).withConditions(readers.length
+        ? { ArnEquals: { 'aws:PrincipalArn': readers } }
+        : { ArnLike: { 'aws:PrincipalArn': `arn:aws:iam::${props.hubAccountId}:role/Patchy-UI-*` } }),
       maxSessionDuration: cdk.Duration.hours(1),
       description: 'Read-only cross-account role for the Patchy dashboard',
     });
@@ -108,6 +126,7 @@ export class SpokeIamStack extends cdk.Stack {
         'ssm:GetMaintenanceWindow',
         'ssm:DescribeMaintenanceWindowTargets',
         'ssm:DescribeMaintenanceWindowTasks',
+        'ssm:GetMaintenanceWindowTask',
       ],
       resources: ['*'],
     }));
@@ -120,6 +139,20 @@ export class SpokeIamStack extends cdk.Stack {
         'ssm:StartAutomationExecution',
       ],
       resources: [`arn:aws:ssm:*:${cdk.Aws.ACCOUNT_ID}:automation-definition/Patchy-*:*`],
+    }));
+
+    // Abort alarms (ABORT_ALARMS) are polled by each location's child
+    // execution under this role, which stops the run when one goes into
+    // ALARM. DescribeAlarms has no resource-level permissions.
+    spokeRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'AbortAlarmPolling',
+      actions: ['cloudwatch:DescribeAlarms'],
+      resources: ['*'],
+    }));
+    spokeRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'AbortAlarmStop',
+      actions: ['ssm:StopAutomationExecution'],
+      resources: [`arn:aws:ssm:*:${cdk.Aws.ACCOUNT_ID}:automation-execution/*`],
     }));
 
     // SSM — SendCommand on documents (which docs can be invoked)
@@ -139,15 +172,8 @@ export class SpokeIamStack extends cdk.Stack {
       sid: 'SSMSendCommandInstances',
       actions: ['ssm:SendCommand'],
       resources: [`arn:aws:ec2:*:${cdk.Aws.ACCOUNT_ID}:instance/*`],
-      conditions: {
-        StringEquals: {
-          // Scope tag must track the configured key/value (matches core-stack).
-          // Hardcoding it here would leave the spoke blast-radius boundary keyed
-          // to 'PatchAutomation' even when SSM_SCOPE_TAG_KEY is reconfigured.
-          [`ssm:resourceTag/${process.env.SSM_SCOPE_TAG_KEY || 'PatchAutomation'}`]:
-            process.env.SSM_SCOPE_TAG_VALUE || 'enabled',
-        },
-      },
+      // Same configured scope tag as the hub (core-stack).
+      conditions: scopeTagCondition(),
     }));
 
     // Inspector — read-only. inspector2:ListFindings and GetConfiguration
@@ -178,6 +204,7 @@ export class SpokeIamStack extends cdk.Stack {
       actions: ['s3:GetObject'],
       resources: [
         `arn:aws:s3:::patch-compliance-reports-${props.hubAccountId}/baseline-overrides/*`,
+        `arn:aws:s3:::patch-compliance-reports-${props.hubAccountId}/install-overrides/*`,
       ],
     }));
 

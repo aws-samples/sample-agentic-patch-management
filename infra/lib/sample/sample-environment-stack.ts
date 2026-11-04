@@ -35,6 +35,10 @@ export class SampleEnvironmentStack extends cdk.Stack {
     const vpc = props.vpc ?? new ec2.Vpc(this, 'SampleVpc', {
       maxAzs: 2,
       natGateways: 1,
+      // This VPC is only created for the spoke StackSet, which can't use the
+      // custom resource (its Lambda code is in the hub's asset bucket). The
+      // instances use their own security group, not the default one.
+      restrictDefaultSecurityGroup: false,
       subnetConfiguration: [
         { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
         { name: 'private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
@@ -60,35 +64,9 @@ export class SampleEnvironmentStack extends cdk.Stack {
       ],
     });
 
-    instanceRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'ssm:UpdateInstanceInformation',
-        'ssm:SendCommand',
-        'ssm:ListCommands',
-        'ssm:ListCommandInvocations',
-        'ssm:DescribeInstanceInformation',
-        'ssm:GetDeployablePatchSnapshotForInstance',
-        'ssm:GetDefaultPatchBaseline',
-        'ssm:GetManifest',
-        'ssm:GetParameter',
-        'ssm:GetParameters',
-        'ssm:ListAssociations',
-        'ssm:ListInstanceAssociations',
-        'ssm:PutInventory',
-        'ssm:PutComplianceItems',
-        'ssm:PutConfigurePackageResult',
-        'ssm:UpdateAssociationStatus',
-        'ssm:UpdateInstanceAssociationStatus',
-        'ec2messages:AcknowledgeMessage',
-        'ec2messages:DeleteMessage',
-        'ec2messages:FailMessage',
-        'ec2messages:GetEndpoint',
-        'ec2messages:GetMessages',
-        'ec2messages:SendReply',
-      ],
-      resources: ['*'],
-    }));
+    // AmazonSSMManagedInstanceCore covers what the SSM agent needs. The instances
+    // get nothing more: in particular no SendCommand, which would let one
+    // compromised sample server run commands on every managed instance.
 
     // S3 read access for BaselineOverride files (severity-scoped patching).
     // The compliance reports bucket lives in the HUB account (Patchy-Core stack).
@@ -101,10 +79,7 @@ export class SampleEnvironmentStack extends cdk.Stack {
       `patch-compliance-reports-${hubAccountId}`
     );
     complianceBucket.grantRead(instanceRole, 'baseline-overrides/*');
-
-    new iam.CfnInstanceProfile(this, 'SampleInstanceProfile', {
-      roles: [instanceRole.roleName],
-    });
+    complianceBucket.grantRead(instanceRole, 'install-overrides/*');
 
     // ── User data ──────────────────────────────────────────────────
     const userData = ec2.UserData.forLinux();
@@ -163,6 +138,21 @@ export class SampleEnvironmentStack extends cdk.Stack {
       },
     ];
 
+    // ── Sample AMI ─────────────────────────────────────────────────
+    // us-east-1 keeps an intentionally old Amazon Linux 2 AMI so there are
+    // vulnerabilities to patch. Elsewhere, use the latest Amazon Linux 2023
+    // AMI from its public SSM parameter so the stack deploys in any Region.
+    // SAMPLE_AMI_ID overrides both.
+    const pinnedSampleAmis: Record<string, string> = { 'us-east-1': 'ami-007f9744891c45503' };
+    const region = cdk.Stack.of(this).region;
+    const sampleImage = process.env.SAMPLE_AMI_ID
+      ? ec2.MachineImage.genericLinux({ [region]: process.env.SAMPLE_AMI_ID })
+      : pinnedSampleAmis[region]
+        ? ec2.MachineImage.genericLinux(pinnedSampleAmis)
+        : ec2.MachineImage.fromSsmParameter(
+            '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64',
+            { os: ec2.OperatingSystemType.LINUX });
+
     // ── Create instances ───────────────────────────────────────────
     environments.forEach(env => {
       for (let i = 1; i <= env.count; i++) {
@@ -170,12 +160,10 @@ export class SampleEnvironmentStack extends cdk.Stack {
           vpc: vpc,
           vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
           instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
-          // Intentionally old AMI — ensures vulnerabilities exist for demo/testing
-          machineImage: ec2.MachineImage.genericLinux({
-            'us-east-1': 'ami-007f9744891c45503',
-          }),
+          machineImage: sampleImage,
           securityGroup: instanceSG,
           role: instanceRole,
+          requireImdsv2: true,
           userData,
           userDataCausesReplacement: false,
         });

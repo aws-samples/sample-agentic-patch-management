@@ -26,7 +26,7 @@ export function CopyButton({ text, className = "", label }: Props) {
       title={copied ? "Copied!" : "Copy"}
     >
       {copied ? (
-        <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <svg className="w-3.5 h-3.5 text-ok" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
         </svg>
       ) : (

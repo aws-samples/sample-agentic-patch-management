@@ -1,26 +1,8 @@
-# AgentCore CDK Project
+# AgentCore CDK project
 
-This CDK project is managed by the AgentCore CLI. It deploys your agent infrastructure into AWS using the `@aws/agentcore-cdk` L3 constructs.
+This project is generated and managed by the AgentCore CLI. It deploys the Patchy runtime and memory with the `@aws/agentcore-cdk` constructs, reading its configuration from `agent/agentcore/`.
 
-## Structure
+Deploy it with `./deploy.sh agent` from the repository root, not with `agentcore deploy` directly. The deploy script writes the settings from `.env` into `agent/agentcore/agentcore.json`, pins the CLI version, sets up the JWT authoriser when `RUNTIME_AUTH=jwt`, and restores the committed file afterwards. A direct `agentcore deploy` deploys the committed single-account defaults.
 
-- `bin/cdk.ts` — Entry point. Reads project configuration from `agentcore/` and creates a stack per deployment target.
-- `lib/cdk-stack.ts` — Defines `AgentCoreStack`, which wraps the `AgentCoreApplication` L3 construct.
-- `test/cdk.test.ts` — Unit tests for stack synthesis.
-
-## Useful commands
-
-- `npm run build` compile TypeScript to JavaScript
-- `npm run test` run unit tests
-- `npx cdk synth` emit the synthesized CloudFormation template
-- `npx cdk deploy` deploy this stack to your default AWS account/region
-- `npx cdk diff` compare deployed stack with current state
-
-## Usage
-
-You typically don't need to interact with this directory directly. The AgentCore CLI handles synthesis and deployment:
-
-```bash
-agentcore deploy    # synthesizes and deploys via CDK
-agentcore status    # checks deployment status
-```
+- `bin/cdk.ts` creates a stack per deployment target from the project configuration.
+- `lib/cdk-stack.ts` defines the stack around the `AgentCoreApplication` construct.

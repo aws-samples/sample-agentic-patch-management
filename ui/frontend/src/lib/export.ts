@@ -17,5 +17,6 @@ export function exportToCsv(filename: string, headers: string[], rows: string[][
   a.href = url;
   a.download = `${filename}.csv`;
   a.click();
-  URL.revokeObjectURL(url);
+  // Some browsers cancel the download if the URL is revoked at once.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

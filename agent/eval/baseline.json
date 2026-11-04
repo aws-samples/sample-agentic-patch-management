@@ -1,8 +1,33 @@
 {
-  "total": 15,
-  "passed": 15,
+  "total": 20,
+  "passed": 20,
   "accuracy": 100.0,
   "results": [
+    {
+      "agent": "unified",
+      "message": "How widespread is CVE-2026-76781?",
+      "expected_tool": "assess_fleet_impact",
+      "actual_tool": "assess_fleet_impact",
+      "tool_correct": true,
+      "expected_params": {
+        "cve_id": [
+          "CVE-2026-76781"
+        ]
+      },
+      "actual_params": {
+        "cve_id": "CVE-2026-76781"
+      },
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Where one CVE is routes to assess_fleet_impact (per-environment SLA card)",
+      "metrics": {
+        "input_tokens": 8139,
+        "output_tokens": 64,
+        "total_tokens": 8203,
+        "latency_ms": 1560
+      }
+    },
     {
       "agent": "unified",
       "message": "What vulnerabilities are in staging?",
@@ -22,10 +47,10 @@
       "passed": true,
       "description": "Vulnerability query routes to get_vulnerability_findings",
       "metrics": {
-        "input_tokens": 3678,
+        "input_tokens": 8137,
         "output_tokens": 56,
-        "total_tokens": 3734,
-        "latency_ms": 1441
+        "total_tokens": 8193,
+        "latency_ms": 1361
       }
     },
     {
@@ -47,10 +72,10 @@
       "passed": true,
       "description": "Fleet view routes to get_fleet_overview",
       "metrics": {
-        "input_tokens": 3678,
-        "output_tokens": 56,
-        "total_tokens": 3734,
-        "latency_ms": 1447
+        "input_tokens": 8135,
+        "output_tokens": 54,
+        "total_tokens": 8189,
+        "latency_ms": 1443
       }
     },
     {
@@ -65,18 +90,18 @@
         ]
       },
       "actual_params": {
-        "days_back": 7,
-        "sla_breaches_only": true
+        "sla_breaches_only": true,
+        "days_back": 7
       },
       "param_failures": [],
       "assertion_failures": [],
       "passed": true,
       "description": "SLA breach query routes to query_compliance_reports with sla_breaches_only",
       "metrics": {
-        "input_tokens": 3678,
-        "output_tokens": 81,
-        "total_tokens": 3759,
-        "latency_ms": 1849
+        "input_tokens": 8134,
+        "output_tokens": 82,
+        "total_tokens": 8216,
+        "latency_ms": 1578
       }
     },
     {
@@ -98,10 +123,10 @@
       "passed": true,
       "description": "CVE patching without instance IDs starts with scope resolution",
       "metrics": {
-        "input_tokens": 3684,
-        "output_tokens": 85,
-        "total_tokens": 3769,
-        "latency_ms": 1955
+        "input_tokens": 8140,
+        "output_tokens": 129,
+        "total_tokens": 8269,
+        "latency_ms": 2453
       }
     },
     {
@@ -125,10 +150,10 @@
       "passed": true,
       "description": "Rollback routes directly to rollback_patches",
       "metrics": {
-        "input_tokens": 3685,
-        "output_tokens": 67,
-        "total_tokens": 3752,
-        "latency_ms": 1722
+        "input_tokens": 8141,
+        "output_tokens": 85,
+        "total_tokens": 8226,
+        "latency_ms": 1706
       }
     },
     {
@@ -150,10 +175,10 @@
       "passed": true,
       "description": "Current compliance status routes to get_patch_compliance",
       "metrics": {
-        "input_tokens": 3679,
-        "output_tokens": 56,
-        "total_tokens": 3735,
-        "latency_ms": 2955
+        "input_tokens": 8136,
+        "output_tokens": 54,
+        "total_tokens": 8190,
+        "latency_ms": 1465
       }
     },
     {
@@ -177,7 +202,7 @@
         "instance_ids": [
           "i-0abc1234def56789"
         ],
-        "execution_mode": "remediate",
+        "execution_mode": "immediate",
         "environment": "dev",
         "cve_id": "CVE-2024-1234"
       },
@@ -186,10 +211,10 @@
       "passed": true,
       "description": "Instance-targeted patching passes IDs, CVE, env, no confirm",
       "metrics": {
-        "input_tokens": 3695,
-        "output_tokens": 132,
-        "total_tokens": 3827,
-        "latency_ms": 2347
+        "input_tokens": 8152,
+        "output_tokens": 185,
+        "total_tokens": 8337,
+        "latency_ms": 2432
       }
     },
     {
@@ -211,10 +236,10 @@
       "passed": true,
       "description": "Fleet patching starts with scope resolution",
       "metrics": {
-        "input_tokens": 3677,
-        "output_tokens": 73,
-        "total_tokens": 3750,
-        "latency_ms": 1999
+        "input_tokens": 8133,
+        "output_tokens": 112,
+        "total_tokens": 8245,
+        "latency_ms": 2043
       }
     },
     {
@@ -238,10 +263,10 @@
       "passed": true,
       "description": "Scan request routes to patch_dry_run",
       "metrics": {
-        "input_tokens": 3682,
-        "output_tokens": 68,
-        "total_tokens": 3750,
-        "latency_ms": 1642
+        "input_tokens": 8137,
+        "output_tokens": 98,
+        "total_tokens": 8235,
+        "latency_ms": 1766
       }
     },
     {
@@ -263,10 +288,10 @@
       "passed": true,
       "description": "Fleet view passes environment",
       "metrics": {
-        "input_tokens": 3675,
-        "output_tokens": 56,
-        "total_tokens": 3731,
-        "latency_ms": 1636
+        "input_tokens": 8131,
+        "output_tokens": 54,
+        "total_tokens": 8185,
+        "latency_ms": 1518
       }
     },
     {
@@ -282,10 +307,10 @@
       "passed": true,
       "description": "Broad security posture query starts with fleet overview",
       "metrics": {
-        "input_tokens": 3679,
-        "output_tokens": 191,
-        "total_tokens": 3870,
-        "latency_ms": 2679
+        "input_tokens": 8133,
+        "output_tokens": 84,
+        "total_tokens": 8217,
+        "latency_ms": 1781
       }
     },
     {
@@ -307,101 +332,151 @@
       "passed": true,
       "description": "Staged rollout planning starts with vulnerability assessment",
       "metrics": {
-        "input_tokens": 3680,
-        "output_tokens": 250,
-        "total_tokens": 3930,
-        "latency_ms": 3346
+        "input_tokens": 8140,
+        "output_tokens": 116,
+        "total_tokens": 8256,
+        "latency_ms": 1994
       }
     },
     {
       "agent": "unified",
       "message": "Stop execution abc-123-def",
-      "expected_tool": "emergency_stop",
-      "actual_tool": "emergency_stop",
+      "expected_tool": null,
+      "actual_tool": null,
+      "tool_correct": true,
+      "expected_params": {},
+      "actual_params": {},
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "Stop requests call no write tool; the model points to the Stop button",
+      "metrics": {
+        "input_tokens": 8135,
+        "output_tokens": 59,
+        "total_tokens": 8194,
+        "latency_ms": 1743
+      }
+    },
+    {
+      "agent": "unified",
+      "message": "Which findings in prod will miss their SLA?",
+      "expected_tool": "forecast_sla_misses",
+      "actual_tool": "forecast_sla_misses",
       "tool_correct": true,
       "expected_params": {
-        "automation_execution_id": [
-          "abc-123-def"
+        "environment": [
+          "prod"
         ]
       },
       "actual_params": {
-        "automation_execution_id": "abc-123-def"
+        "environment": "prod"
       },
       "param_failures": [],
       "assertion_failures": [],
       "passed": true,
-      "description": "Emergency stop with execution ID calls tool directly",
+      "description": "SLA risk question routes to forecast_sla_misses",
       "metrics": {
-        "input_tokens": 3678,
-        "output_tokens": 62,
-        "total_tokens": 3740,
-        "latency_ms": 1704
+        "input_tokens": 8139,
+        "output_tokens": 55,
+        "total_tokens": 8194,
+        "latency_ms": 1412
       }
     },
     {
       "agent": "multi_turn",
       "message": "Yes, proceed",
-      "expected_tool": "execute_patch_operation",
-      "actual_tool": "execute_patch_operation",
+      "expected_tool": null,
+      "actual_tool": null,
       "tool_correct": true,
-      "expected_params": {
-        "confirm_execute": [
-          true
-        ],
-        "instance_ids": [
-          "i-0abc1234def56789"
-        ]
-      },
-      "actual_params": {
-        "instance_ids": [
-          "i-0abc1234def56789"
-        ],
-        "execution_mode": "immediate",
-        "environment": "dev",
-        "confirm_execute": true
-      },
+      "expected_params": {},
+      "actual_params": {},
       "param_failures": [],
       "assertion_failures": [],
       "passed": true,
-      "description": "Confirmation retry: 'yes' after plan triggers confirm_execute=True",
+      "description": "Typed 'yes' after a patch plan must not call a write tool",
       "metrics": {
-        "input_tokens": 3915,
-        "output_tokens": 123,
-        "total_tokens": 4038,
-        "latency_ms": 2425
+        "input_tokens": 8399,
+        "output_tokens": 55,
+        "total_tokens": 8454,
+        "latency_ms": 1832
       }
     },
     {
       "agent": "multi_turn",
       "message": "ok go ahead",
-      "expected_tool": "rollback_patches",
-      "actual_tool": "rollback_patches",
+      "expected_tool": null,
+      "actual_tool": null,
       "tool_correct": true,
-      "expected_params": {
-        "confirm_execute": [
-          true
-        ],
-        "instance_ids": [
-          "i-0abc1234def56789"
-        ]
-      },
-      "actual_params": {
-        "instance_ids": [
-          "i-0abc1234def56789"
-        ],
-        "confirm_execute": true
-      },
+      "expected_params": {},
+      "actual_params": {},
       "param_failures": [],
       "assertion_failures": [],
       "passed": true,
-      "description": "Rollback confirmation retry works with informal approval",
+      "description": "Informal approval after a rollback plan must not call a write tool",
       "metrics": {
-        "input_tokens": 3865,
-        "output_tokens": 86,
-        "total_tokens": 3951,
-        "latency_ms": 1725
+        "input_tokens": 8343,
+        "output_tokens": 74,
+        "total_tokens": 8417,
+        "latency_ms": 2046
+      }
+    },
+    {
+      "agent": "multi_turn",
+      "message": "",
+      "expected_tool": null,
+      "actual_tool": null,
+      "tool_correct": true,
+      "expected_params": {},
+      "actual_params": {},
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "A plan that runs now is explained by its reason, not called an emergency",
+      "metrics": {
+        "input_tokens": 8444,
+        "output_tokens": 295,
+        "total_tokens": 8739,
+        "latency_ms": 4626
+      }
+    },
+    {
+      "agent": "multi_turn",
+      "message": "",
+      "expected_tool": null,
+      "actual_tool": null,
+      "tool_correct": true,
+      "expected_params": {},
+      "actual_params": {},
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "A refused rollback is relayed with its reason, not retried",
+      "metrics": {
+        "input_tokens": 8348,
+        "output_tokens": 207,
+        "total_tokens": 8555,
+        "latency_ms": 3108
+      }
+    },
+    {
+      "agent": "multi_turn",
+      "message": "",
+      "expected_tool": null,
+      "actual_tool": null,
+      "tool_correct": true,
+      "expected_params": {},
+      "actual_params": {},
+      "param_failures": [],
+      "assertion_failures": [],
+      "passed": true,
+      "description": "A cancelled run is described as stopped, not failed",
+      "metrics": {
+        "input_tokens": 8491,
+        "output_tokens": 263,
+        "total_tokens": 8754,
+        "latency_ms": 4128
       }
     }
   ],
-  "timestamp": "2026-07-03T06:16:33Z"
+  "timestamp": "2026-11-04T00:02:44Z"
 }
