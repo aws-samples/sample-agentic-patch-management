@@ -117,6 +117,8 @@
   <text class="chip" x="248" y="440">pending-reports/</text>
   <rect x="238" y="450" width="168" height="20" rx="7" class="cbox"/>
   <text class="chip" x="248" y="464">YYYY/MM/DD reports</text>
+  <rect x="238" y="474" width="168" height="20" rx="7" class="cbox"/>
+  <text class="chip" x="248" y="488">run-locks/</text>
 
   <!-- UI writes the decision -->
   <line x1="330" y1="292" x2="330" y2="320" class="wirec" marker-end="url(#ac)"/>
@@ -139,7 +141,7 @@
   <line x1="460" y1="572" x2="426" y2="572" class="wire" marker-end="url(#a)"/>
   <rect x="314" y="540" width="110" height="64" rx="10" class="node"/>
   <text class="t14" x="326" y="564">EventBridge</text>
-  <text class="s" x="326" y="584">finished · 15 min</text>
+  <text class="s" x="326" y="584">finished · 5 min</text>
   <line x1="314" y1="572" x2="298" y2="572" class="wire" marker-end="url(#a)"/>
   <rect x="158" y="540" width="138" height="64" rx="10" class="node"/>
   <text class="t14" x="170" y="564">Report Lambda</text>
