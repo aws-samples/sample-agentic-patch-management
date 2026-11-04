@@ -37,9 +37,19 @@ It is built on the [Strands Agents SDK](https://github.com/strands-agents/sdk-py
 
 ## Architecture
 
-![Patchy architecture](docs/images/architecture.svg)
+![Patchy architecture: the operator signs in through an Application Load Balancer and Amazon Cognito; the console on Fargate passes requests to the Patchy agent on AgentCore Runtime, which uses Claude Sonnet 5 on Amazon Bedrock and reads Inspector, Systems Manager, EC2 and CloudWatch; plans and decisions are stored in Amazon S3; an approved plan starts Systems Manager Automation, which patches tagged instances in the spoke accounts; EventBridge and a Lambda function write the report and notify SNS.](docs/images/architecture-aws.png)
 
-Everything runs in a hub account: the UI on ECS Fargate behind an Application Load Balancer with Amazon Cognito sign-in, the agent on the AgentCore Runtime, the compliance bucket, and a Lambda function that writes reports. Each spoke account holds two Patchy IAM roles and the Patchy SSM documents; nothing else runs there. The red line in the diagram is the change path, which only an approved plan travels. [`docs/architecture.md`](docs/architecture.md) explains each part.
+1. The operator signs in through an Application Load Balancer with Amazon Cognito.
+2. The console passes each request to the Patchy agent on Amazon Bedrock AgentCore Runtime.
+3. The agent uses Claude Sonnet 5 on Amazon Bedrock to choose its tools.
+4. Its tools read Amazon Inspector, Systems Manager, Amazon EC2 and Amazon CloudWatch.
+5. A change request is stored as a plan in the compliance bucket.
+6. The console records the operator's decision there; the agent can't write one.
+7. Only an approved plan starts Systems Manager Automation.
+8. Automation patches the tagged instances in each account and Region, using the Patchy roles and documents.
+9. When the run ends, EventBridge starts a Lambda function that writes the compliance report and can notify an SNS topic.
+
+[`docs/architecture.md`](docs/architecture.md) covers each part in detail.
 
 ## Try it
 
