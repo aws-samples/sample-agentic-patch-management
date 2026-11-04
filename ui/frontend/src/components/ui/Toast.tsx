@@ -7,8 +7,8 @@ interface ToastItem {
 }
 
 const ICONS: Record<string, string> = {
-  success: "text-emerald-400",
-  error: "text-red-400",
+  success: "text-ok",
+  error: "text-risk",
   info: "text-accent",
 };
 
@@ -37,7 +37,7 @@ export function ToastContainer({ toasts, onDismiss }: { toasts: ToastItem[]; onD
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="flex items-center gap-2.5 px-4 py-3 bg-surface-raised border border-edge-strong rounded-xl shadow-xl animate-slide-up cursor-pointer"
+          className="flex items-center gap-2.5 px-4 py-3 bg-surface-raised border border-edge-strong rounded-lg shadow-xl animate-slide-up cursor-pointer"
           onClick={() => onDismiss(t.id)}
         >
           <svg className={`w-4 h-4 shrink-0 ${ICONS[t.type]}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

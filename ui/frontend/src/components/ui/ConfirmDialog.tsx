@@ -18,15 +18,21 @@ export function ConfirmDialog({
   variant = "default",
   onConfirm, onCancel,
 }: Props) {
-  const confirmRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  // Callers pass a new onCancel each render; keep the latest without re-running the
+  // effect, which would move focus back to Cancel on every tick.
+  const cancelLatest = useRef(onCancel);
+  cancelLatest.current = onCancel;
 
   useEffect(() => {
     if (!open) return;
-    confirmRef.current?.focus();
+    // Focus goes back to whatever opened the dialog when it closes.
+    const opener = document.activeElement as HTMLElement | null;
+    // Cancel has focus, so Enter on an unread dialog doesn't confirm a change.
+    cancelRef.current?.focus();
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") cancelLatest.current();
       // Focus trap: Tab cycles between cancel and confirm buttons
       if (e.key === "Tab") {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>("button");
@@ -43,30 +49,33 @@ export function ConfirmDialog({
       }
     };
     document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [open, onCancel]);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [open]);
 
   if (!open) return null;
 
   const confirmStyles = variant === "destructive"
-    ? "bg-red-500/20 text-red-400 hover:bg-red-500/30 ring-1 ring-red-500/30"
-    : "bg-accent text-surface-base hover:bg-teal-300";
+    ? "btn stop"
+    : "btn primary";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onCancel}>
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="absolute inset-0" style={{ background: "var(--overlay)" }} />
       <div
         ref={dialogRef}
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
         aria-describedby="confirm-dialog-desc"
-        className="relative bg-surface-card border border-edge-strong rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl animate-fade-in"
+        className="relative bg-surface-card border border-edge-strong rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl animate-fade-in"
         onClick={(e) => e.stopPropagation()}
       >
         {variant === "destructive" && (
-          <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
-            <ExclamationTriangleIcon className="w-5 h-5 text-red-400" />
+          <div className="w-10 h-10 rounded-lg flex items-center justify-center mb-4" style={{ background: "var(--risk-soft)" }}>
+            <ExclamationTriangleIcon className="w-5 h-5 text-risk" />
           </div>
         )}
         <h3 id="confirm-dialog-title" className="text-lg font-semibold text-fg">{title}</h3>
@@ -75,14 +84,13 @@ export function ConfirmDialog({
           <button
             ref={cancelRef}
             onClick={onCancel}
-            className="px-4 py-2 text-sm font-medium text-fg-muted bg-hover border border-edge rounded-xl hover:bg-hover transition"
+            className="btn"
           >
             {cancelLabel}
           </button>
           <button
-            ref={confirmRef}
             onClick={onConfirm}
-            className={`px-4 py-2 text-sm font-medium rounded-xl transition ${confirmStyles}`}
+            className={confirmStyles}
           >
             {confirmLabel}
           </button>

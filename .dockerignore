@@ -5,7 +5,6 @@
 # Environment and secrets
 .env
 .env.*
-ssh-keys/
 
 # Python
 venv/
@@ -37,14 +36,12 @@ infra/dist/
 agent/agentcore/cdk/dist/
 
 # IDE
-.kiro/
 .vscode/
 .DS_Store
 
 # Docs (not needed in container)
-doc/
+docs/
 *.md
-!ui/frontend/README.md
 
 
 # Docker

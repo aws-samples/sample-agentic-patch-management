@@ -1,310 +1,159 @@
-# Extending the Solution — Intelligent Patch Automation
+# Extending Patchy
 
-The tool-based architecture is built to be extended. Adding a new capability is usually a single tool function — no changes to routing or decision logic.
+How to add a tool, a card, a change type or an Automation document, how to support another OS or scanner, and how to call Patchy from other systems. Read [Architecture](architecture.md) first: most extensions plug into shared code for routing, approval and audit, and that page explains it.
 
----
+- [Adding a read tool](#adding-a-read-tool)
+- [Showing a result as a card](#showing-a-result-as-a-card)
+- [Adding a change type](#adding-a-change-type)
+- [Adding an Automation document](#adding-an-automation-document)
+- [Other operating systems](#other-operating-systems)
+- [Other vulnerability scanners](#other-vulnerability-scanners)
+- [Calling Patchy from other systems](#calling-patchy-from-other-systems)
+- [Seeing everyone's changes](#seeing-everyones-changes)
 
-## What the solution covers today
+## Adding a read tool
 
-- Vulnerability discovery — scan the fleet for CVEs, weigh severity, and pin down which environments and instances are affected
-- Fleet-wide impact assessment — see how far a vulnerability spreads across dev, staging, and prod
-- Patch impact preview — see exactly which packages will change before you commit, including ones beyond the target CVE
-- SLA-driven decisions — EMERGENCY vs SCHEDULED, worked out automatically from per-instance SLA tags
-- Patch policy awareness — detect existing SSM Patch Policies and defer to them for scheduled operations
-- Severity-scoped execution — apply patches at a specific severity level using BaselineOverride files
-- Application health verification — check SSM connectivity and CloudWatch alarms after patching
-- Automated rollback — reverse patches if health checks fail, with verification
-- Compliance reporting — structured audit reports with before/after delta, SLA assessment, and operator identity
-- Cross-account, cross-region operations — fan out patching across accounts and regions via SSM Automation TargetLocations
-- Real-time operations console — a dashboard with fleet status, vulnerabilities, compliance metrics, and audit trail
+A read tool looks something up and returns a dict. It needs no approval.
 
----
+1. Write the function in the module under `agent/helper/tools/` that matches what it reads: `vulnerability_tools.py`, `fleet_tools.py`, `maintenance_tools.py`, `compliance_tools.py` or `patch_tools.py`.
 
-## What you can extend
+   ```python
+   from typing import Optional
+   from strands import tool
+   from ._shared import logger, classify_error, ClientError
 
-| Capability | What it adds | How to integrate |
-|-----------|-------------|-----------------|
-| CMDB-driven blast radius | Show the application dependencies affected by patching | Add a tool that queries your CMDB (ServiceNow, Device42) for instance dependencies. The agent presents the dependency map before the operator confirms. |
-| Change management integration | Check your change calendar before patching | Add a tool that queries your change management system (ServiceNow, Jira). The agent checks both SSM windows and your change calendar. |
-| Third-party vulnerability scanners | Use Qualys, Tenable, or Rapid7 alongside Inspector | Add a tool that queries your scanner's API. The agent uses it next to the Inspector findings. |
-| Multi-OS patching | Support Ubuntu, RHEL, Windows | Create baseline override JSON files per OS and adapt the rollback commands for apt/zypper/Windows Update. |
-| Slack/Teams notifications | Get pinged when patching completes or fails | POST to `/api/chat` from a Lambda triggered by SNS. The agent's structured output maps to Slack message blocks. |
-| Per-CVE surgical patching | Install only the specific fix package | Use SSM's `InstallOverrideList` parameter with a CVE → package name mapping from Inspector's `vulnerablePackages` field. |
-| Cross-account patching | Manage instances across multiple AWS accounts | Built in. Set `MULTI_ACCOUNT_ENABLED=true` in `.env` and deploy spoke roles + SSM documents via `./deploy.sh spoke && ./deploy.sh docs`. See [Multi-Account Setup](../README.md#multi-account-setup). |
-| Container image patching (ECS/EKS) | Scan and remediate vulnerabilities in container images | See [Container Workloads](#container-workloads) below. |
+   @tool
+   def get_reboot_status(environment: str, instance_ids: Optional[list] = None) -> dict:
+       """Which instances in an environment are waiting for a reboot after patching.
 
-Each of these is a single tool function added to the agent's tool list — routing, memory, and UI stay put.
+       Use for "what needs a reboot in prod". For whether a CVE is fixed, use verify_cve_remediation.
 
----
+       Args:
+           environment: dev, staging or prod.
+           instance_ids: Limit to these instances.
+       """
+       try:
+           logger.info(f"[TOOL:get_reboot_status] env={environment}")
+           ...
+           return {"environment": environment, "pending": pending, "count": len(pending)}
+       except ClientError as e:
+           return classify_error(e)
+   ```
 
-## Adding a new tool
+2. Export it from `agent/helper/tools/__init__.py` (the import and `__all__`).
+3. Import it in `agent/supervisor.py` and add it to `ALL_TOOLS`, the only tool list the agent is built with.
+4. Add a progress label in `ui/frontend/src/lib/toolLabels.ts`, such as "Checking reboots". Without one, the UI turns the tool name into words.
+5. Add a routing scenario to the `unified` list in `agent/eval/scenarios.json`, run the eval, and update the baseline. See [the eval](../agent/eval/README.md).
+6. Add the tool to the table in [Architecture](architecture.md#tools) and update the tool count there and in the README.
 
-### 1. Write the tool function
+The docstring is the tool's description, and the model reads it on every call to decide which tool fits. Say what the tool returns and when to use it, and name the alternative where two tools overlap. Keep implementation notes in code comments, so they don't cost tokens on every call.
 
-Add it to the right domain module in `agent/helper/tools/` (`vulnerability_tools.py` for scanner tools, `patch_tools.py` for patching, `maintenance_tools.py` for scheduling, and so on):
+To steer what the model does next, return a `next_action` string, for example "Now call verify_cve_remediation with these instance IDs". Leave rules that must always hold to code, as steering (`agent/helper/steering.py`) or as checks in the tool.
+
+## Showing a result as a card
+
+If the operator should see a result as data rather than prose, return a `display` block with it:
 
 ```python
-@tool
-def my_new_tool(param1: str, param2: Optional[int] = None) -> dict:
-    """Description of what this tool does.
-
-    Args:
-        param1: What param1 is
-        param2: What param2 is (optional)
-
-    Returns:
-        dict: {'result': ..., 'count': ...}
-    """
-    try:
-        logger.info(f"[TOOL:my_new_tool] param1={param1} param2={param2}")
-
-        # ... your logic here ...
-
-        logger.info(f"[TOOL:my_new_tool] RESULT: key_metric={value}")
-        return {"result": value, "count": count}
-    except ClientError as e:
-        error_info = classify_error(e)
-        logger.error(f"[TOOL:my_new_tool] ERROR: {error_info}")
-        return error_info
+return {
+    "pending": pending,
+    "display": {
+        "type": "reboots",
+        "title": f"Reboots pending · {environment}",
+        "subtitle": f"{len(pending)} instances",
+        "fields": [{"label": "Oldest", "value": oldest, "tone": "warn"}],
+        "rows": [{"label": i["id"], "status": i["since"], "tone": "warn"} for i in pending],
+        "actions": [{"label": "Reboot dev", "prompt": "Patch dev and reboot"}],
+    },
+}
 ```
 
-### 2. Register the tool
+`CardCollector` (`agent/helper/cards.py`) takes the block out before the model or memory sees it, sends it to the UI, and tells the model to reply in two or three sentences without repeating the card. A card larger than 24,000 bytes is dropped, with a `[CARD]` warning in the log.
 
-Import it and add it to the tool list in `supervisor.py`:
+The chat renders cards in `ui/frontend/src/components/cards/ResultCards.tsx`:
 
-```python
-from helper.tools import my_new_tool
+- `fleet` and `vulnerabilities` have their own components. Their builders are in `agent/helper/display.py`; `vulnerabilities` also links to the Findings view.
+- `plan` and `run` appear as links that open the change record and the run view in the detail pane (`ui/frontend/src/views/`). The change record reads the plan's stored view; see [Adding a change type](#adding-a-change-type).
+- Every other type is a generic card. It shows `title`, `subtitle`, `fields` (label, value, optional tone), `rows` (label, status, optional tone) and `actions`. The tones are `ok`, `warn` and `bad`.
 
-# In the tools list:
-tools = [
-    ...existing tools...,
-    my_new_tool,
-]
-```
+An action is `{"label", "prompt"}`. Clicking it sends the prompt at once if it only reads, and otherwise fills the chat box for the operator to send (`isReadOnlyPrompt` in `ui/frontend/src/lib/actions.ts`). A prompt counts as a read when it starts with a verb such as show, list, check or verify, and contains no change word such as patch, install, roll back, reboot or stop.
 
-### 3. Update the system prompt (only if you need to)
+## Adding a change type
 
-If the tool's usage is counter-intuitive, add a `Decision:` line to its docstring. Only touch the system prompt if the structural hints aren't enough.
+Anything that changes infrastructure goes through a plan. A write tool never acts when the model calls it: it checks, stores a plan and returns it, and the runtime runs the stored parameters after an operator approves.
 
-### 4. Add a response template (optional)
+1. Write an `_impl` function in the domain module that takes `confirm_execute`:
+   - With `False`, it runs every check and returns `{"status": "confirmation_required", "execution_plan": {...}}` without changing anything. Any other result, such as a refusal, goes straight back to the model.
+   - With `True`, it makes the change. Start Automation through the start helpers in `agent/helper/tools/_shared.py`, so the run gets the plan's stored limits, a `ClientToken`, a per-location stop alarm, and a run record the moment it starts. Return `automation_execution_id` or `automation_execution_ids`.
+2. Add a `@tool` wrapper in `agent/helper/tools/plan_tools.py` that calls `_plan_or_pass("<tool name>", <impl>, params)`. Its docstring should say it returns a plan for approval and never executes.
+3. Add an `EXECUTORS` entry in the same file. `run_approved_plan` refuses a plan whose tool has none.
+4. Choose the shared checks the tool needs. Add it to the tuples `_PATCH_TOOLS`, `_ROLLBACK_TOOLS`, `_ENVIRONMENT_TOOLS` and `_INSTANCE_TOOLS` as they apply. Add it to the list that stores the rollout limits and stop alarm in the plan (`_store_controls`).
+5. Describe the change for the operator:
+   - Add a branch in `_card` (the chat link's text and fallback fields).
+   - Add a branch in `agent/helper/plan_view.build`. It returns the change record: headline, summary, checks, sections, and the targets and locations. Report only checks the code actually made; anything else is an `info` row.
+6. Register the tool as for a read tool, with a label such as "Preparing a reboot plan". If it targets instance IDs or an environment, add it to the sets in `agent/helper/steering.py`.
+7. Grant the AWS actions to the runtime role (`PatchyAgentCorePolicy` in `infra/lib/core-stack.ts`) and, for spoke accounts, to `PatchySpokeRole` (`infra/lib/spoke-iam-stack.ts`). Never grant them to the UI task role, the report Lambda or the read role.
 
-If the tool's output needs a specific presentation, add a template to `agent/config/response_templates.yaml`:
+The approval, the claim, the run records, Stop and the report then work without further code. [Security](security.md#the-approval-chain) lists the records involved.
 
-```yaml
-my_new_result:
-  description: "Results from my new tool"
-  agent: unified
-  structure: |
-    STATUS_LINE: {emoji} My result -- {count} items found
-    TABLE:
-    | Column A | Column B |
-```
+## Adding an Automation document
 
----
+Patchy's documents are defined in `infra/lib/patchy-ssm-docs-stack.ts`. To add one:
 
-## Multi-OS support
+1. Add an `ssm.CfnDocument` named `Patchy-<name>` with `updateMethod: 'NewVersion'`. Give every parameter an allowed pattern from `PATTERNS` or a fixed list of values, and take `AutomationAssumeRole`.
+2. If it runs a Command document, add that document too, and a dependency on it.
+3. Add the name as a constant in `agent/helper/tools/_shared.py`.
+4. Run `./deploy.sh docs`.
 
-### Where things stand
+The runtime and spoke roles allow `Patchy-*` Automation and commands, and the report rule matches the `Patchy-` prefix, so a document named that way needs no IAM change. A document that sends a command other than `AWS-RunPatchBaseline` or `Patchy-*` does need one.
 
-Patching uses `AWS-RunPatchBaseline`, which supports all OS types. Rollback uses `yum history undo`, which is Amazon Linux 2 / RHEL only.
+## Other operating systems
 
-### Adding Ubuntu/Debian support
+Patching works on any OS that Patch Manager supports, because it runs `AWS-RunPatchBaseline`. Three parts are OS-specific:
 
-1. Baseline overrides: create override JSON files with `"OperatingSystem": "UBUNTU"` in `setup_baseline_overrides.py`.
-2. Rollback: add an apt-based rollback script in `rollback_patches()`:
-   ```bash
-   # Detect OS
-   if command -v apt-get &>/dev/null; then
-       # apt-based rollback
-       apt-get install --reinstall -y $(dpkg --get-selections | grep install | awk '{print $1}')
-   elif command -v yum &>/dev/null; then
-       # yum-based rollback (existing)
-       LAST_TRANSACTION=$(yum history list | grep -E '^[[:space:]]*[0-9]+' | head -1 | awk '{print $1}')
-       yum history undo $LAST_TRANSACTION -y
-   fi
-   ```
-3. OS detection: read `platform_type` from `ssm:DescribeInstanceInformation` to pick the package manager before rollback.
+| Part | Today | To add an OS |
+|---|---|---|
+| Severity scope | `BaselineOverride` files for Amazon Linux 2 and 2023, RHEL, CentOS, Rocky, Alma, Oracle Linux, SUSE and Windows (`OS_FILTERS` in `agent/setup_baseline_overrides.py`) | Add an `OS_FILTERS` entry. Ubuntu and Debian rank by priority, not severity, so they need a priority mapping rather than a severity filter. |
+| CVE scope | Linux only; Windows targets are refused | On Windows, `InstallOverrideList` applies only to patches the baseline already approves, so it can't scope one CVE |
+| Rollback | `Patchy-YumUndo`, for the yum and dnf family | A Command document per package manager, and runbooks that pick it by platform (the fleet cache records each instance's platform) |
 
-### Adding Windows support
+## Other vulnerability scanners
 
-1. Baseline overrides: create override JSON files with `"OperatingSystem": "WINDOWS"`.
-2. Patch execution: use `AWS-RunPatchBaseline` (already works for Windows via SSM).
-3. Rollback: use `AWS-RunPowerShellScript` with `wusa.exe /uninstall` or System Restore.
-4. Health checks: adapt the CloudWatch alarm patterns for Windows services.
+To show findings from Qualys, Tenable or Rapid7, add a read tool that calls the scanner's API. Return a `display` block from `vulnerability_card()` in `agent/helper/display.py` to get the same card as Inspector findings. It reads `severity_counts`, and `findings` with `cve_id`, `severity`, `cvss_score`, `fix_available` and `affected_resources`.
 
----
+Inspector stays the source for everything that acts on findings: CVE-scoped plans, verification, forecasts, SLA discovery times and the Findings view. Driving plans from another scanner means changing `agent/helper/cve_scope.py` and `agent/helper/verification.py` as well.
 
-## Container vulnerability support
+Container image findings from Amazon ECR are available by setting `INSPECTOR_RESOURCE_TYPES=EC2,ECR`. Patchy reports them, but patching a container means rebuilding the image, which Patchy doesn't do.
 
-To include container image vulnerabilities alongside EC2:
+## Calling Patchy from other systems
 
-1. Set `INSPECTOR_RESOURCE_TYPES=EC2,ECR` in `.env`.
-2. Redeploy: `./deploy.sh agent` and `./deploy.sh ui`.
+The UI API streams the agent's replies as server-sent events. A caller must:
 
-The agent and dashboard will now include ECR container image findings alongside the EC2 instance findings. Inspector has to be enabled for ECR scanning in your account. Both the agent and dashboard filter findings by resource type based on this setting.
+- send `Content-Type: application/json`;
+- pass the cross-site check, with no foreign `Origin`;
+- authenticate. With API keys configured, send `X-API-Key`. With Cognito, the load balancer requires a browser sign-in, so a bot needs its own route to the API.
 
----
+| Endpoint | Use |
+|---|---|
+| `POST /api/chat` with `message` and `session_id` | Ask a question or request a plan. Read the `text`, `card` and `done` events. |
+| `GET /api/plans/<id>?session_id=` | A plan's change record and status, for the conversation that made it |
+| `GET /api/runs/<id>?session_id=` | A run's status by account and Region |
+| `GET /api/dashboard` | Fleet, findings, runs and compliance as JSON |
 
-## Container workloads
+Some integrations:
 
-Container patching is a fundamentally different model from EC2 in-place patching. You don't SSH into a running container — you rebuild the image and redeploy.
+- Run outcomes reach Slack or Teams through the SNS topic (`NOTIFY_TOPIC=true`) and AWS Chatbot.
+- A ServiceNow or Jira flow can ask for impact or a plan, then link the ticket to the plan's change record.
+- Grafana or an internal portal can read `/api/dashboard`.
 
-### How it differs from EC2
+Approval always happens in the UI, by an operator, in the conversation that made the plan.
 
-| Aspect | EC2 (current) | Containers (ECS/EKS) |
-|--------|--------------|---------------------|
-| Discovery | SSM Explorer → EC2 instances | Inspector → ECR image findings |
-| Vulnerability scan | Inspector EC2 scanning | Inspector ECR scanning |
-| Remediation | In-place patch via SSM `RunPatchBaseline` | Rebuild the image with an updated base layer → push to ECR → redeploy the service |
-| Rollback | `yum history undo` on the instance | Roll back to the previous ECS task definition or EKS deployment revision |
+## Seeing everyone's changes
 
-### What already works
+A plan belongs to the conversation that made it. The plans API returns a plan only to that conversation, and **Changes** lists only its own plans and runs, so one operator can't open, approve or cancel another's plan. Three views cover the whole team:
 
-- Vulnerability scanning: set `INSPECTOR_RESOURCE_TYPES=EC2,ECR` in `.env`. Inspector scans ECR images and the agent reports container CVEs alongside the EC2 findings.
-- Fleet discovery: ECS on EC2 and EKS managed node groups run on EC2 instances, so they show up in SSM Explorer. The host-level patching workflow applies to those hosts.
+- **Changes** has a "Running now, all operators" table with every Patchy run in progress.
+- **Reports** lists every patch and rollback run of the last 30 days from every operator. Each row names who approved it, and the search box finds runs by approver, run ID, plan ID or CVE. The CSV export carries the same columns.
+- Users in the `auditors` Cognito group also get a read-only list in **Changes** of every operator's plans from the last seven days, including plans still waiting, cancelled or expired (`GET /api/changes` in `ui/api/server.py`).
 
-### What needs new tools
-
-For Fargate workloads (no host access) or image-level remediation, add these tools:
-
-| Tool | Purpose | Integration |
-|------|---------|------------|
-| `scan_ecr_images` | List vulnerable images and their services | Query Inspector with `resourceType=ECR`, correlate with ECS task definitions |
-| `trigger_image_rebuild` | Rebuild the image with a patched base layer | Invoke a CodeBuild project or CodePipeline. Pass the target ECR repo and tag. |
-| `update_ecs_service` | Deploy the rebuilt image | Call `ecs:UpdateService` with the new task definition pointing at the patched image |
-| `rollback_ecs_deployment` | Revert to the previous image | Call `ecs:UpdateService` with the previous task definition revision |
-
-The routing and memory architecture don't change — these are just additional tools in the agent's list.
-
----
-
-## Delegated administrator deployment
-
-By default, the [Multi-Account Setup](../README.md#multi-account-setup) runs from the Organizations management account. Plenty of teams would rather not run workloads there, so here's how to deploy from a delegated administrator (DA) account instead.
-
-### How it works
-
-Registering a DA for [Quick Setup](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-delegated-administrator.html) automatically grants DA status for:
-
-- CloudFormation StackSets — deploy spoke roles via SERVICE_MANAGED StackSets
-- SSM Explorer — create org-wide Resource Data Syncs and query `GetOpsSummary`
-
-[Inspector DA](https://docs.aws.amazon.com/inspector/latest/user/designating-admin.html) is registered separately and gives you org-wide vulnerability visibility.
-
-The one capability that can't be delegated is [Quick Setup Patch Policies](https://docs.aws.amazon.com/systems-manager/latest/userguide/patch-manager-policies.html) — those have to be created from the management account. But the solution doesn't create Patch Policies; it detects existing ones and defers to them.
-
-### What runs where
-
-| Task | Account | Frequency |
-|------|---------|-----------|
-| Register DA for Quick Setup | Management | Once |
-| Register DA for Inspector | Management | Once |
-| Create Patch Policies (if using) | Management | As needed |
-| Quick Setup (DHMC, Host Management, Config Recording) | DA | Once |
-| SSM Explorer (enable + Resource Data Sync) | DA | Once |
-| Inspector (activate scanning for member accounts) | DA | Once |
-| Deploy the solution (`./deploy.sh`) | DA | As needed |
-| Deploy spoke roles (`./deploy.sh spoke`) | DA | As needed |
-| Operate the agent and dashboard | DA | Continuously |
-
-### Step-by-step setup
-
-Phase 1 — management account (one-time, ~10 min)
-
-These steps need an administrator in the Organizations management account.
-
-1. Register the DA for Quick Setup:
-   ```bash
-   # From the management account
-   aws ssm-quicksetup register-delegated-administrator \
-     --delegated-admin-account-id <DA_ACCOUNT_ID>
-   ```
-   This automatically registers the DA for CloudFormation StackSets and SSM Explorer too.
-
-2. Register the DA for Inspector:
-   ```bash
-   aws inspector2 enable-delegated-admin-account \
-     --delegated-admin-account-id <DA_ACCOUNT_ID>
-   ```
-
-3. Create Patch Policies (optional — only if you want org-wide scheduled patching):
-   Console → Systems Manager → Quick Setup → Patch Policy → Create. This is the only Quick Setup type that requires the management account.
-
-Phase 2 — DA account (setup + deploy, ~45 min)
-
-Everything from here runs in the DA account.
-
-4. Quick Setup — DHMC, Host Management, Config Recording:
-   Console → Systems Manager → Quick Setup → Library. Create all three targeting the whole org (same steps as [Prerequisites — Step 2](../README.md#aws-account-setup)).
-
-5. SSM Explorer:
-   Console → Systems Manager → Explorer → Enable Explorer. `deploy.sh` creates the Resource Data Sync for you.
-
-6. Inspector — activate scanning:
-   Console → Inspector → Member accounts → Select all → Enable scanning.
-
-7. Configure `.env`:
-   ```bash
-   cp .env.example .env
-   # Set AWS_PROFILE to the DA account profile
-   AWS_PROFILE=da-account
-   AWS_REGION=us-east-1
-   MULTI_ACCOUNT_ENABLED=true
-   SPOKE_EXECUTION_ROLE=PatchySpokeRole
-   AWS_ORG_ID=o-xxxxxxxxxx
-   SPOKE_OU_IDS=ou-abc123,ou-def456
-   ```
-
-8. Deploy:
-   ```bash
-   ./deploy.sh
-   ./sample-env.sh deploy
-   ```
-
-### Limitations and edge cases
-
-| Limitation | Detail | Workaround |
-|-----------|--------|------------|
-| Patch Policies | Can't be created from a DA account ([docs](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-delegated-administrator.html)) | Create them from the management account. The agent detects and defers to them. |
-| Opt-in regions | A DA can't create Resource Data Syncs in [opt-in regions](https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html#regions-opt-in-status) (Milan, Cape Town, Bahrain, Hong Kong) | Use the management account to create syncs for opt-in regions. |
-| One DA per service | Only one account can be DA for Quick Setup, one for Explorer, one for Inspector | Coordinate with other teams using these DA roles. Registering DA for Quick Setup auto-registers Explorer + StackSets. |
-| DA sync visibility | Resource Data Syncs created by a DA are only visible in the DA account | Not a problem — the solution runs in the DA account. The management account can't see DA-created syncs. |
-
-### How `deploy.sh` handles DA
-
-`deploy.sh deploy_spoke()` auto-detects whether the caller is the management account or a registered DA:
-
-1. Calls `organizations describe-organization` to get the management account ID.
-2. If the caller isn't the management account, checks `organizations list-delegated-administrators --service-principal ssm.amazonaws.com`.
-3. If the caller is a registered DA, sets `--call-as DELEGATED_ADMIN` on all SERVICE_MANAGED StackSet API calls.
-4. If it's neither the management account nor a DA, fails with the registration command.
-
-No manual flags needed — `./deploy.sh` and `./deploy.sh spoke` work from either account type.
-
-Why nothing else needs to change:
-
-| Component | Why it works from a DA account |
-|-----------|---------------------|
-| `infra/bin/app.ts` | `hubAccountId` is passed as CDK context — set to the DA account automatically |
-| `infra/lib/spoke-role-stack.ts` | The spoke role trusts the hub account root, which allows both runtime roles and deployment operations |
-| `infra/lib/core-stack.ts` | The S3 bucket policy uses `aws:PrincipalOrgID` — org-level, not account-specific |
-| `agent/helper/tools/_shared.py` | Fleet discovery uses `GetOpsSummary` with `SyncName` — a DA can create and query syncs |
-| `agent/helper/cross_account.py` | `get_hub_account_id()` returns the caller's account (the DA account). Spoke roles trust this account. |
-| `ui/api/server.py` | The dashboard queries Explorer from the DA account. Spoke session assume-role works because the spoke role trusts the DA account. |
-| `deploy.sh ensure_explorer_sync()` | A DA can create `SyncFromSource` with the `AwsOrganizations` source type |
-| `deploy.sh deploy_agent()` | AgentCore deploys to whichever account runs the CLI — the DA account |
-| `deploy.sh deploy_infra()` | CDK deploys to the caller's account — the DA account |
-| `deploy.sh deploy_ui()` | CDK deploys Fargate + ALB to the caller's account — the DA account |
-
-> Note on spoke role trust: the default trust policy lets the entire hub account root (`arn:aws:iam::<hub>:root`) assume `PatchySpokeRole`. That's intentional for the sample/demo — it lets `./sample-env.sh deploy` push instances to spoke accounts via StackSet without extra setup. For production, see [Security — Cross-account trust model](security.md#cross-account-trust-model-patchyspokerole) to restrict the trust to specific role ARN patterns.
-
----
-
-## Integration patterns
-
-The solution exposes an HTTP API with SSE streaming, so it slots into existing tools:
-
-- Slack / Microsoft Teams: POST to `/api/chat` with the message body, consume the SSE stream, render it in a channel. The agent's structured next-steps output maps to Slack interactive buttons.
-- ServiceNow / Jira: trigger patch operations from incident tickets. On ticket creation with a CVE tag, call the API to assess impact; on approval, execute; write the compliance report URL back to the ticket.
-- SNS notifications: after a long-running patch operation, publish a completion event to SNS. Subscribe Slack webhooks, email, or PagerDuty.
-- Custom dashboards: the `/api/dashboard` endpoint returns all the fleet status, vulnerability, and compliance data as JSON — drop it into Grafana, Datadog, or an internal portal.
+For a longer history than seven days, the records are in the compliance bucket: `plans/<plan_id>.json` holds the plan and its change record, `plan-decisions/<plan_id>.json` the approval or cancellation, and `plan-executions/<plan_id>.json` the runs it started. Query them with S3 or Amazon Athena, or raise `ALL_CHANGES_DAYS` in `ui/api/server.py`. Whatever you add, keep it read-only: approval and cancellation must stay with the conversation that made the plan, because the runtime claims a plan only for the session the approval names.

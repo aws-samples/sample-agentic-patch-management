@@ -18,9 +18,7 @@ Error Categories:
 """
 
 import logging
-import time
-import functools
-from typing import Optional, Dict, Any, Callable
+from typing import Dict, Any
 from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 
 logger = logging.getLogger(__name__)

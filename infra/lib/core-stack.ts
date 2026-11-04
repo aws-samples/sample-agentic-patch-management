@@ -2,6 +2,11 @@ import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { assumeSpokeRoleStatement } from './common';
+
+/** Bucket prefixes whose objects expire after a year ('2' is the dated reports, YYYY/MM/DD/). */
+export const EXPIRING_PREFIXES = ['plans/', 'plan-runs/', 'plan-decisions/', 'plan-executions/', 'run-executions/',
+  'promotions/', 'session-owners/', 'pending-reports/', '2'];
 
 export interface CoreStackProps extends cdk.StackProps {
   agentCoreRoleArn?: string;
@@ -23,23 +28,48 @@ export class CoreStack extends cdk.Stack {
       versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
-      lifecycleRules: [{ expiration: cdk.Duration.days(365) }],
+      // Run records and reports expire after a year. Lifecycle rules can't
+      // exclude a prefix, so expiry is scoped to each record prefix and the
+      // dated reports (2), which leaves baseline-overrides/ and
+      // install-overrides/ in place: instances read them on every patch run
+      // and only a full deploy writes the baseline overrides again. Old
+      // versions of any object go after 30 days. A new record prefix needs
+      // adding to EXPIRING_PREFIXES, or its objects are kept.
+      lifecycleRules: [
+        ...EXPIRING_PREFIXES.map((prefix) => ({
+          id: prefix === '2' ? 'ExpireReports' : `Expire-${prefix.slice(0, -1)}`,
+          prefix,
+          expiration: cdk.Duration.days(365),
+        })),
+        {
+          id: 'ExpireOldVersions',
+          noncurrentVersionExpiration: cdk.Duration.days(30),
+          expiredObjectDeleteMarker: true,
+        },
+      ],
     });
 
-    // Allow spoke accounts to read baseline override files for severity-scoped patching.
-    // Scoped to baseline-overrides/* prefix only — spokes cannot read compliance reports.
+    // Let instances read their override files: baseline overrides for
+    // severity-scoped patching and install lists for CVE-scoped patching.
+    // Scoped to those prefixes only, so instances can't read compliance reports.
+    // Without an organisation, the hub's own principals: within one account this
+    // statement is enough on its own, so instance roles need no S3 grant. Spoke
+    // instances still need the grant in their own role (a cross-account read
+    // needs both sides).
     complianceReportsBucket.addToResourcePolicy(new iam.PolicyStatement({
       sid: 'SpokeBaselineOverrideAccess',
       effect: iam.Effect.ALLOW,
       principals: [new iam.AnyPrincipal()],
       actions: ['s3:GetObject'],
-      resources: [`${complianceReportsBucket.bucketArn}/baseline-overrides/*`],
+      resources: [`${complianceReportsBucket.bucketArn}/baseline-overrides/*`,
+                  `${complianceReportsBucket.bucketArn}/install-overrides/*`],
       conditions: process.env.AWS_ORG_ID ? {
         StringEquals: { 'aws:PrincipalOrgID': process.env.AWS_ORG_ID },
       } : {
-        StringEquals: { 'aws:PrincipalOrgID': 'NONE' },  // No org ID — deny all cross-account access
+        StringEquals: { 'aws:PrincipalAccount': this.account },
       },
     }));
 
@@ -75,12 +105,16 @@ export class CoreStack extends cdk.Stack {
             // Maintenance Window read
             'ssm:DescribeMaintenanceWindows', 'ssm:GetMaintenanceWindow',
             'ssm:DescribeMaintenanceWindowTargets', 'ssm:DescribeMaintenanceWindowTasks',
+            // A window task's Operation (Install or Scan) is only in its invocation parameters.
+            'ssm:GetMaintenanceWindowTask',
             // Patch Baseline read
             'ssm:DescribePatchBaselines', 'ssm:GetPatchBaseline',
             // Other read APIs
             'ssm:ListInventoryEntries',
             'ssm:ListAssociations', 'ssm:DescribeAssociation',
             'ssm:GetOpsSummary',
+            // Change Calendar check before planning and before a run (CHANGE_CALENDAR)
+            'ssm:GetCalendarState',
           ],
           resources: ['*'],
         }),
@@ -92,10 +126,9 @@ export class CoreStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: 'SSMCreate',
           effect: iam.Effect.ALLOW,
-          actions: [
-            'ssm:CreateMaintenanceWindow',
-            'ssm:CreatePatchBaseline',
-          ],
+          // AddTagsToResource is what tag-on-create calls; no code tags anything
+          // else, and the model has no general AWS tool.
+          actions: ['ssm:CreateMaintenanceWindow', 'ssm:AddTagsToResource'],
           resources: ['*'],
           conditions: {
             StringEquals: {
@@ -109,44 +142,21 @@ export class CoreStack extends cdk.Stack {
             },
           },
         }),
-        // SSM modify — restricted to resources the agent created (tagged
-        // ManagedBy=IntelligentPatchAutomation). Customer-owned maintenance
-        // windows and patch baselines (which lack this tag) are off-limits.
+        // SSM modify — only what create_maintenance_window does to the window it
+        // just created (tagged ManagedBy=IntelligentPatchAutomation): register its
+        // target and patch task, or delete it if the task can't be registered.
+        // Customer-owned windows (which lack the tag) are off-limits.
         new iam.PolicyStatement({
           sid: 'SSMModify',
           effect: iam.Effect.ALLOW,
           actions: [
-            'ssm:UpdateMaintenanceWindow', 'ssm:DeleteMaintenanceWindow',
             'ssm:RegisterTargetWithMaintenanceWindow', 'ssm:RegisterTaskWithMaintenanceWindow',
-            'ssm:DeregisterTargetFromMaintenanceWindow', 'ssm:DeregisterTaskFromMaintenanceWindow',
-            'ssm:UpdateMaintenanceWindowTarget', 'ssm:UpdateMaintenanceWindowTask',
-            'ssm:UpdatePatchBaseline', 'ssm:DeletePatchBaseline',
+            'ssm:DeleteMaintenanceWindow',
           ],
-          resources: [
-            `arn:aws:ssm:${this.region}:${this.account}:maintenancewindow/*`,
-            `arn:aws:ssm:${this.region}:${this.account}:patchbaseline/*`,
-          ],
+          resources: [`arn:aws:ssm:${this.region}:${this.account}:maintenancewindow/*`],
           conditions: {
             StringEquals: {
               'aws:ResourceTag/ManagedBy': 'IntelligentPatchAutomation',
-            },
-          },
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['ssm:SendCommand'],
-          resources: [
-            `arn:aws:ssm:${this.region}::document/AWS-RunPatchBaseline`,
-          ],
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['ssm:SendCommand'],
-          resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
-          conditions: {
-            StringEquals: {
-              [`ssm:resourceTag/${process.env.SSM_SCOPE_TAG_KEY || 'PatchAutomation'}`]:
-                process.env.SSM_SCOPE_TAG_VALUE || 'enabled',
             },
           },
         }),
@@ -157,6 +167,54 @@ export class CoreStack extends cdk.Stack {
             `arn:aws:s3:::patch-compliance-reports-${this.account}`,
             `arn:aws:s3:::patch-compliance-reports-${this.account}/*`,
           ],
+        }),
+        // Decisions (approve or cancel) are written only by the UI's approval
+        // API. The deny overrides the bucket grant, so the agent can read an
+        // approval but never create one for its own plan.
+        new iam.PolicyStatement({
+          sid: 'NoPlanApprovals',
+          effect: iam.Effect.DENY,
+          actions: ['s3:PutObject', 's3:DeleteObject'],
+          resources: ['plan-decisions']
+            .map((prefix) => `arn:aws:s3:::patch-compliance-reports-${this.account}/${prefix}/*`),
+        }),
+        // Plans, run claims, run records, session owners, pending report
+        // contexts and CVE install lists are created once and never
+        // rewritten: a write without If-None-Match is refused. promotions/ is
+        // left out: the runtime both writes and reads it, so a create-only
+        // rule there would stop nothing a compromised runtime couldn't do.
+        new iam.PolicyStatement({
+          sid: 'CreateOnlyRecords',
+          effect: iam.Effect.DENY,
+          actions: ['s3:PutObject'],
+          resources: ['plans', 'plan-runs', 'run-executions', 'plan-executions', 'session-owners', 'pending-reports', 'install-overrides']
+            .map((prefix) => `arn:aws:s3:::patch-compliance-reports-${this.account}/${prefix}/*`),
+          conditions: { Null: { 's3:if-none-match': 'true' } },
+        }),
+        // Baseline overrides can set yum repositories (Sources) on every
+        // patched instance, so only the deploy machine writes them
+        // (setup_baseline_overrides.py).
+        // Final reports (YYYY/MM/DD/...) are written only by the reconciler
+        // in the UI and the report Lambda.
+        new iam.PolicyStatement({
+          sid: 'NoReportWrites',
+          effect: iam.Effect.DENY,
+          actions: ['s3:PutObject'],
+          resources: [`arn:aws:s3:::patch-compliance-reports-${this.account}/2*`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'NoBaselineOverrideWrites',
+          effect: iam.Effect.DENY,
+          actions: ['s3:PutObject'],
+          resources: [`arn:aws:s3:::patch-compliance-reports-${this.account}/baseline-overrides/*`],
+        }),
+        // The runtime never deletes. With versioning on, DeleteObjectVersion
+        // would otherwise let it erase a cancellation or an approval.
+        new iam.PolicyStatement({
+          sid: 'NoDeletes',
+          effect: iam.Effect.DENY,
+          actions: ['s3:DeleteObject*'],
+          resources: [`arn:aws:s3:::patch-compliance-reports-${this.account}/*`],
         }),
         // Inspector2 APIs do not support resource-level permissions (AWS limitation).
         new iam.PolicyStatement({
@@ -184,50 +242,26 @@ export class CoreStack extends cdk.Stack {
           resources: ['arn:aws:iam::*:role/aws-service-role/ssm.amazonaws.com/AWSServiceRoleForAmazonSSM'],
           conditions: { StringLike: { 'iam:AWSServiceName': 'ssm.amazonaws.com' } },
         }),
-        // PassRole limited to the roles multi-account Automation can use:
-        // the spoke execution role (also present in the hub) and the
-        // standard Automation administration role.
+        // PassRole limited to the spoke execution role (also present in the hub),
+        // the only role Patchy's Automation runs pass.
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: ['iam:PassRole'],
           resources: [
             `arn:aws:iam::${this.account}:role/${process.env.SPOKE_EXECUTION_ROLE || 'PatchySpokeRole'}`,
-            `arn:aws:iam::${this.account}:role/AWS-SystemsManager-AutomationAdministrationRole`,
           ],
           conditions: { StringEquals: { 'iam:PassedToService': 'ssm.amazonaws.com' } },
         }),
-        // Read-only for use_aws fallback tool
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['elasticloadbalancing:Describe*', 'autoscaling:Describe*', 'tag:Get*'],
-          resources: ['*'],
-        }),
-        // Cross-account: assume spoke roles. Only added when MULTI_ACCOUNT_ENABLED=true,
-        // and AWS_ORG_ID is mandatory in that case so the assume-role permission is
-        // always scoped by aws:PrincipalOrgID. Single-account deploys do not need this
-        // statement at all (no spoke roles to assume).
+        // Cross-account: assume spoke roles in this organisation. Only added
+        // when MULTI_ACCOUNT_ENABLED=true; single-account deploys have no spoke
+        // roles to assume.
         ...(process.env.MULTI_ACCOUNT_ENABLED === 'true' ? [
-          new iam.PolicyStatement({
-            sid: 'CrossAccountAssumeRole',
-            effect: iam.Effect.ALLOW,
-            actions: ['sts:AssumeRole'],
-            resources: [`arn:aws:iam::*:role/${process.env.SPOKE_EXECUTION_ROLE || 'PatchySpokeRole'}`],
-            conditions: {
-              StringEquals: {
-                'aws:PrincipalOrgID': (() => {
-                  if (!process.env.AWS_ORG_ID) {
-                    throw new Error(
-                      'AWS_ORG_ID is required when MULTI_ACCOUNT_ENABLED=true. ' +
-                      'Set it in .env so the cross-account assume-role policy is ' +
-                      'scoped to your organization. Get it via: ' +
-                      "aws organizations describe-organization --query 'Organization.Id' --output text"
-                    );
-                  }
-                  return process.env.AWS_ORG_ID;
-                })(),
-              },
-            },
-          }),
+          (() => {
+            const st = assumeSpokeRoleStatement(process.env.SPOKE_EXECUTION_ROLE || 'PatchySpokeRole',
+                                                'the cross-account assume-role policy');
+            st.sid = 'CrossAccountAssumeRole';
+            return st;
+          })(),
         ] : []),
         // Organizations APIs require Resource: "*" (AWS service limitation).
         new iam.PolicyStatement({
@@ -236,8 +270,20 @@ export class CoreStack extends cdk.Stack {
           actions: [
             'organizations:ListAccounts',
             'organizations:ListAccountsForParent',
+            // Nested OUs: an OU's accounts include those in its child OUs.
+            'organizations:ListOrganizationalUnitsForParent',
             'organizations:ListTagsForResource',
+            // The OUs above an account, to match organization patch policies' targets.
+            'organizations:ListParents',
           ],
+          resources: ['*'],
+        }),
+        // Quick Setup patch policies (the hub's own, and organization policies the
+        // delegated administrator can read) count in the SLA check. Read-only.
+        new iam.PolicyStatement({
+          sid: 'QuickSetupPatchPolicies',
+          effect: iam.Effect.ALLOW,
+          actions: ['ssm-quicksetup:ListConfigurationManagers', 'ssm-quicksetup:GetConfigurationManager'],
           resources: ['*'],
         }),
         // Starting an Automation is limited to Patchy's own runbooks, so the
@@ -264,10 +310,11 @@ export class CoreStack extends cdk.Stack {
       ],
     });
 
-    // Grant AgentCore role access to compliance bucket + attach policy
+    // Attach to the AgentCore role. Bucket access comes from the policy's
+    // explicit Get/Put/List statement, not grantReadWrite, which would also
+    // grant deletes.
     if (props?.agentCoreRoleArn) {
       const agentCoreRole = iam.Role.fromRoleArn(this, 'AgentCoreRole', props.agentCoreRoleArn);
-      complianceReportsBucket.grantReadWrite(agentCoreRole);
       agentCorePolicy.attachToRole(agentCoreRole);
     }
 

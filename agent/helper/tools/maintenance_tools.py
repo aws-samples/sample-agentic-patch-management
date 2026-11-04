@@ -1,26 +1,28 @@
 """Maintenance window, Quick Setup patch policy association, health check, and verification tools."""
 
+import re
+
 from strands import tool
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Tuple
 
 from . import _shared
 from ._shared import (
-    logger, os, time,
+    logger, time,
     classify_error,
     ClientError,
-    datetime, timedelta, timezone,
-    get_client, get_hub_account_id,
-    _ssm, _cloudwatch,
-    _validate_instance_ids, _validate_instance_scope,
-    _normalize_environment,
-    _get_configured_scope_accounts,
+    datetime, timezone,
+    get_client, _ssm, _validate_instance_ids, _normalize_environment,
     _get_query_targets,
     _get_fleet_summary,
     _direct_describe_scoped_instances,
     _format_utc_as_local,
-    AWS_REGION,
+    _checked_reboot_option, run_limits, reboot_option as reboot_policy,
     SCOPE_TAG_KEY, SCOPE_TAG_VALUE,
+    request_cached, forget_request_cache,
 )
+
+# Threads for reading maintenance windows per (account, region).
+_WINDOW_WORKERS = 10
 
 
 # ============================================================================
@@ -101,6 +103,7 @@ def _get_enriched_patch_associations() -> List[dict]:
 
             enriched.append({
                 'association_id': assoc_id,
+                'account_id': acct, 'region': rgn,
                 'name': desc.get('AssociationName', pa.get('AssociationName', pa['Name'])),
                 'document': pa['Name'],
                 'operation': operation,
@@ -113,6 +116,7 @@ def _get_enriched_patch_associations() -> List[dict]:
             logger.warning(f"Could not describe association {assoc_id}: {e}")
             enriched.append({
                 'association_id': assoc_id,
+                'account_id': acct, 'region': rgn,
                 'name': pa.get('AssociationName', pa['Name']),
                 'document': pa['Name'],
                 'operation': 'unknown',
@@ -164,38 +168,117 @@ def _match_association_to_instance(assoc_targets: List[dict], instance_id: str,
     return False
 
 
+def _match_window_target(filters: List[dict], instance_id: str, instance_tags: Dict[str, str]) -> bool:
+    """Whether one maintenance window target covers an instance.
+
+    SSM requires an instance to match every filter in a window target (they
+    are ANDed); separate targets registered on a window are either-or.
+    Resource-group targets can't be resolved here, so they don't count.
+    """
+    if not filters:
+        return False
+    for f in filters:
+        key, values = f.get('Key', ''), f.get('Values', [])
+        if key == 'InstanceIds':
+            ok = values == ['*'] or instance_id in values
+        elif key.startswith('tag:'):
+            ok = instance_tags.get(key[4:]) in values
+        elif key == 'tag-key':
+            ok = any(v in instance_tags for v in values)
+        else:
+            ok = False
+        if not ok:
+            return False
+    return True
+
+
+def _patch_task(ssm_client, window_id: str, task: dict) -> Optional[str]:
+    """The reboot option of a window task that runs AWS-RunPatchBaseline with Operation=Install
+    (the document defaults to Scan, and to RebootIfNeeded), or None when it doesn't install."""
+    if task.get('TaskArn') != 'AWS-RunPatchBaseline':
+        return None
+    params = {k: (v or {}).get('Values') for k, v in (task.get('TaskParameters') or {}).items()}
+    if params.get('Operation') is None:
+        detail = ssm_client.get_maintenance_window_task(WindowId=window_id, WindowTaskId=task.get('WindowTaskId'))
+        params = ((detail.get('TaskInvocationParameters') or {}).get('RunCommand') or {}).get('Parameters') \
+            or {k: (v or {}).get('Values') for k, v in (detail.get('TaskParameters') or {}).items()}
+    if 'Install' not in (params.get('Operation') or []):
+        return None
+    return (params.get('RebootOption') or ['RebootIfNeeded'])[0]
+
+
+
+
+def _paged(ssm_client, operation: str, key: str, **kwargs) -> List[dict]:
+    out: List[dict] = []
+    for page in ssm_client.get_paginator(operation).paginate(**kwargs):
+        out.extend(page.get(key, []))
+    return out
+
+
 def _get_maintenance_windows_for_target(account_id: str, region: str,
                                         env_value: Optional[str],
                                         instance_ids: Optional[list],
-                                        instance_tags: Dict[str, Dict[str, str]]) -> List[dict]:
-    """Per-(account, region) maintenance window lookup. Returns enriched window dicts."""
+                                        instance_tags: Dict[str, Dict[str, str]]) -> tuple:
+    """Per-(account, region) maintenance window lookup: (enriched window dicts, unreadable).
+
+    unreadable lists what couldn't be read ({account_id, region, window_id?, error}): a
+    window that can't be read isn't the same as no window (2 Nov review, M2).
+    """
+    from helper.retry import throttled
+    unreadable: List[dict] = []
+
+    def failed(e, window_id=None):
+        entry = {'account_id': account_id, 'region': region, 'error': str(e)[:200]}
+        if window_id:
+            entry['window_id'] = window_id
+        unreadable.append(entry)
+
     try:
         ssm_client = get_client('ssm', account_id=account_id, region=region)
     except Exception as e:
         logger.warning(f"[TOOL:get_maintenance_windows] SSM client failed for {account_id}/{region}: {e}")
-        return []
+        failed(e)
+        return [], unreadable
+
+    def cached(*key, fetch):
+        return request_cached(('mw', account_id, region) + key, fetch)
 
     try:
-        window_identities = []
-        paginator = ssm_client.get_paginator('describe_maintenance_windows')
-        for page in paginator.paginate():
-            window_identities.extend(page.get('WindowIdentities', []))
+        window_identities = cached('windows', fetch=lambda: throttled(lambda: _paged(
+            ssm_client, 'describe_maintenance_windows', 'WindowIdentities')))
     except Exception as e:
         logger.warning(f"[TOOL:get_maintenance_windows] describe_maintenance_windows failed for {account_id}/{region}: {e}")
-        return []
+        failed(e)
+        return [], unreadable
 
     windows: List[dict] = []
     for window_identity in window_identities:
         window_id = window_identity['WindowId']
         try:
-            window_details = ssm_client.get_maintenance_window(WindowId=window_id)
-            tasks_response = ssm_client.describe_maintenance_window_tasks(WindowId=window_id)
-            has_patch_task = any(
-                t.get('TaskArn') == 'AWS-RunPatchBaseline'
-                for t in tasks_response.get('Tasks', [])
-            )
+            # Targets first: they name the environment, so other environments' windows
+            # cost one call each, not four.
+            window_targets = cached(window_id, 'targets', fetch=lambda: throttled(lambda: _paged(
+                ssm_client, 'describe_maintenance_window_targets', 'Targets', WindowId=window_id)))
+            env_values = [v for target in window_targets for f in target.get('Targets', [])
+                          if f.get('Key') == 'tag:Environment' for v in f.get('Values') or []]
+            window_environment = env_values[0] if env_values else 'unknown'
+            # Asked about particular instances, a window counts if its targets match them,
+            # however it targets them (Patch Group tag, instance IDs); otherwise it's listed
+            # under every environment it names (2 Nov review, L4).
+            matches_instances = bool(instance_ids and instance_tags) and any(
+                _match_window_target(t.get('Targets', []), iid, instance_tags.get(iid, {}))
+                for t in window_targets for iid in instance_ids)
+            if (env_value and not matches_instances
+                    and env_value not in {_normalize_environment(v) for v in env_values}):
+                continue
 
-            targets_response = ssm_client.describe_maintenance_window_targets(WindowId=window_id)
+            window_details = cached(window_id, 'details', fetch=lambda: ssm_client.get_maintenance_window(WindowId=window_id))
+            # Reboot options of the window's install tasks; a reboot from any of them counts.
+            reboots = cached(window_id, 'installs', fetch=lambda: [
+                r for r in (_patch_task(ssm_client, window_id, t) for t in _paged(
+                    ssm_client, 'describe_maintenance_window_tasks', 'Tasks', WindowId=window_id)) if r])
+            has_patch_task = bool(reboots)
 
             next_execution = window_details.get('NextExecutionTime')
             if next_execution:
@@ -217,28 +300,18 @@ def _get_maintenance_windows_for_target(account_id: str, region: str,
 
             target_list: list = []
             instances_covered: list = []
-            window_environment = 'unknown'
 
-            for target in targets_response.get('Targets', []):
+            for target in window_targets:
                 target_filters = target.get('Targets', [])
                 target_list.append({
                     'resource_type': target.get('ResourceType'),
                     'filters': target_filters,
                 })
-                for filter_item in target_filters:
-                    if filter_item.get('Key') == 'tag:Environment':
-                        values = filter_item.get('Values', [])
-                        if values:
-                            window_environment = values[0]
-                    if instance_ids and instance_tags:
-                        for iid in instance_ids:
-                            tags = instance_tags.get(iid, {})
-                            if _match_association_to_instance(target_filters, iid, tags):
-                                if iid not in instances_covered:
-                                    instances_covered.append(iid)
-
-            if env_value and window_environment != env_value:
-                continue
+                if instance_ids and instance_tags:
+                    for iid in instance_ids:
+                        if iid not in instances_covered and \
+                                _match_window_target(target_filters, iid, instance_tags.get(iid, {})):
+                            instances_covered.append(iid)
 
             window_info = {
                 'window_id': window_id,
@@ -253,6 +326,7 @@ def _get_maintenance_windows_for_target(account_id: str, region: str,
                 'cutoff_hours': window_details.get('Cutoff'),
                 'enabled': window_details.get('Enabled'),
                 'has_patch_task': has_patch_task,
+                'reboot_option': ('RebootIfNeeded' if 'RebootIfNeeded' in reboots else reboots[0]) if reboots else None,
                 'target_count': len(target_list),
                 'environment': window_environment,
             }
@@ -266,9 +340,10 @@ def _get_maintenance_windows_for_target(account_id: str, region: str,
             windows.append(window_info)
         except Exception as window_error:
             logger.warning(f"Error processing window {window_id} in {account_id}/{region}: {window_error}")
+            failed(window_error, window_id)
             continue
 
-    return windows
+    return windows, unreadable
 
 
 # ============================================================================
@@ -278,24 +353,16 @@ def _get_maintenance_windows_for_target(account_id: str, region: str,
 
 @tool
 def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict:
-    """Get patch-related maintenance windows across all configured accounts and regions.
+    """Maintenance windows (when patching may run) for an environment.
 
-    Decision: Use when operator asks about maintenance windows, scheduling, or
-    next available patch window. When planning or handling a CVE, ALWAYS also
-    call get_patch_policy — windows define WHEN, policies define WHAT and HOW OFTEN.
-
-    Maintenance windows are SSM resources, scoped per region. We fan out across
-    every (account, region) target so windows in spoke regions aren't missed.
-    Each returned window includes its account_id and region.
+    Use for questions about windows, scheduling or the next patch window.
 
     Args:
-        environment: Filter by environment (dev, staging, prod) - REQUIRED
-        instance_ids: Optional list of instance IDs to validate coverage
-
-    Returns:
-        dict: {'windows': list, 'count': int, 'environment_filter': str,
-               'queried_targets': list}
+        environment: dev, staging or prod.
+        instance_ids: Check these instances are covered.
     """
+    # Windows are regional SSM resources, so this fans out over every (account, region)
+    # target and records account_id and region on each window.
     try:
         env_value = _normalize_environment(environment)
         targets = _get_query_targets()
@@ -311,11 +378,17 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
                 _get_fleet_summary()
             except Exception:
                 pass
-            cache = _shared._fleet_instances_cache or {}
-            unresolved = [iid for iid in instance_ids if iid not in cache]
+            # Real tags, since window targets can filter on any tag; the fleet
+            # cache only knows Environment and the scope tag.
+            try:
+                for iid, info in _shared._direct_describe_scoped_instances(instance_ids=instance_ids).items():
+                    instance_tags[iid] = info.get('tags') or {}
+            except Exception as e:
+                logger.warning(f"[TOOL:get_maintenance_windows] tag lookup failed: {e}")
+            cache = _shared.fleet_instances()
+            unresolved = [iid for iid in instance_ids if iid not in cache and iid not in instance_tags]
             for iid, info in cache.items():
-                if iid in instance_ids:
-                    # Synthesise a tags dict from cached fields the agent might inspect
+                if iid in instance_ids and iid not in instance_tags:
                     instance_tags[iid] = {
                         'Environment': info.get('environment', ''),
                         SCOPE_TAG_KEY: SCOPE_TAG_VALUE if info.get('managed') else '',
@@ -337,9 +410,11 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
                     continue
 
         all_windows: List[dict] = []
+        unreadable: List[dict] = []
 
-        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
-        with _TPE(max_workers=min(len(targets) or 1, 10)) as executor:
+        from concurrent.futures import as_completed as _ac
+        from helper.concurrency import ContextThreadPoolExecutor as _TPE
+        with _TPE(max_workers=min(len(targets) or 1, _WINDOW_WORKERS)) as executor:
             futures = {
                 executor.submit(_get_maintenance_windows_for_target, a, r, env_value, instance_ids, instance_tags): (a, r)
                 for (a, r) in targets
@@ -347,11 +422,12 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
             for fut in _ac(futures):
                 acct, rgn = futures[fut]
                 try:
-                    all_windows.extend(fut.result(timeout=15))
-                except TimeoutError:
-                    logger.warning(f"[TOOL:get_maintenance_windows] Worker timed out for {acct}/{rgn}")
+                    found, unread = fut.result()
+                    all_windows.extend(found)
+                    unreadable.extend(unread)
                 except Exception as e:
                     logger.warning(f"[TOOL:get_maintenance_windows] {acct}/{rgn} failed: {e}")
+                    unreadable.append({'account_id': acct, 'region': rgn, 'error': str(e)[:200]})
 
         return {
             'windows': all_windows,
@@ -359,6 +435,8 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
             'environment_filter': environment if environment else 'all',
             'instances_validated': len(instance_ids) if instance_ids else 0,
             'queried_targets': [{'account_id': a, 'region': r} for (a, r) in targets],
+            # Windows here may be missing: anything deciding "no window" must say so.
+            'unreadable': unreadable,
         }
 
     except ClientError as e:
@@ -375,26 +453,45 @@ def get_maintenance_windows(environment: str, instance_ids: list = None) -> dict
         return result
 
 
-@tool
-def create_maintenance_window(name: str, schedule: str, duration: int,
-                              target_environment: str) -> dict:
-    """Create AWS Systems Manager maintenance window.
+_WINDOW_NAME_RE = re.compile(r'^[A-Za-z0-9_.-]{3,128}$')
 
-    Args:
-        name: Name for the maintenance window
-        schedule: Cron expression for schedule (e.g., 'cron(0 2 ? * TUE *)')
-        duration: Duration in hours
-        target_environment: Environment to target (dev, staging, prod)
 
-    Returns:
-        dict: {'window_id': str, 'name': str, 'schedule': str}
+def _create_maintenance_window_impl(name: str, schedule: str, duration: int,
+                                    target_environment: str, confirm_execute: bool = False,
+                                    reboot_option: Optional[str] = None) -> dict:
+    """Validate a maintenance window request and, when confirmed, create it with a patch task.
+
+    The window installs approved patches (AWS-RunPatchBaseline, Install) on the
+    environment's scoped instances in this account and Region, within the
+    environment's rollout limits and the plan's reboot choice.
+
+    Returns a confirmation_required preview unless confirm_execute is True.
     """
+    problems = []
+    if not isinstance(name, str) or not _WINDOW_NAME_RE.match(name):
+        problems.append("name must be 3-128 letters, digits, '.', '-' or '_'")
+    if not isinstance(schedule, str) or not re.match(r'^(cron|at)\(.+\)$', schedule.strip()):
+        problems.append("schedule must be a cron(...) or at(...) expression")
+    if not isinstance(duration, int) or not 1 <= duration <= 24:
+        problems.append("duration must be 1-24 hours")
+    if problems:
+        return {"error": "; ".join(problems), "error_code": "InvalidParameter", "category": "ABORT",
+                "retryable": False, "result_type": "error"}
+    env_value = _normalize_environment(target_environment)
+    if not confirm_execute:
+        return {
+            "status": "confirmation_required",
+            "warning": f"About to create maintenance window '{name}' for {env_value}.",
+            "execution_plan": {"name": name, "schedule": schedule, "duration": duration,
+                               "environment": env_value},
+        }
     try:
         # Tag-on-create: the IAM policy in core-stack.ts requires
         # ManagedBy=IntelligentPatchAutomation on creation. The same tag is
         # used by the Modify policy to gate update/delete operations on this
         # window. Without the tag, the agent cannot manage the window it just
         # created (closed-loop tag-based scoping).
+        forget_request_cache()  # this turn's later window reads must see the new window
         response = _ssm().create_maintenance_window(
             Name=name,
             Schedule=schedule,
@@ -411,7 +508,7 @@ def create_maintenance_window(name: str, schedule: str, duration: int,
         # Register targets -- include both Environment AND scope tag so the window
         # only patches instances explicitly in scope (PatchAutomation=enabled).
         env_value = _normalize_environment(target_environment)
-        _ssm().register_target_with_maintenance_window(
+        target = _ssm().register_target_with_maintenance_window(
             WindowId=window_id,
             ResourceType='INSTANCE',
             Targets=[
@@ -426,8 +523,35 @@ def create_maintenance_window(name: str, schedule: str, duration: int,
             ]
         )
 
+        # The patch task: without it the window opens and does nothing, and
+        # Patchy's own SLA checks (which look for Install tasks) ignore it.
+        limits = run_limits(env_value)
+        try:
+            task = _ssm().register_task_with_maintenance_window(
+                WindowId=window_id,
+                Name=f"{name}-install"[:128],
+                TaskArn='AWS-RunPatchBaseline',
+                TaskType='RUN_COMMAND',
+                Targets=[{'Key': 'WindowTargetIds', 'Values': [target['WindowTargetId']]}],
+                Priority=1,
+                MaxConcurrency=limits['send_command_max_concurrency'],
+                MaxErrors=limits['send_command_max_errors'],
+                TaskInvocationParameters={'RunCommand': {'Parameters': {
+                    'Operation': ['Install'],
+                    'RebootOption': [_checked_reboot_option(reboot_option or reboot_policy(env_value))],
+                }}},
+            )
+        except Exception:
+            # A window that can't patch is removed rather than left looking scheduled.
+            try:
+                _ssm().delete_maintenance_window(WindowId=window_id)
+            except Exception as cleanup:
+                logger.error(f"Could not remove window {window_id} after its task failed: {cleanup}")
+            raise
+
         return {
             'window_id': window_id,
+            'window_task_id': task['WindowTaskId'],
             'name': name,
             'schedule': schedule
         }
@@ -442,32 +566,17 @@ def create_maintenance_window(name: str, schedule: str, duration: int,
 
 @tool
 def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None) -> dict:
-    """Check Quick Setup patch policy associations (SSM State Manager) for instances.
+    """Quick Setup patch policies (what gets patched, on what schedule) for instances.
 
-    Decision: ALWAYS call this when operator asks to PLAN, schedule, or handle a
-    CVE. Quick Setup patch policy associations define WHAT gets patched (baseline,
-    severity, classification) and on WHAT schedule. Call alongside
-    get_maintenance_windows — windows define WHEN, policies define WHAT and HOW OFTEN.
-
-    Uses list-associations (1 API call, cached) + client-side tag matching.
-    Scales to any fleet size without per-instance API calls.
+    Use when the operator asks about patch policies or recurring schedules, or when planning
+    a scheduled rollout alongside get_maintenance_windows.
 
     Args:
-        instance_ids: List of EC2 instance IDs to check
-        environment: Optional environment filter for context
-
-    Returns:
-        dict with per-instance patch policy info:
-        {
-            'instance_policies': {
-                'i-abc': [{'association_id': ..., 'name': ..., 'operation': ..., 'schedule': ...}],
-                'i-def': []  # no patch policy
-            },
-            'instances_without_policy': ['i-def'],
-            'instances_with_install_policy': ['i-abc'],
-            'summary': '4 of 5 instances have a patch install policy'
-        }
+        instance_ids: Instances to check.
+        environment: dev, staging or prod.
     """
+    # One cached list-associations call plus client-side tag matching, so it scales
+    # without per-instance API calls.
     try:
         validation_error = _validate_instance_ids(instance_ids)
         if validation_error:
@@ -479,10 +588,12 @@ def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None)
         # Use _direct_describe_scoped_instances which fans out across all
         # configured (account, region) pairs -- handles spoke instances.
         instance_tags_map: Dict[str, Dict[str, str]] = {}
+        instance_location: Dict[str, tuple] = {}
         try:
             described = _direct_describe_scoped_instances(instance_ids=instance_ids)
             for iid, info in described.items():
                 instance_tags_map[iid] = info.get('tags', {})
+                instance_location[iid] = (info.get('account_id'), info.get('region'))
         except Exception as e:
             logger.warning(f"Could not get instance tags via cross-account describe: {e}")
 
@@ -494,6 +605,10 @@ def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None)
         for assoc in enriched_assocs:
             for iid in instance_ids:
                 tags = instance_tags_map.get(iid, {})
+                # An association runs only in its own account and Region (2 Nov review, L9).
+                where = instance_location.get(iid)
+                if where and assoc.get('account_id') and (assoc['account_id'], assoc.get('region')) != where:
+                    continue
                 if _match_association_to_instance(assoc['targets'], iid, tags):
                     instance_policies[iid].append(assoc)
 
@@ -541,13 +656,10 @@ def get_patch_policy(instance_ids: List[str], environment: Optional[str] = None)
 
 @tool
 def check_instance_health(instance_ids: List[str]) -> dict:
-    """Check instance health after patching operations.
+    """SSM agent health for instances.
 
     Args:
-        instance_ids: List of EC2 instance IDs to check
-
-    Returns:
-        dict: {'health_results': list, 'summary': dict, 'overall_health': str}
+        instance_ids: Instances to check.
     """
     try:
         # Validate instance IDs
@@ -556,33 +668,40 @@ def check_instance_health(instance_ids: List[str]) -> dict:
             return validation_error
 
         # Group instances by (account, region) for cross-region support
-        by_location: Dict[tuple, list] = {}
-        cache = _shared._fleet_instances_cache or {}
-        for iid in instance_ids:
-            cached = cache.get(iid)
-            if cached:
-                loc = (cached.get('account_id'), cached.get('region') or AWS_REGION)
-            else:
-                loc = (None, AWS_REGION)
-            by_location.setdefault(loc, []).append(iid)
+        by_location = _shared._locate_instances(instance_ids)
 
         # Query SSM per (account, region) -- describe_instance_information is regional
+        from helper.retry import throttled
         instance_info_map: Dict[str, dict] = {}
+        unread: Dict[str, str] = {}
         for (account_id, region), iids in by_location.items():
             try:
                 ssm_client = get_client('ssm', account_id=account_id, region=region)
-                ssm_info = ssm_client.describe_instance_information(
-                    Filters=[{'Key': 'InstanceIds', 'Values': iids}]
-                )
-                for info in ssm_info.get('InstanceInformationList', []):
-                    instance_info_map[info['InstanceId']] = info
+                for n in range(0, len(iids), 50):  # the InstanceIds filter takes at most 50 values
+                    pages = throttled(lambda: list(ssm_client.get_paginator('describe_instance_information').paginate(
+                        Filters=[{'Key': 'InstanceIds', 'Values': iids[n:n + 50]}])))
+                    for page in pages:
+                        for info in page.get('InstanceInformationList', []):
+                            instance_info_map[info['InstanceId']] = info
             except Exception as e:
+                # Not the agent's fault: SSM couldn't be read there. Those instances are
+                # unknown, not unreachable, and mustn't count towards a rollback (2 Nov review, H5).
                 logger.warning(f"[TOOL:check_instance_health] SSM query failed for {account_id}/{region}: {e}")
+                for iid in iids:
+                    unread.setdefault(iid, f"{account_id}/{region}")
 
         health_results = []
         for instance_id in instance_ids:
             instance_info = instance_info_map.get(instance_id)
 
+            if not instance_info and instance_id in unread:
+                health_results.append({
+                    'instance_id': instance_id,
+                    'ssm_status': 'UNKNOWN',
+                    'health_score': None,
+                    'issues': [f"Systems Manager couldn't be read in {unread[instance_id]}"]
+                })
+                continue
             if not instance_info:
                 health_results.append({
                     'instance_id': instance_id,
@@ -604,9 +723,11 @@ def check_instance_health(instance_ids: List[str]) -> dict:
                 'last_ping': str(instance_info.get('LastPingDateTime', 'N/A'))
             })
 
-        # Calculate overall health
-        avg_health = sum(r['health_score'] for r in health_results) / len(health_results) if health_results else 0
-        unhealthy_count = sum(1 for r in health_results if r['health_score'] < 100)
+        # Calculate overall health, over the instances whose state was read
+        scored = [r for r in health_results if r['health_score'] is not None]
+        avg_health = sum(r['health_score'] for r in scored) / len(scored) if scored else 0
+        unhealthy_count = sum(1 for r in scored if r['health_score'] < 100)
+        unknown_count = len(health_results) - len(scored)
 
         logger.info(f"[TOOL:check_instance_health] RESULT: instances={len(instance_ids)} avg_health={avg_health:.0f} unhealthy={unhealthy_count}")
 
@@ -615,7 +736,14 @@ def check_instance_health(instance_ids: List[str]) -> dict:
             'overall_health': avg_health,
             'total_instances': len(instance_ids),
             'unhealthy_instances': unhealthy_count,
-            'recommendation': 'HEALTHY' if avg_health >= 80 else 'INVESTIGATE' if avg_health >= 50 else 'ROLLBACK_RECOMMENDED'
+            'unknown_instances': unknown_count,
+            'unreadable_locations': sorted(set(unread.values())),
+            # Healthy means every instance; one unreachable instance is worth a look before promoting.
+            # Health that couldn't be read is UNKNOWN (hold), never a reason to roll back.
+            'recommendation': ('ROLLBACK_RECOMMENDED' if scored and avg_health < 50
+                               else 'UNKNOWN' if unknown_count
+                               else 'HEALTHY' if health_results and unhealthy_count == 0
+                               else 'INVESTIGATE'),
         }
 
     except ClientError as e:
@@ -628,16 +756,25 @@ def check_instance_health(instance_ids: List[str]) -> dict:
         return classify_error(e)
 
 
+def _evaluation_seconds(alarm: dict) -> int:
+    """How long an alarm takes to go into ALARM after its metric breaches: Period x EvaluationPeriods.
+    A metric math alarm has its periods on its metrics."""
+    periods = [alarm.get('Period') or 0] + [
+        (m.get('MetricStat') or {}).get('Period') or m.get('Period') or 0 for m in alarm.get('Metrics') or []]
+    return max(periods) * max(alarm.get('EvaluationPeriods') or 1, alarm.get('DatapointsToAlarm') or 1)
+
+
+def _iso(ts) -> str:
+    return ts.isoformat() if isinstance(ts, datetime) else str(ts or 'N/A')
+
+
 @tool
 def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optional[str] = None) -> dict:
-    """Check CloudWatch alarms for EC2 instances.
+    """CloudWatch alarm state for instances.
 
     Args:
-        instance_ids: List of EC2 instance IDs to check alarms for
-        alarm_name_pattern: Optional pattern to filter alarm names (e.g., 'httpd', 'nginx')
-
-    Returns:
-        dict: {'alarms': list, 'summary': dict, 'overall_status': str}
+        instance_ids: Instances to check.
+        alarm_name_pattern: Only alarms whose names contain this, e.g. httpd.
     """
     try:
         # Validate instance IDs
@@ -646,52 +783,64 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
             return validation_error
 
         # Group instances by (account, region) for cross-region support
-        cache = _shared._fleet_instances_cache or {}
-        by_location: Dict[tuple, list] = {}
-        for iid in instance_ids:
-            cached = cache.get(iid)
-            if cached:
-                loc = (cached.get('account_id'), cached.get('region') or AWS_REGION)
-            else:
-                loc = (None, AWS_REGION)
-            by_location.setdefault(loc, []).append(iid)
+        by_location = _shared._locate_instances(instance_ids)
 
-        # Fetch alarms per (account, region) -- CloudWatch is regional
-        alarms_in_alarm: list = []
+        # Fetch alarms per (account, region) -- CloudWatch is regional. A location
+        # that can't be read, or an instance that can't be placed, is unknown, not
+        # healthy, so a failed read can't let a rollout be promoted. Every state is
+        # read: how long the instances' alarms take to evaluate, and which have no
+        # data, matter to verify_and_proceed (2 Nov review, T4).
+        from helper.retry import throttled
+        metric_alarms: list = []
+        unreadable: List[str] = []
         for (account_id, region), iids in by_location.items():
             try:
                 cw_client = get_client('cloudwatch', account_id=account_id, region=region)
                 paginator = cw_client.get_paginator('describe_alarms')
-                for page in paginator.paginate(StateValue='ALARM', MaxRecords=100):
-                    alarms_in_alarm.extend(page.get('MetricAlarms', []))
+                pages = throttled(lambda: list(paginator.paginate(MaxRecords=100)))
+                for page in pages:
+                    metric_alarms.extend(page.get('MetricAlarms', []))
             except Exception as e:
                 logger.warning(f"[TOOL:check_cloudwatch_alarms] CW query failed for {account_id}/{region}: {e}")
+                unreadable.append(f"{account_id}/{region}")
+        located = {i for iids in by_location.values() for i in iids}
+        unlocated = [i for i in instance_ids if i not in located]
 
         alarm_results = []
+        evaluation_seconds = 0
         for instance_id in instance_ids:
             instance_alarms = []
-            for alarm in alarms_in_alarm:
+            no_data = []
+            for alarm in metric_alarms:
                 dimensions = alarm.get('Dimensions', [])
                 has_instance = any(
                     d['Name'] == 'InstanceId' and d['Value'] == instance_id
                     for d in dimensions
                 )
-                if has_instance:
-                    if alarm_name_pattern is None or alarm_name_pattern.lower() in alarm['AlarmName'].lower():
-                        instance_alarms.append({
-                            'name': alarm['AlarmName'],
-                            'state': alarm['StateValue'],
-                            'reason': alarm.get('StateReason', 'Unknown'),
-                            'timestamp': str(alarm.get('StateUpdatedTimestamp', 'N/A'))
-                        })
+                if not has_instance:
+                    continue
+                if alarm_name_pattern is not None and alarm_name_pattern.lower() not in alarm['AlarmName'].lower():
+                    continue
+                evaluation_seconds = max(evaluation_seconds, _evaluation_seconds(alarm))
+                entry = {
+                    'name': alarm['AlarmName'],
+                    'state': alarm['StateValue'],
+                    'reason': alarm.get('StateReason', 'Unknown'),
+                    'timestamp': _iso(alarm.get('StateUpdatedTimestamp'))
+                }
+                if alarm['StateValue'] == 'ALARM':
+                    instance_alarms.append(entry)
+                elif alarm['StateValue'] == 'INSUFFICIENT_DATA':
+                    no_data.append(entry)
 
-            # Limit to 5 most recent alarms to avoid token bloat
+            # Limit to 5 alarms to avoid token bloat
             instance_alarms = instance_alarms[:5]
 
             alarm_results.append({
                 'instance_id': instance_id,
                 'alarm_count': len(instance_alarms),
                 'alarms': instance_alarms,
+                **({'insufficient_data': no_data[:5]} if no_data else {}),
                 'is_healthy': len(instance_alarms) == 0
             })
 
@@ -705,12 +854,19 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
             'total_instances': len(instance_ids),
             'unhealthy_instances': unhealthy_count,
             'total_alarms_firing': total_alarms,
-            'recommendation': 'HEALTHY' if unhealthy_count == 0 else 'INVESTIGATE',
+            'recommendation': ('INVESTIGATE' if unhealthy_count else
+                               'UNKNOWN' if unreadable or unlocated else 'HEALTHY'),
+            'unreadable_locations': unreadable,
+            'unlocated_instances': unlocated,
+            # The longest an instance alarm takes to evaluate (Period x EvaluationPeriods).
+            'longest_evaluation_seconds': evaluation_seconds,
             'message': (
                 f'{unhealthy_count} instances have alarms firing ({total_alarms} total alarms). '
                 'Check alarm timestamps -- pre-existing alarms may not be related to the current operation.'
                 if unhealthy_count > 0
-                else 'All instances healthy - no alarms firing'
+                else (f"No alarms firing on the instances read; alarms for {len(unlocated)} instance(s) and "
+                      f"{len(unreadable)} location(s) couldn't be read" if unreadable or unlocated
+                      else 'All instances healthy - no alarms firing')
             )
         }
 
@@ -730,71 +886,205 @@ def check_cloudwatch_alarms(instance_ids: List[str], alarm_name_pattern: Optiona
         return result
 
 
+_PATCH_PLAN_TOOLS = ("execute_patch_operation", "multi_account_execute")
+
+
+def _run_plan(execution_id: str) -> Optional[dict]:
+    """The approved patch plan behind a run, or None.
+
+    Any conversation may verify a run (patch dev today, verify tomorrow in a
+    new chat): what gets recorded comes from the stored plan, not the caller.
+    """
+    from helper import plans
+    rec = plans.get_record(f"run-executions/{execution_id}.json")
+    if not rec:
+        return None
+    plan = plans.load_plan(rec["plan_id"])
+    return plan if plan.get("tool") in _PATCH_PLAN_TOOLS else None
+
+
+def _plan_siblings(execution_id: str) -> Optional[List[str]]:
+    """The other executions the same approved plan started (plan-executions/), if any;
+    None when the records couldn't be read, which is not the same as "none"."""
+    from helper import plans
+    try:
+        rec = plans.get_record(f"run-executions/{execution_id}.json")
+        group = plans.get_record(f"plan-executions/{rec['plan_id']}.json") if rec else None
+    except Exception as e:
+        logger.warning(f"[TOOL:verify_and_proceed] plan executions not readable for {execution_id}: {e}")
+        return None
+    return [e for e in (group or {}).get("execution_ids") or [] if e != execution_id]
+
+
+def _run_instances(plan: dict) -> Tuple[List[str], List[str]]:
+    """The instances a patch plan targeted, and the locations that couldn't be listed.
+
+    Named instances, or the environment's scoped instances now; an environment
+    listing that couldn't read some locations leaves their instances out.
+    """
+    params = plan.get("params") or {}
+    if params.get("instance_ids"):
+        return list(params["instance_ids"]), []
+    found = _shared.environment_instances(_normalize_environment(params.get("environment") or ""),
+                                          params.get("account_ids") or None)
+    return list(found), list(getattr(found, "unreadable", None) or [])
+
+
+def _record_verified_stage(execution_id: str, environment: str, ended_at: Optional[str] = None) -> None:
+    """Record that the plan behind this run was verified in its environment (staged promotion).
+
+    ended_at is when the plan's last location finished; the record ages from it,
+    not from when the run was verified (2 Nov review, T8).
+
+    The environment and scope come from the approved plan, not the caller: only
+    a patch run from an approved plan counts, the environment argument must
+    match the plan's, and in JWT mode the caller must be an operator. Anything
+    else records nothing.
+    """
+    from helper import caller, change_controls
+    try:
+        if not caller.may_change():
+            logger.warning(f"[PROMOTION] not recorded for {execution_id}: caller is not an operator")
+            return
+        plan = _run_plan(execution_id)
+        if not plan:
+            return
+        planned = _normalize_environment((plan.get("params") or {}).get("environment") or "")
+        if planned != _normalize_environment(environment or ""):
+            logger.warning(f"[PROMOTION] not recorded for {execution_id}: run was in {planned}, not {environment}")
+            return
+        change_controls.record_promotion(planned, change_controls.scope_key(plan.get("params") or {}), execution_id,
+                                         ended_at=ended_at)
+    except Exception as e:
+        logger.warning(f"[PROMOTION] not recorded for {execution_id}: {e}")
+
+
+# CloudWatch needs the instances' alarms' evaluation periods after a run before alarms mean
+# anything: at least ALARM_SETTLE_SECONDS, otherwise the longest Period x EvaluationPeriods
+# plus a margin, up to ALARM_SETTLE_MAX_SECONDS (2 Nov review, T4).
+ALARM_SETTLE_SECONDS = 120
+ALARM_SETTLE_MARGIN_SECONDS = 60
+ALARM_SETTLE_MAX_SECONDS = 1800
+
+
+def _settle_seconds(alarm_health: dict) -> int:
+    longest = alarm_health.get('longest_evaluation_seconds') or 0
+    return min(max(ALARM_SETTLE_SECONDS, longest + ALARM_SETTLE_MARGIN_SECONDS if longest else 0),
+               ALARM_SETTLE_MAX_SECONDS)
+
+
+def _no_data_since(alarm_health: dict, started_at: Optional[str]) -> List[str]:
+    """Instance alarms with no data that changed state after the run started (or, when the
+    start isn't known, any): the metric may have stopped because of the run."""
+    start = datetime.fromisoformat(started_at) if started_at else None
+    names = []
+    for r in alarm_health.get('results') or []:
+        for a in r.get('insufficient_data') or []:
+            try:
+                changed = datetime.fromisoformat(a['timestamp'])
+            except (KeyError, TypeError, ValueError):
+                changed = None
+            if start is None or changed is None or changed >= start:
+                names.append(f"{a.get('name')} on {r.get('instance_id')}")
+    return names
+
+
 @tool
-def verify_and_proceed(command_id: str, instance_ids: List[str],
+def verify_and_proceed(automation_execution_id: str, instance_ids: List[str],
                        environment: str, alarm_pattern: Optional[str] = None) -> dict:
-    """Verify patch completion and health before proceeding to next environment.
+    """Check a patch run finished and the instances are healthy before promoting to the next environment.
 
-    This is an OPTIONAL tool for production-ready verification. Use when:
-    - User explicitly requests verification ("verify and proceed")
-    - Patching production environment (higher safety requirements)
-    - User wants to wait for completion before moving forward
-
-    For development/testing environments, users can say "proceed" without verification.
+    Use when the operator asks to verify a run, or before moving from one environment to the
+    next. Returns WAIT at once while the run is going or alarms are still settling.
 
     Args:
-        command_id: SSM command ID from execute_patch_operation
-        instance_ids: List of instance IDs that were patched
-        environment: Environment name (for logging)
-        alarm_pattern: Optional alarm name filter (default: all alarms on the instances)
-
-    Returns:
-        dict: {'status': str, 'recommendation': str, 'details': dict}
+        automation_execution_id: Execution ID from the patch run card.
+        instance_ids: Instances that were patched.
+        environment: Environment that was patched.
+        alarm_pattern: Only check alarms whose names contain this.
     """
+    # Non-blocking: one status read, then health and alarms once the run has ended
+    # and alarms have had ALARM_SETTLE_SECONDS to evaluate.
     try:
-        # Validate instance IDs
         validation_error = _validate_instance_ids(instance_ids)
         if validation_error:
             return validation_error
 
-        # Poll command status until complete (max 10 minutes)
-        from .patch_tools import get_command_status
+        from .patch_tools import _run_outcome, _run_summary
+        state, run = _run_outcome(automation_execution_id)
+        if state == 'ERROR':
+            run['recommendation'] = 'INVESTIGATE'
+            return run
+        if state == 'RUNNING':
+            return {'status': 'IN_PROGRESS', 'recommendation': 'WAIT', 'run': _run_summary(run),
+                    'reason': f"Patch run is {run['status']}. Check again in a few minutes."}
+        if run.get('status') in ('Cancelled', 'Cancelling'):
+            # A stop is the operator's call, not a failure: they decide whether to roll back.
+            return {'status': 'STOPPED', 'recommendation': 'HOLD', 'run': _run_summary(run),
+                    'reason': "An operator stopped this run, so it isn't verified. Instances already being "
+                              "patched may have finished: the run's counts are per location, so a stopped "
+                              "location shows no successes even then; its report counts the instances. Check "
+                              "the fix or health per instance, and roll back only if that's what you want."}
+        if state == 'FAILED':
+            return {'status': 'FAILED', 'recommendation': 'ROLLBACK', 'run': _run_summary(run),
+                    'reason': f"Patch run ended {run['status']}."}
+        if state == 'PARTIAL':
+            return {'status': 'PARTIAL', 'recommendation': 'HOLD', 'run': _run_summary(run),
+                    'reason': f"{run.get('children_failed') or 0} of {run.get('children_total')} account/region "
+                              f"runs failed and {run.get('children_cancelled') or 0} were stopped. "
+                              "Review them before promoting."}
 
-        max_attempts = 60  # 10 min with 10s intervals
-        attempt = 0
+        # A plan by instance ID starts one run per account and Region; the plan
+        # is verified only when every one of them has succeeded.
+        siblings = _plan_siblings(automation_execution_id)
+        if siblings is None:
+            # Another location may have failed; promoting on this one alone could hide it (2 Nov review, H2).
+            return {'status': 'UNKNOWN', 'recommendation': 'HOLD', 'run': _run_summary(run),
+                    'reason': "The plan's other locations couldn't be read, so Patchy can't confirm they all "
+                              "succeeded. Check again in a few minutes."}
+        ended_times = [run.get('ended_at')]
+        started_times = [run.get('started_at')]
+        for sibling in siblings:
+            s_state, s_run = _run_outcome(sibling)
+            ended_times.append(s_run.get('ended_at'))
+            started_times.append(s_run.get('started_at'))
+            if s_state == 'RUNNING':
+                return {'status': 'IN_PROGRESS', 'recommendation': 'WAIT', 'run': _run_summary(s_run),
+                        'reason': f"Another location of this plan ({sibling}) is still running."}
+            if s_state != 'SUCCEEDED':
+                return {'status': 'PARTIAL', 'recommendation': 'HOLD', 'run': _run_summary(s_run),
+                        'reason': f"Another location of this plan ({sibling}) ended {s_run.get('status')}. "
+                                  "Review it before promoting."}
 
-        while attempt < max_attempts:
-            status_result = get_command_status(command_id, instance_ids)
+        # Health is checked on the instances the approved plan targeted, when
+        # there is one, not on whatever list the request names.
+        try:
+            plan = _run_plan(automation_execution_id)
+        except Exception as e:
+            logger.warning(f"[TOOL:verify_and_proceed] run plan not readable: {e}")
+            plan = None
+        unlisted: List[str] = []
+        if plan:
+            planned, unlisted = _run_instances(plan)
+            instance_ids = planned or instance_ids
 
-            if status_result.get('status') == 'Success':
-                # Wait 2 minutes for CloudWatch alarm evaluation
-                logger.info("Patching complete. Waiting 2 minutes for alarm evaluation...")
-                time.sleep(120)  # nosemgrep: arbitrary-sleep
-                break
-            elif status_result.get('status') == 'Failed':
-                return {
-                    'status': 'FAILED',
-                    'recommendation': 'ROLLBACK',
-                    'reason': 'Patch command failed',
-                    'details': status_result
-                }
-
-            # Still in progress
-            attempt += 1
-            if attempt < max_attempts:
-                time.sleep(10)  # nosemgrep: arbitrary-sleep
-
-        if attempt >= max_attempts:
-            return {
-                'status': 'TIMEOUT',
-                'recommendation': 'INVESTIGATE',
-                'reason': 'Patch command did not complete within 10 minutes',
-                'details': status_result
-            }
+        # Alarms settle from when the last location finished, not just this one (2 Nov review, T3).
+        ended_at = max((t for t in ended_times if t), default=None)
+        started_at = min(started_times) if all(started_times) else None
+        elapsed = None
+        if ended_at:
+            elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(ended_at)).total_seconds()
+            wait = int(ALARM_SETTLE_SECONDS - elapsed)
+            if wait > 0:
+                return {'status': 'SETTLING', 'recommendation': 'WAIT', 'retry_after_seconds': wait,
+                        'reason': f"Run finished {int(elapsed)}s ago; alarms need at least "
+                                  f"{ALARM_SETTLE_SECONDS // 60} minutes to evaluate. Check again in {wait}s."}
 
         # Run health checks in parallel (independent API calls)
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        from helper.concurrency import ContextThreadPoolExecutor as ThreadPoolExecutor
+        # Not a with block: its exit would wait on a hung check and make the timeouts below meaningless.
+        executor = ThreadPoolExecutor(max_workers=2)
+        try:
             future_ssm = executor.submit(check_instance_health, instance_ids)
             future_alarms = executor.submit(check_cloudwatch_alarms, instance_ids, alarm_pattern)
             try:
@@ -813,6 +1103,16 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
             except Exception as e:
                 logger.warning(f"[TOOL:verify_and_proceed] CloudWatch alarm check failed: {e}")
                 alarm_health = {'recommendation': 'UNKNOWN', 'error': str(e)}
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        # Alarms that evaluate over longer than the minimum settle need that long after the run.
+        settle = _settle_seconds(alarm_health)
+        if elapsed is not None and settle - elapsed > 0:
+            wait = int(settle - elapsed)
+            return {'status': 'SETTLING', 'recommendation': 'WAIT', 'retry_after_seconds': wait,
+                    'reason': f"Run finished {int(elapsed)}s ago; these instances' alarms need about "
+                              f"{settle // 60} minutes to evaluate. Check again in {wait}s."}
 
         # Determine recommendation. Only a clean result from both checks
         # proceeds; anything else holds the rollout for the operator.
@@ -839,6 +1139,30 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
                 'alarm_health': alarm_health
             }
 
+        no_data = _no_data_since(alarm_health, started_at)
+        if no_data:
+            return {
+                'status': 'NEEDS_REVIEW',
+                'recommendation': 'HOLD',
+                'reason': (f"{len(no_data)} alarm(s) went to INSUFFICIENT_DATA after the run started "
+                           f"({', '.join(no_data[:5])}). The metric may have stopped reporting because of "
+                           "the run; review them before promoting."),
+                'ssm_health': ssm_health,
+                'alarm_health': alarm_health
+            }
+
+        if unlisted:
+            # Instances there weren't checked at all (disruption round, 3 Nov: PROCEED with one left out).
+            return {
+                'status': 'NEEDS_REVIEW',
+                'recommendation': 'HOLD',
+                'reason': (f"Instances in {', '.join(unlisted[:3])} couldn't be listed, so Patchy can't confirm "
+                           "every instance this run reached is healthy."),
+                'unreadable_locations': unlisted,
+                'ssm_health': ssm_health,
+                'alarm_health': alarm_health
+            }
+
         if ssm_rec != 'HEALTHY' or alarm_rec != 'HEALTHY':
             return {
                 'status': 'NEEDS_REVIEW',
@@ -848,10 +1172,12 @@ def verify_and_proceed(command_id: str, instance_ids: List[str],
                 'alarm_health': alarm_health
             }
 
+        _record_verified_stage(automation_execution_id, environment, ended_at)
         return {
             'status': 'HEALTHY',
             'recommendation': 'PROCEED',
             'reason': f'{environment} environment verified healthy',
+            'checked_instance_ids': instance_ids,
             'ssm_health': ssm_health,
             'alarm_health': alarm_health
         }

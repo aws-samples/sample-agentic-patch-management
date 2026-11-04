@@ -30,8 +30,8 @@ infra/cdk.out/
 infra/cdk.context.json
 infra/bin/*.js
 infra/bin/*.d.ts
-infra/lib/*.js
-infra/lib/*.d.ts
+infra/lib/**/*.js
+infra/lib/**/*.d.ts
 .cdk.staging/
 
 # Frontend build
@@ -66,22 +66,16 @@ agent/agentcore/.cache
 # Conversations (local testing artifacts)
 conversations/
 
-# Internal documents (assessments, reviews — not part of the solution)
-internal-docs/
-
-# Kiro IDE files (specs, prompts — not part of the solution)
-.kiro/
-
-# Claude Code (local project instructions)
-CLAUDE.md
-learnings.md
- 
 
 # TypeScript incremental build cache (per-developer artifact)
 **/*.tsbuildinfo
 
-# Personal scratch / talking points (not for source control)
-docs/talking-points.md
+# Backup of the committed agentcore.json while deploy.sh injects env vars
+agent/agentcore/agentcore.json.committed
 
-# Threat-model output (review artifacts; not source-controlled)
-.threatmodel/
+# Caches and build output anywhere
+**/dist/
+**/cdk.out/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/

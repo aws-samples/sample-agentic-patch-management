@@ -1,234 +1,110 @@
-## Disclaimer
+> **Disclaimer.** This is a proof of concept for exploring AI agents in operations, not a production system. What you type is processed and stored by several AWS services (Amazon Bedrock, AgentCore Memory, Amazon S3, CloudWatch Logs, Amazon Cognito); handling that data appropriately is your responsibility as the deployer.
 
-> This application is not designed for production use. Treat it as a proof-of-concept for exploring AI agent use cases.
+# Patchy: agentic patch management for Amazon EC2
 
-> Be mindful of what you type into it. Your inputs get processed and stored across several AWS services (Amazon Bedrock, Bedrock AgentCore Memory, Amazon S3, Amazon CloudWatch Logs, Amazon Cognito, and others), and handling that information appropriately is on you as the deployer.
+Patchy is an AI agent that plans EC2 patching from plain-English requests and runs a change only after an operator approves it. Ask "Patch CVE-2026-40553 in dev" and Patchy finds the affected instances, checks the SLA against your maintenance windows, works out what to install, and prepares a change record. Nothing touches an instance until an operator reviews that record and clicks Approve and run. The run goes out through AWS Systems Manager Automation, across accounts and Regions if you configure them, and a compliance report lands in S3 when it ends.
 
----
+![Patchy: chat on the left, the change record waiting for approval on the right](docs/images/patchy-ui.png)
 
-# Intelligent Patch Automation for AWS
+It is built on the [Strands Agents SDK](https://github.com/strands-agents/sdk-python) and hosted on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html). The parts worth reading if you build agents of your own are the approval model (the agent can store a plan but can't approve one, and IAM enforces that), the deterministic steering that checks tool calls before they run, and the change record each plan stores.
 
-Patching is death by a thousand small decisions. Is this CVE actually urgent? Which instances does it touch? Is there a maintenance window that still lands inside the SLA? What order do the environments roll out in? Did the patch even work? Where does the compliance report go? You can script every one of those answers into Lambdas and runbooks, but that logic is brittle and painful to change the moment your fleet or your policies shift.
+## How a change happens
 
-This repo takes a different approach. It's a ready-to-deploy AI agent that manages EC2 patching from a natural-language prompt. You describe the outcome you want ("Handle CVE-2025-38477 in dev") and the agent works out the plan: it triages the CVE, figures out which instances are affected, weighs the SLA against the next maintenance window, previews the change, waits for your approval, patches, verifies, and files the compliance report.
-
-Under the hood it leans on the [Strands Agents SDK](https://github.com/strands-agents/sdk-python) for the runtime and tool orchestration, and [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock/latest/userguide/agents-core.html) for hosting, session memory, and observability. The interesting parts are the patterns you can't easily lift from a docs page: deterministic steering handlers that inspect tool calls before they run, `next_action` hints that keep the prompt lean, dry-run/execute confirmation loops, and per-user memory isolation tied to Cognito identity.
-
-![Demo](docs/images/demo.gif)
+1. You ask. In the chat, for example "Patch CVE-2026-40553 in dev" or "Patch all HIGH findings in staging".
+2. Patchy plans. It checks scope, the Change Calendar, the SLA deadline against your maintenance windows, the earlier environment's verification, and whether your stop alarm exists in every target location. If a window will patch in time, it says so and plans nothing. Otherwise it stores a plan.
+3. You review the change record. It opens beside the chat and lists what installs, every target instance by name, account and Region, when it runs, how it rolls out, what stops it, and how to undo it. The checks Patchy made are at the top.
+4. An operator approves. Approval runs exactly the stored plan, once. Typing "yes" in the chat runs nothing.
+5. You follow the run. The run view shows progress by account and Region. Stop run cancels every location of the plan.
+6. A report is written. When the run ends, a compliance report with the SLA outcome is stored in S3, shown under Reports, and optionally sent to an SNS topic.
 
 ## What it does
 
-- Handles patch workflows in plain English. Ask about a CVE, an SLA impact, or fleet coverage, and the agent decides whether to patch now or defer to a maintenance window.
-- Runs as a single agent. One agent picks from 25 tools directly, steered by `Decision:` docstrings, `next_action` hints, and workflow handlers rather than a routing layer.
-- Reaches across accounts and regions. It fans out through SSM Automation `TargetLocations` — one control plane driving N spoke accounts.
-- Keeps a paper trail. Every operation writes a compliance report to S3 with framework-aware SLA tracking (PCI-DSS, HIPAA, or your own).
-- Puts safety gates in the path. Dry-run preview, per-environment approval, and rollback with a three-check verification.
-- Ships with a UI. A Cognito-authenticated dashboard for fleet visibility, plus a chat panel for driving the agent.
+- Answers questions about your fleet: findings by severity, where a CVE is, patch compliance, which findings will miss their SLA, what a past run did.
+- Patches a CVE narrowly. A CVE request installs only the OS packages Amazon Inspector lists for that CVE. A severity request installs approved patches at that level and above.
+- Rolls out by environment policy. Dev, staging and prod each have fixed concurrency and error limits; prod goes one account and Region at a time and stops at the first failure. A request can't change them.
+- Respects your change controls: an SSM Change Calendar, a CloudWatch alarm that stops a run, and an optional rule that staging needs a verified dev run first and prod a verified staging run.
+- Verifies fixes against Inspector per instance, and says why a finding is still open (reboot pending, rescan due, fix not installed).
+- Rolls back the yum and dnf transactions a recorded Patchy run made, and nothing else.
+- Keeps a record: every plan, decision, run and report is a create-only object in S3.
 
----
+## What it doesn't do
 
-## Architecture at a glance
+- Change anything on its own. The agent stores plans; only an operator's approval in the UI runs one.
+- Create CloudWatch alarms. It reads the ones you have.
+- Patch language packages (pip, npm). A CVE that only they fix is listed, not patched.
+- Roll back outside the yum and dnf family, or undo changes Patchy didn't make.
+- Promote between environments by itself. Each environment is its own plan and approval.
 
-![Architecture diagram](docs/images/architecture.jpg)
+## Architecture
 
-### How a request flows through it
+![Patchy architecture](docs/images/architecture.svg)
 
-1. You open the UI URL. The request hits an Application Load Balancer, which authenticates you through Amazon Cognito.
-2. The ALB forwards to an ECS Fargate service running the React frontend and a FastAPI proxy.
-3. Fargate calls `invoke_agent_runtime` on Amazon Bedrock AgentCore and streams the response back to your browser.
-4. Inside AgentCore, the Strands framework runs a single agent. It reads your message and picks from 25 tools to get the job done. Those tools cover the whole workflow:
-   - Vulnerability analysis — pulls CVE findings from Amazon Inspector, sizes up fleet-wide impact, and maps which instances are affected across environments.
-   - Patching — checks maintenance windows and existing patch policies, runs dry-run scans, executes through SSM Automation (with cross-account `TargetLocations` fan-out), verifies health, and rolls back when needed.
-   - Compliance — reads the S3 compliance reports for SLA status, breach history, and trends.
-5. The agent runs an agentic loop. It hands context to the LLM (Amazon Bedrock), gets back reasoning and a tool choice, runs that tool (hitting Amazon Inspector, AWS Systems Manager, Amazon S3, or Amazon EC2 through boto3), feeds the result back, and repeats until the task is done or a decision needs your approval. Tool selection stays on track thanks to `Decision:` docstrings, `next_action` hints, and steering handlers instead of a separate routing component.
-6. Results stream back through AgentCore to Fargate to your browser in real time. Compliance reports land in Amazon S3, and conversation memory persists in AgentCore Memory.
+Everything runs in a hub account: the UI on ECS Fargate behind an Application Load Balancer with Amazon Cognito sign-in, the agent on the AgentCore Runtime, the compliance bucket, and a Lambda function that writes reports. Each spoke account holds two Patchy IAM roles and the Patchy SSM documents; nothing else runs there. The red line in the diagram is the change path, which only an approved plan travels. [`docs/architecture.md`](docs/architecture.md) explains each part.
 
-The full write-up, including the design decisions behind these choices, lives in [`docs/architecture.md`](docs/architecture.md).
+## Try it
 
-## Prerequisites
-
-Local tooling:
-- Python 3.11+
-- Node.js 18+
-- Docker or [Finch](https://github.com/runfinch/finch)
-- AWS CLI v2
-
-AWS account setup, in the target region, before you run `deploy.sh`:
-
-1. [Enable Amazon Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access-modify.html) for Claude Sonnet.
-2. Run AWS Systems Manager Quick Setup:
-   - [Default Host Management Configuration](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-default-host-management-configuration.html)
-   - [Host Management](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-host-management.html) (entire org, all regions)
-   - [Config Recording](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-config.html) (entire org, all regions)
-3. Enable [SSM Explorer](https://docs.aws.amazon.com/systems-manager/latest/userguide/Explorer-setup.html).
-4. Enable [Amazon Inspector](https://docs.aws.amazon.com/inspector/latest/user/getting_started_tutorial.html) for EC2 scanning.
-5. Tag each managed EC2 instance:
-   - `PatchAutomation` = `enabled` — required. Instances without this tag are invisible to the agent.
-   - `Environment` = `dev` / `staging` / `prod` — required. Drives environment routing and staged rollout.
-   - `SLA-CRITICAL`, `SLA-HIGH`, `SLA-MEDIUM`, `SLA-LOW` = hours — optional. Drives the EMERGENCY vs SCHEDULED decision; defaults to 24/72/168/720h when missing.
-   - `Team`, `Product`, `Owner` = your values — optional. Populates compliance reports for audit breakdowns.
-
-   The full tagging guide with examples is in [`docs/operations.md`](docs/operations.md#tagging-your-fleet).
-
-> Heads up: the first time you activate AWS Config, it can take up to 6 hours to propagate to Explorer.
->
-> For multi-account setups, deploying from a Delegated Administrator, or non-Amazon-Linux workloads, see [`docs/operations.md`](docs/operations.md) and [`docs/extending.md`](docs/extending.md).
-
-## Quick start
-
-A full deploy runs 25–30 minutes on the first pass.
-
-Configuration lives entirely in `.env`. For a single-account deploy you really only need `AWS_PROFILE` and `AWS_REGION` — everything else has a working default. Before you run anything, it's worth skimming the [environment-variable reference](docs/operations.md#environment-configuration-env), which walks through every option (instance scope, authentication, TLS, multi-account, observability, guardrails) and its default. The ones most people touch on day one:
-
-- `AWS_PROFILE` / `AWS_REGION` — where it deploys (required).
-- `SSM_SCOPE_TAG_KEY` / `SSM_SCOPE_TAG_VALUE` — which instances the agent is even allowed to see (defaults to `PatchAutomation=enabled`).
-- `MULTI_ACCOUNT_ENABLED` and the `SPOKE_*` vars — only if you're patching across more than one account.
+You need Python 3.11+, Node.js 20+, the AgentCore CLI 0.20.1 (the deploy installs it if it's missing), Docker or Finch, and the AWS CLI v2, plus an AWS account with Bedrock access to Claude Sonnet 5, Systems Manager Quick Setup, SSM Explorer and Amazon Inspector enabled. [`docs/deploying.md`](docs/deploying.md#prerequisites) lists every prerequisite with links.
 
 ```bash
-# 1. Configure
 cp .env.example .env
-# Edit .env — at minimum, set AWS_PROFILE and AWS_REGION
-# See docs/operations.md#environment-configuration-env for every option
+# Set AWS_PROFILE and AWS_REGION. For a demo also set ALLOW_SELF_SIGNED_CERT=true;
+# otherwise set ACM_CERTIFICATE_ARN to a certificate browsers trust.
 
-# 2. Deploy
-./deploy.sh
-
-# 3. Create a Cognito user (interactive)
-./deploy.sh create-user
-
-# 4. Open the UI
-aws cloudformation describe-stacks --stack-name Patchy-UI \
-  --query 'Stacks[0].Outputs[?OutputKey==`UIUrl`].OutputValue' --output text
+./deploy.sh              # 25 to 30 minutes the first time
+./deploy.sh create-user  # email, temporary password, operator or viewer
+./deploy.sh status       # prints the UI URL
 ```
 
-Want a fleet to play with? This spins up 5 sample EC2 instances split across dev/staging/prod:
+Tag the instances Patchy may manage with `PatchAutomation=enabled` and `Environment=dev`, `staging` or `prod`. To get a small fleet to try it on, `./sample-env.sh deploy` creates five tagged instances across the three environments.
 
-```bash
-./sample-env.sh deploy
-```
-
-Individual deploy commands, teardown, and the environment-variable reference are in [`docs/operations.md`](docs/operations.md).
-
-## Multi-account setup
-
-You can patch a fleet that's spread across several AWS accounts. The setup follows a hub-and-spoke model:
-
-- The hub account is where the solution runs — the agent, the UI, and the compliance bucket all live here. It's your Organizations management account or a delegated administrator account.
-- A spoke account is any other account holding EC2 instances you want to patch. Each one gets two IAM roles and the SSM documents, deployed via StackSet: `PatchySpokeRole`, which the agent assumes to scan and patch, and `PatchySpokeReadRole`, which the dashboard assumes to read. No agent or UI runs there.
-
-The hub drives all cross-account work through [SSM Automation with TargetLocations](https://docs.aws.amazon.com/systems-manager/latest/userguide/running-automations-multiple-accounts-regions.html): one control plane reaching into N spoke accounts.
-
-On top of the single-account prerequisites, you'll need:
-
-- [Organizations trusted access](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/stacksets-orgs-activate-trusted-access.html) enabled for SSM and CloudFormation StackSets
-- Quick Setup (Host Management, Config Recording) targeting the whole org, or the OUs you plan to patch
-- [Amazon Inspector multi-account setup](https://docs.aws.amazon.com/inspector/latest/user/managing-multiple-accounts.html) enabled in each spoke account, or delegated admin for org-wide coverage
-
-Then configure `.env`:
-
-```bash
-MULTI_ACCOUNT_ENABLED=true
-AWS_ORG_ID=o-xxxxxxxxxx
-SPOKE_EXECUTION_ROLE=PatchySpokeRole
-
-# Pick one of the two targeting modes:
-SPOKE_ACCOUNT_IDS=111111111111,222222222222   # Explicit account list
-# SPOKE_OU_IDS=ou-abc123,ou-def456            # OU-based (auto-enrols new accounts)
-
-# Optional: fan out across multiple regions
-SPOKE_REGIONS=us-east-1,eu-west-1
-```
-
-Here's what `./deploy.sh` lays down:
-
-| Resource | Stack / Method | Scope | Purpose |
-|---|---|---|---|
-| AgentCore Runtime + Memory | `agentcore deploy` (npm CLI) | Hub account, hub region | Hosts the agent app, persists conversation state |
-| S3 compliance bucket | `Patchy-Core` (CDK) | Hub account, hub region | Compliance reports, baseline overrides, decision audit trail |
-| AgentCore IAM policy | `Patchy-Core` (CDK) | Hub account, hub region | Permissions for the agent (SSM, Inspector, EC2, S3, Organizations) |
-| VPC + subnets + NAT | `Patchy-Network` (CDK) | Hub account, hub region | Network for UI Fargate tasks (skipped if `EXISTING_VPC_ID` set) |
-| ECS Fargate + ALB + Cognito | `Patchy-UI` (CDK) | Hub account, hub region | Web dashboard and chat, operator authentication |
-| SSM Resource Data Sync | `aws ssm create-resource-data-sync` | Hub account, hub region | Cross-account fleet discovery via SSM Explorer |
-| Cross-account IAM roles | `Patchy-SpokeIam` (StackSet) | (Hub + spokes) × primary region | `PatchySpokeRole` (agent, read and patch) and `PatchySpokeReadRole` (dashboard, read only) |
-| SSM Automation documents | `Patchy-SsmDocs` (StackSet) | (Hub + spokes) × all `SPOKE_REGIONS` | `Patchy-RunPatchBaseline`, `Patchy-RunPatchBaselineById`, `Patchy-RunRollback`, `Patchy-RunRollbackById` |
-
-You can also deploy the StackSets on their own:
-
-```bash
-./deploy.sh spoke   # IAM role only
-./deploy.sh docs    # SSM documents only
-```
-
-Adding accounts later: with `SPOKE_OU_IDS` (OU-based targeting), any account that joins the OU gets onboarded automatically. With `SPOKE_ACCOUNT_IDS` (explicit list), update `.env` and re-run `./deploy.sh spoke && ./deploy.sh docs`.
-
-For the delegated administrator model and troubleshooting, see [`docs/operations.md`](docs/operations.md) and [`docs/extending.md`](docs/extending.md).
-
-## What you can ask it
+Things to ask:
 
 ```
 What critical vulnerabilities do we have in dev?
-How widespread is CVE-2025-38477 across our fleet?
-Patch all critical CVEs in staging
-Run a dry-run scan on prod
-Show SLA breaches this week
-Roll back dev patches
-Who patched prod last week?
-Generate a compliance report for PCI-DSS in staging
+Where is CVE-2026-40553 across the fleet?
+Which findings in prod will miss their SLA?
+Patch CVE-2026-40553 in dev
+Patch HIGH and above in staging
+Did CVE-2026-40553 get fixed on i-0abc1234567890def?
+Roll back the last dev patch run
 ```
 
-## Known limitations
-
-| Limitation | Detail |
-|---|---|
-| Rollback is Amazon Linux 2 only | It uses `yum history undo`. Patching itself works on any OS that Patch Manager supports. |
-| Severity-scoped, not per-CVE | The agent scopes installs to a severity level using `BaselineOverride` files, so a CVE request installs every approved patch at that severity or above, not only the CVE's packages. The override files cover Amazon Linux 2 and 2023, RHEL, CentOS, Rocky, Alma, Oracle Linux, SUSE and Windows. Ubuntu and Debian don't support severity filters, so a severity-filtered run against them fails instead of installing everything. |
-| Instances must read the override files | With a severity filter, each instance downloads its override file from the hub compliance bucket (`baseline-overrides/*`). Its instance role needs `s3:GetObject` on that prefix, or the patch command fails. The sample environment grants this; see `infra/lib/sample/sample-environment-stack.ts`. |
-| Manual approval between environments | This is a safety gate by design, not an oversight. |
-| Self-signed TLS by default | Swap in an ACM public certificate for production. |
-| Health checks need your CloudWatch Alarms | After patching, the agent reads your existing CloudWatch Alarms to verify health. It doesn't create them — set them up on your fleet first. |
-| PoC-grade | See the disclaimer up top. |
+Patching across several AWS accounts and Regions is covered in [`docs/deploying.md`](docs/deploying.md#multi-account-and-multi-region).
 
 ## Documentation
 
-| Document | What's in it |
+| Read this | When you want to |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | System design, agent design, tools, patch execution flow, safety mechanisms, fleet discovery, memory model, infrastructure stacks |
-| [`docs/operations.md`](docs/operations.md) | Operator command reference, tagging, SLA configuration, user management, guardrails |
-| [`docs/security.md`](docs/security.md) | IAM model, network architecture, authentication, data flow, safety mechanisms |
-| [`docs/observability.md`](docs/observability.md) | Debugging with traces, tool summaries, full conversation logs, and performance metrics |
-| [`docs/auditing.md`](docs/auditing.md) | Enterprise audit and compliance: identity chain, compliance reports, CloudTrail correlation, hardening for regulated environments |
-| [`docs/extending.md`](docs/extending.md) | Adding new OS support, custom tools, alternative scanners, delegated administrator deploy |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues and how to resolve them |
+| [`docs/deploying.md`](docs/deploying.md) | Deploy, configure, add accounts, upgrade or tear down |
+| [`docs/operations.md`](docs/operations.md) | Use Patchy day to day: asking, approving, stopping, tags and SLAs, users |
+| [`docs/architecture.md`](docs/architecture.md) | Understand how a request becomes a run, and the safety controls on the way |
+| [`docs/security.md`](docs/security.md) | Review authentication, IAM, the audit trail and hardening |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Fix a refusal or an error, and find the logs |
+| [`docs/extending.md`](docs/extending.md) | Add tools, cards, Automation documents or OS support |
 
 ## Repository layout
 
 ```
-├── agent/          # Agent runtime (entrypoint, tools, steering, memory)
-├── infra/          # AWS CDK stacks (Network, Core, UI, SpokeIam, SsmDocs, SampleEnv)
-├── ui/             # FastAPI backend + Vite/React frontend
-├── docs/           # Architecture, operations, security, observability
-├── tests/          # Unit tests + integration tests
-├── deploy.sh       # Full-solution deploy CLI
-└── sample-env.sh   # Optional demo EC2 fleet lifecycle
+agent/        The agent: entrypoint, tools, steering, plans, and the tool-selection eval
+infra/        CDK stacks: network, core (bucket and runtime policy), UI, spoke roles, SSM documents, sample fleet
+ui/           FastAPI API, report Lambda, React frontend
+docs/         The documents above
+deploy.sh     Deploys, updates, inspects and removes the solution
+sample-env.sh Creates or removes the sample EC2 fleet
+setup-tls.sh  Imports a self-signed demo certificate into ACM
+connect-ui.sh Opens an internal ALB through SSM port forwarding
 ```
 
 ## Contributing
 
-Issues and pull requests are welcome. Keep in mind this is a PoC, so anything non-trivial may need a design discussion before implementation. Run the local test suite before you submit:
-
-```bash
-pytest tests/                    # Unit + integration
-python3 agent/eval/run_eval.py   # Tool-selection eval (requires Bedrock)
-```
+Issues and pull requests are welcome; for anything substantial, open an issue first so we can agree the design. Before you submit a change to the agent's prompt or tools, run the tool-selection eval described in [`agent/eval/README.md`](agent/eval/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for the process.
 
 ## Security
 
-This asset is a proof-of-value for the services it uses and is not a production-ready solution. You'll need to work out how the [AWS Shared Responsibility Model](https://aws.amazon.com/compliance/shared-responsibility-model/) applies to your situation and put the right controls in place to hit your security goals. AWS gives you a broad set of security tools and configurations to do that. This repository is an experimental sample and may change without regard for backward compatibility.
+This sample is not production-ready. Work out how the [AWS Shared Responsibility Model](https://aws.amazon.com/compliance/shared-responsibility-model/) applies to your use and add the controls you need; [`docs/security.md`](docs/security.md) describes what the sample provides and what it leaves to you. See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) to report a security issue.
 
-At the end of the day, keeping a full-stack application secure is your responsibility as its developer. We document security best practices and ship a secure baseline, but Amazon holds no responsibility for the security of applications built from this tool.
+## Licence
 
-For the complete security model — IAM permissions, network architecture, authentication, data flow, and safety mechanisms — see [`docs/security.md`](docs/security.md).
+MIT-0. See [LICENSE](LICENSE).
 
-## License
-
-This project is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
+The UI bundles the IBM Plex Sans and IBM Plex Mono typefaces (from the `@fontsource` packages), which are licensed under the [SIL Open Font License 1.1](https://openfontlicense.org).

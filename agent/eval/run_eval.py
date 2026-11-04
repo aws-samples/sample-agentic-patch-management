@@ -30,7 +30,12 @@ sys.path.insert(0, str(AGENT_DIR))
 # ── Configuration ────────────────────────────────────────────────────────
 
 DEFAULT_THRESHOLD = 80  # percent
-DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
+def _runtime_model() -> str:
+    from helper.agent_factory import _DEFAULT_MODEL
+    return os.environ.get("BEDROCK_MODEL_ID") or _DEFAULT_MODEL
+
+
+DEFAULT_MODEL = None  # resolved at runtime: BEDROCK_MODEL_ID, else the agent's default
 SCENARIOS_FILE = EVAL_DIR / "scenarios.json"
 BASELINE_FILE = EVAL_DIR / "baseline.json"
 
@@ -45,103 +50,44 @@ NC = "\033[0m"
 # ── Tool Schemas ─────────────────────────────────────────────────────────
 
 def _unified_agent_tools() -> list:
-    """Tool schemas for the unified agent (all 24 tools in one agent)."""
-    return [
-        # ── Fleet & Infrastructure ──
-        {"toolSpec": {"name": "get_fleet_overview",
-                      "description": "Fleet overview via SSM Explorer + direct EC2 describe. Cross-account, cross-region.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"environment": {"type": "string"}, "account_id": {"type": "string"}}}}}},
-        {"toolSpec": {"name": "resolve_execution_scope",
-                      "description": "Resolve accounts and count instances for a cross-account operation. Decision: Always call before multi_account_dry_run or multi_account_execute.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"environment": {"type": "string"}, "account_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["environment"]}}}},
-        # ── Vulnerability Analysis ──
-        {"toolSpec": {"name": "get_vulnerability_findings",
-                      "description": "Query AWS Inspector for vulnerability findings across all configured accounts and regions. Fans out across every (account, region) pair, merges results.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"cve_id": {"type": "string"}, "severity": {"type": "string"}, "environment": {"type": "string"}, "account_id": {"type": "string"}, "limit": {"type": "integer"}}}}}},
-        {"toolSpec": {"name": "assess_fleet_impact",
-                      "description": "Assess fleet-wide impact of a CVE across all environments. Groups affected instances by environment, cross-references maintenance windows and SLA policy, generates phased rollout recommendation. Decision: Call for top 1-3 CVEs by CVSS only, not every CVE.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"cve_id": {"type": "string"}, "account_id": {"type": "string"}}, "required": ["cve_id"]}}}},
-        # ── Patch Operations ──
-        {"toolSpec": {"name": "get_patch_compliance",
-                      "description": "Get patch compliance status from AWS Systems Manager across all configured accounts.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"environment": {"type": "string"}, "severity": {"type": "string"}}, "required": ["environment"]}}}},
-        {"toolSpec": {"name": "patch_dry_run",
-                      "description": "Scan instances to preview missing patches via SSM Automation (MAMR). Decision: Use only when operator explicitly asks to scan/preview/dry-run named instances. Do NOT call as a pre-step to patching.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"instance_ids": {"type": "array", "items": {"type": "string"}}, "severity_filter": {"type": "string"}}, "required": ["instance_ids"]}}}},
-        {"toolSpec": {"name": "execute_patch_operation",
-                      "description": "Execute patching via SSM Automation (MAMR). Decision: Use when operator names specific instance IDs (i-xxx). For fleet-scope patching by environment/severity/CVE, use multi_account_execute instead.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"instance_ids": {"type": "array", "items": {"type": "string"}}, "execution_mode": {"type": "string"}, "environment": {"type": "string"}, "cve_id": {"type": "string"}}, "required": ["instance_ids", "execution_mode", "environment"]}}}},
-        {"toolSpec": {"name": "multi_account_dry_run",
-                      "description": "Initiate dry-run scan across accounts. Decision: Use only when operator explicitly asks to preview/scan a fleet scope. Do NOT call before multi_account_execute.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"environment": {"type": "string"}, "account_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["environment", "account_ids"]}}}},
-        {"toolSpec": {"name": "multi_account_execute",
-                      "description": "Execute patching across accounts. Decision: Use when operator describes scope by environment, severity, or CVE without naming specific instance IDs. Always call resolve_execution_scope first.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"environment": {"type": "string"}, "account_ids": {"type": "array", "items": {"type": "string"}}, "confirm_execute": {"type": "boolean"}}, "required": ["environment", "account_ids"]}}}},
-        {"toolSpec": {"name": "get_command_status",
-                      "description": "Get status of SSM command execution.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"command_id": {"type": "string"}, "instance_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["command_id", "instance_ids"]}}}},
-        {"toolSpec": {"name": "get_automation_status",
-                      "description": "Get status of a cross-account Automation execution and its per-account children.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"automation_execution_id": {"type": "string"}}, "required": ["automation_execution_id"]}}}},
-        {"toolSpec": {"name": "emergency_stop",
-                      "description": "Stop a running patch operation (Automation execution or SSM command).",
-                      "inputSchema": {"json": {"type": "object", "properties": {"automation_execution_id": {"type": "string"}, "command_id": {"type": "string"}}}}}},
-        # ── Rollback ──
-        {"toolSpec": {"name": "rollback_patches",
-                      "description": "Rollback patches on EC2 instances. Decision: Use when operator names specific instance IDs for rollback. For fleet-scope rollback, use multi_account_rollback instead.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"instance_ids": {"type": "array", "items": {"type": "string"}}, "confirm_execute": {"type": "boolean"}}, "required": ["instance_ids"]}}}},
-        {"toolSpec": {"name": "verify_rollback",
-                      "description": "Verify rollback succeeded. Call after rollback_patches completes. Re-scans instances, compares patch state against snapshots, checks health.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"command_id": {"type": "string"}, "instance_ids": {"type": "array", "items": {"type": "string"}}, "pre_patch_state": {"type": "object"}, "post_patch_state": {"type": "object"}}, "required": ["command_id", "instance_ids"]}}}},
-        {"toolSpec": {"name": "multi_account_rollback",
-                      "description": "Rollback patches across accounts via SSM Automation. Decision: Use for fleet-scope rollback by environment. Same confirmation pattern as multi_account_execute.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"environment": {"type": "string"}, "account_ids": {"type": "array", "items": {"type": "string"}}, "max_concurrency": {"type": "string"}, "max_errors": {"type": "string"}, "regions": {"type": "array", "items": {"type": "string"}}, "confirm_execute": {"type": "boolean"}}, "required": ["environment", "account_ids"]}}}},
-        # ── Compliance & Verification ──
-        {"toolSpec": {"name": "query_compliance_reports",
-                      "description": "Query compliance reports from S3 with filtering and statistics. Returns reports, statistics, and total_count.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"days_back": {"type": "integer"}, "severity": {"type": "string"}, "environment": {"type": "string"}, "sla_breaches_only": {"type": "boolean"}, "limit": {"type": "integer"}}}}}},
-        {"toolSpec": {"name": "capture_patch_state",
-                      "description": "Capture current patch compliance state for instances (snapshot). Call BEFORE patching for pre-patch state and AFTER for post-patch state.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"instance_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["instance_ids"]}}}},
-        {"toolSpec": {"name": "verify_cve_remediation",
-                      "description": "Check CVE remediation status in Inspector. Non-blocking -- returns current state immediately.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"cve_ids": {"type": "array", "items": {"type": "string"}}, "instance_ids": {"type": "array", "items": {"type": "string"}}, "max_wait_minutes": {"type": "integer"}}, "required": ["cve_ids", "instance_ids"]}}}},
-        # ── Maintenance & Health ──
-        {"toolSpec": {"name": "get_maintenance_windows",
-                      "description": "Get patch-related maintenance windows across all configured accounts and regions. Decision: Use when operator asks about maintenance windows, scheduling, or next available patch window.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"environment": {"type": "string"}, "instance_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["environment"]}}}},
-        {"toolSpec": {"name": "get_patch_policy",
-                      "description": "Check Quick Setup patch policy associations (SSM State Manager) for instances. Decision: ALWAYS call when operator asks to PLAN, schedule, or handle a CVE. Policies define WHAT gets patched and on WHAT schedule.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"instance_ids": {"type": "array", "items": {"type": "string"}}, "environment": {"type": "string"}}, "required": ["instance_ids"]}}}},
-        {"toolSpec": {"name": "create_maintenance_window",
-                      "description": "Create AWS Systems Manager maintenance window.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"name": {"type": "string"}, "schedule": {"type": "string"}, "duration": {"type": "integer"}, "target_environment": {"type": "string"}}, "required": ["name", "schedule", "duration", "target_environment"]}}}},
-        {"toolSpec": {"name": "check_instance_health",
-                      "description": "Check instance health after patching operations.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"instance_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["instance_ids"]}}}},
-        {"toolSpec": {"name": "check_cloudwatch_alarms",
-                      "description": "Check CloudWatch alarms for EC2 instances.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"instance_ids": {"type": "array", "items": {"type": "string"}}, "alarm_name_pattern": {"type": "string"}}, "required": ["instance_ids"]}}}},
-        {"toolSpec": {"name": "verify_and_proceed",
-                      "description": "Verify patch completion and health before proceeding to next environment. Decision: Use for production-ready verification or when operator explicitly requests verification.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"command_id": {"type": "string"}, "instance_ids": {"type": "array", "items": {"type": "string"}}, "environment": {"type": "string"}, "alarm_pattern": {"type": "string"}}, "required": ["command_id", "instance_ids", "environment"]}}}},
-        # ── Shared ──
-        {"toolSpec": {"name": "get_response_template",
-                      "description": "Get a response template for structured output.",
-                      "inputSchema": {"json": {"type": "object", "properties": {"template_name": {"type": "string"}}, "required": ["template_name"]}}}},
-    ]
+    """Tool schemas exactly as the deployed agent sees them."""
+    from supervisor import ALL_TOOLS
+    return [{"toolSpec": t.tool_spec} for t in ALL_TOOLS]
+
+
+def _unified_system_prompt() -> str:
+    """System prompt exactly as the agent factory builds it."""
+    from supervisor import SYSTEM_PROMPT
+    return SYSTEM_PROMPT
+
+
+# Write tools: a scenario that expects no tool passes only if none of these is called.
+WRITE_TOOLS = {"execute_patch_operation", "multi_account_execute", "rollback_patches",
+               "multi_account_rollback", "create_maintenance_window"}
 
 
 # ── Evaluation Engine ────────────────────────────────────────────────────
 
 def _converse(client, model_id: str, system_prompt: str, tools: list, messages: list) -> tuple[dict | None, dict]:
-    """Single Bedrock converse call. Returns (first toolUse block or None, usage metrics)."""
+    """Single Bedrock converse call. Returns (first toolUse block or None, usage metrics).
+
+    The metrics also carry the reply's text, for scenarios that check what the model says.
+    """
+    from helper.agent_factory import model_request_fields
+    kwargs = {}
+    fields = model_request_fields(model_id)
+    if fields:
+        # Same request shape as the runtime: adaptive thinking (and effort), no temperature.
+        kwargs["additionalModelRequestFields"] = fields
+        kwargs["inferenceConfig"] = {"maxTokens": 8000}
+    else:
+        kwargs["inferenceConfig"] = {"temperature": 0.0, "maxTokens": 1024}
     response = client.converse(
         modelId=model_id,
         messages=messages,
         system=[{"text": system_prompt}],
         toolConfig={"tools": tools},
-        inferenceConfig={"temperature": 0.0, "maxTokens": 1024},
+        **kwargs,
     )
     usage = response.get("usage", {})
     metrics = {
@@ -151,6 +97,7 @@ def _converse(client, model_id: str, system_prompt: str, tools: list, messages: 
         "latency_ms": response.get("metrics", {}).get("latencyMs", 0),
     }
     content = response.get("output", {}).get("message", {}).get("content", [])
+    metrics["text"] = " ".join(b["text"] for b in content if "text" in b)
     for block in content:
         if "toolUse" in block:
             return block["toolUse"], metrics
@@ -201,12 +148,13 @@ def run_agent_eval(agent_name: str, system_prompt: str, tools: list, scenarios: 
         try:
             messages = [{"role": "user", "content": [{"text": msg}]}]
             tool_use, metrics = _converse(client, model_id, system_prompt, tools, messages)
+            metrics.pop("text", None)
 
             actual_tool = tool_use["name"] if tool_use else None
             actual_input = tool_use.get("input", {}) if tool_use else {}
 
             # Check 1: correct tool
-            tool_correct = actual_tool == expected_tool
+            tool_correct = (actual_tool not in WRITE_TOOLS) if expected_tool is None else actual_tool == expected_tool
 
             # Check 2: correct parameters (only if tool is correct)
             param_failures = []
@@ -308,15 +256,18 @@ def run_multi_turn_eval(scenarios: list, system_prompt: str, tools: list,
                             "input": tu.get("input", {}),
                         }})
                         messages.append({"role": "assistant", "content": content})
-                        # Immediately add tool_result (confirmation_required)
+                        # Immediately add the tool result: the scenario's own, else a plan card.
                         messages.append({"role": "user", "content": [
                             {"toolResult": {
                                 "toolUseId": tool_use_id,
-                                "content": [{"json": {
-                                    "status": "confirmation_required",
-                                    "warning": "Confirm to proceed with the operation.",
-                                    "error_code": "ExecutionConfirmation",
-                                    "next_action": f"Present this plan to the operator. When they approve, call {tu['name']} again with confirm_execute=True.",
+                                "content": [{"json": turn.get("tool_result") or {
+                                    "status": "plan_ready",
+                                    "result_type": "plan_created",
+                                    "plan_id": "0" * 32,
+                                    "shown_as_card": True,
+                                    "next_action": ("Nothing has run. The plan is shown to the operator as a card "
+                                                    "with an Approve button. Do not ask them to type yes; approval "
+                                                    "only happens on the card."),
                                 }}],
                             }}
                         ]})
@@ -330,12 +281,24 @@ def run_multi_turn_eval(scenarios: list, system_prompt: str, tools: list,
             actual_tool = tool_use["name"] if tool_use else None
             actual_input = tool_use.get("input", {}) if tool_use else {}
 
-            tool_correct = actual_tool == expected_tool
+            tool_correct = (actual_tool not in WRITE_TOOLS) if expected_tool is None else actual_tool == expected_tool
             param_failures = []
             if tool_correct and expected_params:
                 param_failures = _check_params(actual_input, expected_params)
 
-            passed = tool_correct and not param_failures
+            # Prose checks on the reply, case-insensitive, after the tool check. A reply that
+            # calls a read tool first hasn't answered yet, so there's nothing to check.
+            text = metrics.pop("text", "").lower()
+            assertion_failures = []
+            for a in (scenario.get("answer_assertions", []) if not tool_use else []):
+                if "contains" in a and a["contains"].lower() not in text:
+                    assertion_failures.append(f"reply missing '{a['contains']}'")
+                if "not_contains" in a and a["not_contains"].lower() in text:
+                    assertion_failures.append(f"reply says '{a['not_contains']}'")
+            if assertion_failures:
+                assertion_failures.append(f"reply: {text[:600]}")
+
+            passed = tool_correct and not param_failures and not assertion_failures
 
             results.append({
                 "agent": "multi_turn",
@@ -346,7 +309,7 @@ def run_multi_turn_eval(scenarios: list, system_prompt: str, tools: list,
                 "expected_params": expected_params,
                 "actual_params": actual_input,
                 "param_failures": param_failures,
-                "assertion_failures": [],
+                "assertion_failures": assertion_failures,
                 "passed": passed,
                 "description": desc,
                 "metrics": metrics,
@@ -387,7 +350,7 @@ def print_results(results: list[dict], baseline: dict | None = None):
         baseline_accuracy = (baseline_passed / baseline_total * 100) if baseline_total > 0 else 0
 
     print(f"\n{'='*60}")
-    print(f"  Tool Selection & Parameter Eval Results")
+    print("  Tool Selection & Parameter Eval Results")
     print(f"{'='*60}\n")
 
     # Per-agent breakdown
@@ -478,8 +441,8 @@ def main():
                         help=f"Minimum accuracy %% to pass (default: {DEFAULT_THRESHOLD})")
     parser.add_argument("--update-baseline", action="store_true",
                         help="Save current results as new baseline")
-    parser.add_argument("--model", default=os.environ.get("EVAL_MODEL_ID", DEFAULT_MODEL),
-                        help=f"Model ID for evaluation (default: {DEFAULT_MODEL})")
+    parser.add_argument("--model", default=os.environ.get("EVAL_MODEL_ID"),
+                        help="Model ID for evaluation (default: the runtime's model)")
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"),
                         help="AWS region (default: us-east-1)")
     args = parser.parse_args()
@@ -487,15 +450,9 @@ def main():
     # Load scenarios
     scenarios = json.loads(SCENARIOS_FILE.read_text())
 
-    # Load prompt from the actual agent code
-    try:
-        from supervisor import SYSTEM_PROMPT as UNIFIED_PROMPT
-    except ImportError:
-        # Fallback: extract SYSTEM_PROMPT without triggering full dependency chain
-        import re
-        _ua_source = (AGENT_DIR / "supervisor.py").read_text()
-        _match = re.search(r'SYSTEM_PROMPT\s*=\s*"""(.*?)"""', _ua_source, re.DOTALL)
-        UNIFIED_PROMPT = _match.group(1) if _match else ""
+    # Prompt, tools and model exactly as the agent uses them
+    args.model = args.model or _runtime_model()
+    UNIFIED_PROMPT = _unified_system_prompt()
 
     total_scenarios = sum(len(v) for v in scenarios.values())
     print(f"\n{BLUE}Tool Selection & Parameter Eval{NC}")
@@ -507,7 +464,7 @@ def main():
     # Run evals
     all_results = []
 
-    print(f"\n  Running unified agent scenarios...", end="", flush=True)
+    print("\n  Running unified agent scenarios...", end="", flush=True)
     unified_results = run_agent_eval(
         "unified", UNIFIED_PROMPT, _unified_agent_tools(),
         scenarios["unified"], args.model, args.region,
@@ -517,7 +474,7 @@ def main():
 
     # Multi-turn confirmation scenarios
     if scenarios.get("multi_turn"):
-        print(f"  Running multi-turn scenarios...", end="", flush=True)
+        print("  Running multi-turn scenarios...", end="", flush=True)
         mt_results = run_multi_turn_eval(
             scenarios["multi_turn"], UNIFIED_PROMPT,
             _unified_agent_tools(), args.model, args.region,
@@ -536,7 +493,7 @@ def main():
     # Gate
     if accuracy < args.threshold:
         print(f"  {RED}FAIL:{NC} Accuracy {accuracy:.0f}% < threshold {args.threshold}%")
-        print(f"  Deploy blocked. Fix regressions or run with --update-baseline if intentional.\n")
+        print("  Deploy blocked. Fix regressions or run with --update-baseline if intentional.\n")
         sys.exit(1)
     else:
         print(f"  {GREEN}PASS:{NC} Accuracy {accuracy:.0f}% >= threshold {args.threshold}%\n")

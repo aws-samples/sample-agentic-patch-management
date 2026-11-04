@@ -1,3 +1,4 @@
+import { apiFetch } from "../lib/http";
 import { useState, useEffect } from "react";
 
 interface AuthConfig {
@@ -17,7 +18,7 @@ export function useAuth() {
 
   useEffect(() => {
     const fetchAuth = () =>
-      fetch("/api/auth/config")
+      apiFetch("/api/auth/config")
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => data ?? { email: null, logoutUrl: null, cognitoEnabled: false })
         .catch(() => ({ email: null, logoutUrl: null, cognitoEnabled: false } as AuthConfig));

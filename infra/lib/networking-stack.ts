@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 
 export class NetworkingStack extends cdk.Stack {
@@ -41,10 +42,16 @@ export class NetworkingStack extends cdk.Stack {
     });
 
     // Add VPC Flow Logs for security monitoring
-    new ec2.FlowLog(this, 'VPCFlowLog', {
+    const flowLog = new ec2.FlowLog(this, 'VPCFlowLog', {
       resourceType: ec2.FlowLogResourceType.fromVpc(this.vpc),
       destination: ec2.FlowLogDestination.toCloudWatchLogs(),
     });
+
+    // A month of flow logs, removed with the stack. The group the flow log
+    // creates is changed in place, so its logical ID (and the flow log) stay.
+    const flowLogGroup = flowLog.node.findChild('LogGroup').node.defaultChild as logs.CfnLogGroup;
+    flowLogGroup.retentionInDays = logs.RetentionDays.ONE_MONTH;
+    flowLogGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // Tag all VPC resources
     cdk.Tags.of(this.vpc).add('Project', 'Patchy');

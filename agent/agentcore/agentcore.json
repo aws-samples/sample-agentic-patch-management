@@ -23,15 +23,11 @@
         },
         {
           "name": "MULTI_ACCOUNT_ENABLED",
-          "value": "true"
+          "value": "false"
         },
         {
           "name": "SPOKE_EXECUTION_ROLE",
           "value": "PatchySpokeRole"
-        },
-        {
-          "name": "SPOKE_ACCOUNT_IDS",
-          "value": "111111111111"
         },
         {
           "name": "SSM_SCOPE_TAG_KEY",

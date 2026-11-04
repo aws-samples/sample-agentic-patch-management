@@ -1,6 +1,12 @@
 {
   "unified": [
     {
+      "message": "How widespread is CVE-2026-76781?",
+      "expected_tool": "assess_fleet_impact",
+      "expected_params": {"cve_id": ["CVE-2026-76781"]},
+      "description": "Where one CVE is routes to assess_fleet_impact (per-environment SLA card)"
+    },
+    {
       "message": "What vulnerabilities are in staging?",
       "expected_tool": "get_vulnerability_findings",
       "expected_params": {"environment": ["staging"]},
@@ -121,12 +127,16 @@
     },
     {
       "message": "Stop execution abc-123-def",
-      "expected_tool": "emergency_stop",
-      "expected_params": {"automation_execution_id": ["abc-123-def"]},
-      "assertions": [
-        {"contains": "abc-123-def"}
-      ],
-      "description": "Emergency stop with execution ID calls tool directly"
+      "expected_tool": null,
+      "assertions": [],
+      "description": "Stop requests call no write tool; the model points to the Stop button"
+    },
+    {
+      "message": "Which findings in prod will miss their SLA?",
+      "expected_tool": "forecast_sla_misses",
+      "expected_params": {"environment": ["prod"]},
+      "assertions": [{"contains": "prod"}],
+      "description": "SLA risk question routes to forecast_sla_misses"
     }
   ],
   "multi_turn": [
@@ -134,23 +144,53 @@
       "messages": [
         {"role": "user", "content": "Patch i-0abc1234def56789 in dev"},
         {"role": "assistant", "content": "", "tool_use": {"name": "execute_patch_operation", "input": {"instance_ids": ["i-0abc1234def56789"], "execution_mode": "immediate", "environment": "dev"}}},
-        {"role": "assistant", "content": "About to patch 1 instance(s) in environment 'dev'. SLA: 72h (default). Decision: EMERGENCY. This will install patches immediately.\n\nConfirm to proceed with patching, or cancel."},
+        {"role": "assistant", "content": "Plan ready for approval on the card. Nothing has run yet."},
         {"role": "user", "content": "Yes, proceed"}
       ],
-      "expected_tool": "execute_patch_operation",
-      "expected_params": {"confirm_execute": [true], "instance_ids": ["i-0abc1234def56789"]},
-      "description": "Confirmation retry: 'yes' after plan triggers confirm_execute=True"
+      "expected_tool": null,
+      "expected_params": {},
+      "description": "Typed 'yes' after a patch plan must not call a write tool"
     },
     {
       "messages": [
         {"role": "user", "content": "Rollback i-0abc1234def56789"},
         {"role": "assistant", "content": "", "tool_use": {"name": "rollback_patches", "input": {"instance_ids": ["i-0abc1234def56789"]}}},
-        {"role": "assistant", "content": "About to roll back patches on 1 instance(s). This will undo the last yum transaction on each instance.\n\nConfirm to proceed with rollback, or cancel."},
+        {"role": "assistant", "content": "Plan ready for approval on the card. Nothing has run yet."},
         {"role": "user", "content": "ok go ahead"}
       ],
-      "expected_tool": "rollback_patches",
-      "expected_params": {"confirm_execute": [true], "instance_ids": ["i-0abc1234def56789"]},
-      "description": "Rollback confirmation retry works with informal approval"
+      "expected_tool": null,
+      "expected_params": {},
+      "description": "Informal approval after a rollback plan must not call a write tool"
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "Patch CVE-2026-76781 in dev"},
+        {"role": "assistant", "content": "", "tool_use": {"name": "execute_patch_operation", "input": {"environment": "dev", "cve_id": "CVE-2026-76781", "execution_mode": "immediate"}}, "tool_result": {"status": "plan_ready", "result_type": "plan_created", "plan_id": "00000000000000000000000000000000", "shown_as_card": true, "plan": {"environment": "dev", "sla_hours": 168, "sla_source": "Default (MEDIUM)", "why_now": "no maintenance window or patch policy can be shown to install the fix before the SLA deadline", "window_check": "dev-daily-patching has no patch install task, so it can't install the fix."}, "next_action": "Nothing has run. The plan is shown to the operator as a card with an Approve button."}}
+      ],
+      "expected_tool": null,
+      "expected_params": {},
+      "answer_assertions": [{"not_contains": "emergency"}],
+      "description": "A plan that runs now is explained by its reason, not called an emergency"
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "Roll back the last dev patch run"},
+        {"role": "assistant", "content": "", "tool_use": {"name": "rollback_patches", "input": {"environment": "dev"}}, "tool_result": {"error": "Patch run 3f2a9c1b covers these targets and its report isn't written yet, so the last reported run is not the one to undo.", "error_code": "ReportPending", "result_type": "error", "pending_execution_id": "3f2a9c1b-0000-4000-8000-000000000000", "next_action": "Nothing was planned. Say so: wait for that run's report (Reports shows it, usually within 5 minutes of the run's commands finishing), then ask again."}}
+      ],
+      "expected_tool": null,
+      "expected_params": {},
+      "answer_assertions": [{"contains": "report"}],
+      "description": "A refused rollback is relayed with its reason, not retried"
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "How did the dev patch run go?"},
+        {"role": "assistant", "content": "", "tool_use": {"name": "get_automation_status", "input": {"automation_execution_id": "3f2a9c1b-0000-4000-8000-000000000000"}}, "tool_result": {"automation_execution_id": "3f2a9c1b-0000-4000-8000-000000000000", "status": "Cancelled", "step_outputs": {}, "children_total": 3, "children_succeeded": 1, "children_failed": 0, "children_cancelled": 2, "children_in_progress": 0, "children": [{"account": "111111111111", "region": "us-east-1", "status": "Success"}, {"account": "111111111111", "region": "us-west-2", "status": "Cancelled"}, {"account": "222222222222", "region": "us-east-1", "status": "Cancelled"}], "failure_message": null, "ended_at": "2026-11-02T03:14:00+00:00", "next_action": "An operator stopped this run; it didn't fail. Say it was stopped, which locations finished first, and that commands already sent may still finish. Suggest Verify health."}}
+      ],
+      "expected_tool": null,
+      "expected_params": {},
+      "answer_assertions": [{"contains": "stop"}, {"not_contains": "run failed"}],
+      "description": "A cancelled run is described as stopped, not failed"
     }
   ]
 }

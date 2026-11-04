@@ -18,15 +18,17 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Source .env if it exists
+# Load .env; AWS_PROFILE and AWS_REGION from the shell win, as in deploy.sh,
+# so deploy.sh and this script always target the same account.
+_saved_profile="${AWS_PROFILE:-}"
+_saved_region="${AWS_REGION:-}"
 if [ -f ".env" ]; then
     set -a
     source .env
     set +a
 fi
-
-AWS_PROFILE="${AWS_PROFILE:-default}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_PROFILE="${_saved_profile:-${AWS_PROFILE:-default}}"
+AWS_REGION="${_saved_region:-${AWS_REGION:-us-east-1}}"
 export AWS_PROFILE AWS_DEFAULT_REGION="$AWS_REGION"
 
 # Check prerequisites

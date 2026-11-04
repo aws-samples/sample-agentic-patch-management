@@ -22,10 +22,16 @@ NC='\033[0m'
 _saved_profile="${AWS_PROFILE:-}"
 _saved_region="${AWS_REGION:-}"
 
+_env_file_profile=""
+_env_file_region=""
 if [ -f ".env" ]; then
+    # Unset first, so these record only what .env itself sets.
+    unset AWS_PROFILE AWS_REGION
     set -a
     source .env
     set +a
+    _env_file_profile="${AWS_PROFILE:-}"
+    _env_file_region="${AWS_REGION:-}"
 fi
 
 # Caller's env vars take precedence over .env
@@ -33,6 +39,8 @@ AWS_PROFILE="${_saved_profile:-${AWS_PROFILE:-default}}"
 AWS_REGION="${_saved_region:-${AWS_REGION:-us-east-1}}"
 AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-}"
 export AWS_PROFILE AWS_REGION AGENTCORE_ROLE_ARN
+# Keep aws CLI output out of a pager so unattended runs never block.
+export AWS_PAGER=""
 # CDK uses these to determine target account/region for synthesis.
 # Must use --profile explicitly since export may not propagate to subshell in time.
 CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --profile "$AWS_PROFILE" --query Account --output text 2>/dev/null)
@@ -42,7 +50,11 @@ if [ -z "$CDK_DEFAULT_ACCOUNT" ]; then
 fi
 export CDK_DEFAULT_ACCOUNT
 export CDK_DEFAULT_REGION=$AWS_REGION
-unset _saved_profile _saved_region
+
+# Show the target, and confirm it when the shell overrides .env's profile or Region.
+source "$(dirname "${BASH_SOURCE[0]}")/scripts/confirm_target.sh"
+confirm_target "${1:-}" "$_env_file_profile" "$_saved_profile" "$_env_file_region" "$_saved_region"
+unset _saved_profile _saved_region _env_file_profile _env_file_region
 
 # Repository root, so helpers resolve whatever directory a step is in.
 PATCHY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -183,15 +195,15 @@ check_prereqs() {
 
     if [ "$need_node" = true ]; then
         if ! command -v node &> /dev/null; then
-            print_error "Node.js 18+ required"
+            print_error "Node.js 20+ required"
             exit 1
         fi
         local node_major
         node_major=$(node -e "console.log(process.versions.node.split('.')[0])")
-        if [ "$node_major" -ge 18 ] 2>/dev/null; then
+        if [ "$node_major" -ge 20 ] 2>/dev/null; then
             print_status "Node.js $(node --version)"
         else
-            print_error "Node.js 18+ required (found $(node --version))"
+            print_error "Node.js 20+ required (found $(node --version))"
             exit 1
         fi
     fi
@@ -255,18 +267,21 @@ setup_environment() {
 # ── CDK bootstrap ──────────────────────────────────────────────────
 
 ensure_cdk_bootstrap() {
+    # Region defaults to AWS_REGION; stacks deployed to other Regions (the
+    # hub's SSM documents) need each of those bootstrapped too.
+    local region="${1:-$AWS_REGION}"
     local account_id
     account_id="${CDK_DEFAULT_ACCOUNT:-$(aws sts get-caller-identity --query Account --output text)}"
 
-    echo "Checking CDK bootstrap for ${account_id}/${AWS_REGION}..."
+    echo "Checking CDK bootstrap for ${account_id}/${region}..."
 
     # Check if the bootstrap SSM parameter exists — this is the definitive check
-    if aws ssm get-parameter --name "/cdk-bootstrap/hnb659fds/version" &> /dev/null; then
-        print_status "CDK already bootstrapped"
+    if aws ssm get-parameter --name "/cdk-bootstrap/hnb659fds/version" --region "$region" &> /dev/null; then
+        print_status "CDK already bootstrapped in $region"
     else
-        echo "Bootstrapping CDK..."
-        npx cdk bootstrap "aws://${account_id}/${AWS_REGION}"
-        print_status "CDK bootstrapped"
+        echo "Bootstrapping CDK in $region..."
+        npx cdk bootstrap "aws://${account_id}/${region}"
+        print_status "CDK bootstrapped in $region"
     fi
 }
 
@@ -454,8 +469,29 @@ _ensure_runtime_delivery() {
     local destination_name="${name_prefix}-destination"
 
     # ── 1. Delivery source ──────────────────────────────────────────
-    if ! aws logs get-delivery-source --name "$source_name" \
-            --region "$AWS_REGION" >/dev/null 2>&1; then
+    # The source is named by runtime id, but a replaced runtime can leave it
+    # pointing at the old runtime's ARN. A source's resource can't change, so
+    # then its deliveries and the source are deleted and created again.
+    local source_arns
+    if source_arns=$(aws logs get-delivery-source --name "$source_name" \
+            --region "$AWS_REGION" --query 'deliverySource.resourceArns' --output text 2>/dev/null); then
+        if ! printf '%s\n' "$source_arns" | tr '\t' '\n' | grep -qxF "$runtime_arn"; then
+            print_warning "Delivery source $source_name points at ${source_arns:-no runtime}, not $runtime_arn; recreating it"
+            local old_id
+            for old_id in $(aws logs describe-deliveries --region "$AWS_REGION" \
+                    --query "deliveries[?deliverySourceName=='$source_name'].id" --output text 2>/dev/null); do
+                [ "$old_id" = "None" ] && continue
+                aws logs delete-delivery --id "$old_id" --region "$AWS_REGION" >/dev/null \
+                    || { print_warning "Could not delete delivery $old_id for $source_name — skipping"; return 0; }
+            done
+            if ! aws logs delete-delivery-source --name "$source_name" --region "$AWS_REGION" >/dev/null; then
+                print_warning "Could not delete delivery source $source_name — skipping"
+                return 0
+            fi
+            source_arns=""
+        fi
+    fi
+    if [ -z "$source_arns" ]; then
         set +e
         aws logs put-delivery-source \
             --name "$source_name" \
@@ -553,15 +589,36 @@ _ensure_runtime_delivery() {
 
 # ── Auto-detect AgentCore role ARN ──────────────────────────────────
 
+# The Patchy runtime's own role, never a guess: the spoke write role trusts
+# exactly this ARN. Sources, in order: AGENTCORE_ROLE_ARN, the agentcore CLI's
+# deployed state, the AgentCore stack output, the runtime itself. Zero or
+# several candidates, or anything that isn't a role ARN, stops the deploy.
+_accept_role_arn() {
+    # $1 = candidate(s), $2 = where it came from
+    local role_arn_re='^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
+    local candidates count
+    candidates=$(printf '%s\n' "$1" | tr '\t' '\n' | sed '/^$/d;/^None$/d')
+    count=$(printf '%s\n' "$candidates" | sed '/^$/d' | wc -l | tr -d ' ')
+    [ "$count" = "0" ] && return 1
+    if [ "$count" != "1" ]; then
+        print_error "Found $count AgentCore role ARNs in $2; set AGENTCORE_ROLE_ARN to the Patchy runtime's role"
+        exit 1
+    fi
+    if ! [[ "$candidates" =~ $role_arn_re ]]; then
+        print_error "Not a role ARN from $2: $candidates"
+        exit 1
+    fi
+    AGENTCORE_ROLE_ARN="$candidates"
+    print_status "AgentCore role (from $2): $AGENTCORE_ROLE_ARN"
+}
+
 resolve_agentcore_role() {
-    # If already set in .env or environment, use it
     if [ -n "$AGENTCORE_ROLE_ARN" ]; then
-        print_status "Using AgentCore role: $AGENTCORE_ROLE_ARN"
-        return 0
+        _accept_role_arn "$AGENTCORE_ROLE_ARN" "AGENTCORE_ROLE_ARN" && return 0
     fi
 
-    # Check deployed state from agentcore CLI (new CLI)
-    local deployed_state="agent/agentcore/.cli/deployed-state.json"
+    # Deployed state from the agentcore CLI
+    local deployed_state="$PATCHY_ROOT/agent/agentcore/.cli/deployed-state.json"
     if [ -f "$deployed_state" ]; then
         local role_arn
         role_arn=$(python3 -c "
@@ -570,43 +627,59 @@ with open('$deployed_state') as f:
     state = json.load(f)
 res = state.get('targets',{}).get('default',{}).get('resources',{})
 agents = res.get('runtimes') or res.get('agents') or {}
-for a in agents.values():
-    if 'roleArn' in a:
-        print(a['roleArn']); break
+print('\t'.join(a['roleArn'] for a in agents.values() if 'roleArn' in a))
 " 2>/dev/null || true)
-        if [ -n "$role_arn" ]; then
-            AGENTCORE_ROLE_ARN="$role_arn"
-            print_status "AgentCore role (from deployed state): $AGENTCORE_ROLE_ARN"
-            return 0
+        _accept_role_arn "$role_arn" "deployed state" && return 0
+    fi
+
+    # The AgentCore stack's outputs
+    local role_arn
+    role_arn=$(aws cloudformation describe-stacks --stack-name "AgentCore-patchy-default" \
+        --query 'Stacks[0].Outputs[?contains(OutputKey,`RoleArn`)].OutputValue' \
+        --output text 2>/dev/null || true)
+    _accept_role_arn "$role_arn" "CloudFormation" && return 0
+
+    # The Patchy runtime itself
+    local runtime_id
+    runtime_id=$(aws bedrock-agentcore-control list-agent-runtimes \
+        --query 'agentRuntimes[?agentRuntimeName==`patchy_patchy`].agentRuntimeId' --output text 2>/dev/null || true)
+    if [ -n "$runtime_id" ] && [ "$runtime_id" != "None" ] && [[ "$runtime_id" != *$'\t'* ]]; then
+        role_arn=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$runtime_id" \
+            --query roleArn --output text 2>/dev/null || true)
+        _accept_role_arn "$role_arn" "the Patchy runtime" && return 0
+    fi
+
+    print_error "Could not find the Patchy AgentCore runtime role"
+    echo "  Deploy the agent first, or set AGENTCORE_ROLE_ARN in .env"
+    exit 1
+}
+
+# The UI may invoke only the Patchy runtime, so its ARN is required: from
+# AGENTCORE_AGENT_ARN (deploy_agent exports it) or the runtime named patchy_patchy.
+resolve_agent_arn() {
+    local re='^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:runtime/[A-Za-z0-9_-]+$'
+    local arn="${AGENTCORE_AGENT_ARN:-}" source="AGENTCORE_AGENT_ARN"
+    if [ -z "$arn" ]; then
+        source="the Patchy runtime"
+        arn=$(aws bedrock-agentcore-control list-agent-runtimes \
+            --query 'agentRuntimes[?agentRuntimeName==`patchy_patchy`].agentRuntimeArn' --output text 2>/dev/null || true)
+        if [ -z "$arn" ] || [ "$arn" = "None" ]; then
+            print_error "Could not find the Patchy AgentCore runtime (patchy_patchy)"
+            echo "  Deploy the agent first (./deploy.sh agent), or set AGENTCORE_AGENT_ARN"
+            exit 1
         fi
     fi
-
-    # Fallback: read from CloudFormation stack outputs
-    local stack_name="AgentCore-patchy-default"
-    local role_arn
-    role_arn=$(aws cloudformation describe-stacks --stack-name "$stack_name" \
-        --query 'Stacks[0].Outputs[?contains(OutputKey,`RoleArn`)].OutputValue' \
-        --output text 2>/dev/null | head -1)
-    if [ -n "$role_arn" ] && [ "$role_arn" != "None" ]; then
-        AGENTCORE_ROLE_ARN="$role_arn"
-        print_status "AgentCore role (from CloudFormation): $AGENTCORE_ROLE_ARN"
-        return 0
-    fi
-
-    # Last resort: auto-detect from IAM
-    echo "Detecting AgentCore role ARN from IAM..."
-    role_arn=$(aws iam list-roles \
-        --query 'Roles[?starts_with(RoleName,`AgentCore-`) || starts_with(RoleName,`AmazonBedrockAgentCoreSDKRuntime`)].Arn' \
-        --output text 2>/dev/null | head -1)
-
-    if [ -z "$role_arn" ] || [ "$role_arn" = "None" ]; then
-        print_error "Could not find AgentCore runtime role"
-        echo "  Deploy the agent first, or set AGENTCORE_ROLE_ARN in .env"
+    if [[ "$arn" == *[[:space:]]* ]]; then
+        print_error "More than one runtime named patchy_patchy: $arn"
+        echo "  Set AGENTCORE_AGENT_ARN to the one this UI should use"
         exit 1
     fi
-
-    AGENTCORE_ROLE_ARN="$role_arn"
-    print_status "Auto-detected AgentCore role: $AGENTCORE_ROLE_ARN"
+    if ! [[ "$arn" =~ $re ]]; then
+        print_error "Not an AgentCore runtime ARN from $source: $arn"
+        exit 1
+    fi
+    export AGENTCORE_AGENT_ARN="$arn"
+    print_status "Agent ARN: $AGENTCORE_AGENT_ARN"
 }
 
 
@@ -629,20 +702,137 @@ run_eval_gate() {
 
     echo -e "${BLUE}Running tool selection eval...${NC}"
     local threshold="${EVAL_THRESHOLD:-80}"
-    if python3 "$eval_script" --threshold "$threshold" --region "$AWS_REGION"; then
+    # Runs after setup_environment so strands and boto3 come from the venv.
+    if "$PATCHY_ROOT/venv/bin/python" "$eval_script" --threshold "$threshold" --region "$AWS_REGION"; then
         print_status "Eval passed"
     else
         print_error "Eval failed (accuracy below ${threshold}%). Deploy blocked."
         echo "  Options:"
         echo "    - Fix the regression and retry"
-        echo "    - Update baseline: python3 $eval_script --update-baseline"
+        echo "    - Update baseline: venv/bin/python $eval_script --update-baseline"
         echo "    - Skip eval: SKIP_EVAL=true ./deploy.sh agent"
         return 1
     fi
 }
 
+# The runtime has no .env, so its env vars are written into agentcore.json for
+# the deploy. That file is tracked, so it goes back to its committed contents
+# afterwards (and on failure) to keep account IDs out of commits.
+_restore_agent_config() {
+    local cfg="$PATCHY_ROOT/agent/agentcore/agentcore.json"
+    if [ -f "$cfg.committed" ]; then
+        mv "$cfg.committed" "$cfg"
+    fi
+}
+
+# Destroy backs agentcore.json up to .bak before `agentcore remove all` empties it.
+_restore_agent_config_bak() {
+    local cfg="$PATCHY_ROOT/agent/agentcore/agentcore.json"
+    if [ -f "$cfg.bak" ]; then
+        mv "$cfg.bak" "$cfg"
+    fi
+}
+
+# A run killed before its trap ran (SIGKILL, a closed terminal) leaves the
+# backup behind and agentcore.json injected or emptied. Put the backup back
+# before anything copies agentcore.json again, or the next backup would save
+# the injected or empty file over the committed one.
+_recover_agent_config() {
+    local cfg="$PATCHY_ROOT/agent/agentcore/agentcore.json" b
+    for b in committed bak; do
+        if [ -f "$cfg.$b" ]; then
+            print_warning "Restoring agentcore.json from agentcore.json.$b, left by an interrupted run"
+            mv "$cfg.$b" "$cfg"
+        fi
+    done
+}
+
+_deploy_agentcore_with_env() {
+    local cli="$1"
+    _recover_agent_config
+    cp agentcore/agentcore.json agentcore/agentcore.json.committed
+    trap _restore_agent_config EXIT
+    # Inject .env values into agentcore.json (AgentCore runtime has no .env access)
+    python3 -c "
+import json, os, sys
+config_path = 'agentcore/agentcore.json'
+with open(config_path) as f:
+    config = json.load(f)
+env_var_names = [
+    'AWS_REGION', 'MULTI_ACCOUNT_ENABLED',
+    'SPOKE_EXECUTION_ROLE', 'SPOKE_REGIONS',
+    'SPOKE_OU_IDS', 'SPOKE_ACCOUNT_IDS',
+    'SSM_SCOPE_TAG_KEY', 'SSM_SCOPE_TAG_VALUE',
+    'INSPECTOR_RESOURCE_TYPES', 'BEDROCK_MODEL_ID',
+    'GUARDRAIL_ID', 'GUARDRAIL_VERSION', 'MAX_FLEET_SIZE', 'THINKING_EFFORT', 'REBOOT_POLICY',
+    'CHANGE_CALENDAR', 'ABORT_ALARMS', 'REQUIRE_STAGED_ROLLOUT', 'RUNTIME_AUTH', 'PATCHY_DEBUG_LOGS', 'REPORT_TAGS',
+]
+env_vars = [{'name': n, 'value': os.environ[n]} for n in env_var_names if os.environ.get(n)]
+# v0.12+ uses 'runtimes', older versions used 'agents'
+target = config.get('runtimes') or config.get('agents') or []
+if target:
+    target[0]['envVars'] = env_vars
+# RUNTIME_AUTH=jwt: the runtime accepts only Cognito access tokens for the UI
+# client and passes the Authorization header to the handler.
+if os.environ.get('RUNTIME_AUTH', '').lower() == 'jwt' and target:
+    url, client = os.environ.get('RUNTIME_AUTH_DISCOVERY_URL'), os.environ.get('RUNTIME_AUTH_CLIENT_ID')
+    if not url or not client:
+        sys.exit('RUNTIME_AUTH=jwt needs RUNTIME_AUTH_DISCOVERY_URL and RUNTIME_AUTH_CLIENT_ID')
+    target[0]['authorizerType'] = 'CUSTOM_JWT'
+    target[0]['authorizerConfiguration'] = {'customJwtAuthorizer': {'discoveryUrl': url, 'allowedClients': [client]}}
+    target[0]['requestHeaderAllowlist'] = ['Authorization']
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+"
+    print_status "Agent env vars injected ($(python3 -c "
+import json
+c = json.load(open('agentcore/agentcore.json'))
+t = c.get('runtimes') or c.get('agents') or [{}]
+print(len(t[0].get('envVars',[])))
+"))"
+
+    # Deploy (creates/updates runtime, memory, IAM role, pushes code)
+    "$cli" deploy -y -v
+    _restore_agent_config
+    trap - EXIT
+}
+
+# RUNTIME_AUTH=jwt points the runtime's inbound authorizer at the UI's Cognito
+# pool and app client, so the UI stack (and its pool) must already exist.
+resolve_runtime_auth() {
+    [ "${RUNTIME_AUTH:-iam}" = "jwt" ] || return 0
+    if [ "${COGNITO_ENABLED:-true}" = "false" ]; then
+        print_error "RUNTIME_AUTH=jwt needs Cognito (COGNITO_ENABLED is false)"
+        exit 1
+    fi
+    if [ -z "${RUNTIME_AUTH_DISCOVERY_URL:-}" ] || [ -z "${RUNTIME_AUTH_CLIENT_ID:-}" ]; then
+        local pool_id client_id
+        pool_id=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+            --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text 2>/dev/null || true)
+        if [ -z "$pool_id" ] || [ "$pool_id" = "None" ]; then
+            print_error "RUNTIME_AUTH=jwt needs the Patchy-UI Cognito pool. Deploy once without it, then set RUNTIME_AUTH=jwt and redeploy."
+            exit 1
+        fi
+        client_id=$(aws cognito-idp list-user-pool-clients --user-pool-id "$pool_id" \
+            --query 'UserPoolClients[0].ClientId' --output text 2>/dev/null || true)
+        if [ -z "$client_id" ] || [ "$client_id" = "None" ]; then
+            print_error "No app client found in Cognito pool $pool_id"
+            exit 1
+        fi
+        export RUNTIME_AUTH_DISCOVERY_URL="https://cognito-idp.${AWS_REGION}.amazonaws.com/${pool_id}/.well-known/openid-configuration"
+        export RUNTIME_AUTH_CLIENT_ID="$client_id"
+    fi
+    print_status "Runtime accepts Cognito tokens from client ${RUNTIME_AUTH_CLIENT_ID} (RUNTIME_AUTH=jwt)"
+}
+
 deploy_agent() {
     echo -e "${BLUE}Deploying agent...${NC}"
+    # SSM watches one alarm per run; a list would make every install and rollback fail to start.
+    if [[ "${ABORT_ALARMS:-}" == *,* ]]; then
+        print_error "ABORT_ALARMS names more than one alarm. SSM watches one alarm per run: combine them in a CloudWatch composite alarm and set ABORT_ALARMS to that one."
+        exit 1
+    fi
     cd agent
 
     # ── Resolve npm @aws/agentcore CLI ────────────────────────────────
@@ -650,15 +840,27 @@ deploy_agent() {
     # Python SDK) also provides an `agentcore` CLI entry point via the starter
     # toolkit. When the venv is active this shadows the npm CLI. Use the npm
     # binary path explicitly to avoid the conflict.
-    local AGENTCORE_CLI
+    local AGENTCORE_CLI AGENTCORE_CLI_VERSION="${AGENTCORE_CLI_VERSION:-0.20.1}"
     AGENTCORE_CLI="$(npm prefix -g)/bin/agentcore"
     if [ ! -x "$AGENTCORE_CLI" ]; then
         echo "Installing @aws/agentcore CLI..."
-        npm install -g @aws/agentcore 2>/dev/null || {
-            print_error "Failed to install @aws/agentcore CLI. Run: npm install -g @aws/agentcore"
+        npm install -g "@aws/agentcore@${AGENTCORE_CLI_VERSION}" || {
+            print_error "Failed to install @aws/agentcore CLI. Run: npm install -g @aws/agentcore@${AGENTCORE_CLI_VERSION}"
             cd ..; exit 1
         }
         print_status "AgentCore CLI installed"
+    else
+        local _cli_ver
+        _cli_ver=$(npm ls -g @aws/agentcore --depth=0 --json 2>/dev/null \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['dependencies']['@aws/agentcore']['version'])" 2>/dev/null || true)
+        # Another CLI version bundles a CDK toolkit that may not read this release's
+        # cloud assembly, which fails later as a schema mismatch. Stop here instead.
+        if [ -n "$_cli_ver" ] && [ "$_cli_ver" != "$AGENTCORE_CLI_VERSION" ]; then
+            print_error "AgentCore CLI $_cli_ver is installed; this release needs $AGENTCORE_CLI_VERSION"
+            echo "  Install it:  npm install -g @aws/agentcore@${AGENTCORE_CLI_VERSION}"
+            echo "  Or, to deploy with $_cli_ver anyway:  AGENTCORE_CLI_VERSION=$_cli_ver ./deploy.sh"
+            cd ..; exit 1
+        fi
     fi
 
     local agent_name="${AGENT_NAME:-patchy}"
@@ -780,7 +982,7 @@ except Exception:
         fi
         if [ "$_need_install" = true ]; then
             echo "Installing AgentCore CDK dependencies..."
-            (cd agentcore/cdk && rm -rf node_modules dist package-lock.json && npm install --silent)
+            (cd agentcore/cdk && rm -rf node_modules dist && npm ci --silent)
             print_status "AgentCore CDK dependencies installed"
         fi
     fi
@@ -798,37 +1000,8 @@ except Exception:
         print_status "AgentCore project created"
     fi
 
-    # Inject .env values into agentcore.json (AgentCore runtime has no .env access)
-    python3 -c "
-import json, os
-config_path = 'agentcore/agentcore.json'
-with open(config_path) as f:
-    config = json.load(f)
-env_var_names = [
-    'AWS_REGION', 'MULTI_ACCOUNT_ENABLED',
-    'SPOKE_EXECUTION_ROLE', 'SPOKE_REGIONS',
-    'SPOKE_OU_IDS', 'SPOKE_ACCOUNT_IDS',
-    'SSM_SCOPE_TAG_KEY', 'SSM_SCOPE_TAG_VALUE',
-    'INSPECTOR_RESOURCE_TYPES', 'BEDROCK_MODEL_ID',
-]
-env_vars = [{'name': n, 'value': os.environ[n]} for n in env_var_names if os.environ.get(n)]
-# v0.12+ uses 'runtimes', older versions used 'agents'
-target = config.get('runtimes') or config.get('agents') or []
-if target:
-    target[0]['envVars'] = env_vars
-with open(config_path, 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
-    print_status "Agent env vars injected ($(python3 -c "
-import json
-c = json.load(open('agentcore/agentcore.json'))
-t = c.get('runtimes') or c.get('agents') or [{}]
-print(len(t[0].get('envVars',[])))
-"))"
-
-    # Deploy (creates/updates runtime, memory, IAM role, pushes code)
-    "$AGENTCORE_CLI" deploy -y -v
+    resolve_runtime_auth
+    _deploy_agentcore_with_env "$AGENTCORE_CLI"
     print_status "Agent deployed"
 
     # Extract role ARN and agent ARN from deployed state
@@ -929,7 +1102,7 @@ ensure_explorer_sync() {
     regions_json="[${regions_json}]"
 
     # Check existing sync's SourceRegions
-    local actual_regions
+    local actual_regions recreate=false
     actual_regions=$(aws ssm list-resource-data-sync --sync-type SyncFromSource \
         --query "ResourceDataSyncItems[?SyncName=='${sync_name}'].SyncSource.SourceRegions" \
         --output json 2>/dev/null | tr -d ' \n')
@@ -945,51 +1118,77 @@ ensure_explorer_sync() {
         fi
         print_warning "Explorer sync regions changed: $actual_sorted → $desired_sorted"
         print_warning "Recreating sync (SourceRegions are immutable after creation)..."
-        aws ssm delete-resource-data-sync --sync-name "$sync_name" --sync-type SyncFromSource 2>/dev/null \
-            || print_warning "Could not delete existing sync — recreate may fail"
-        # Brief pause for the delete to settle
-        sleep 3
+        if ! aws ssm delete-resource-data-sync --sync-name "$sync_name" --sync-type SyncFromSource; then
+            print_error "Could not delete $sync_name, so its Regions can't change."
+            exit 1
+        fi
+        # The delete is asynchronous; a create before it finishes is refused.
+        local waited=0 limit="${FLEET_SYNC_DELETE_TIMEOUT:-300}" step="${FLEET_SYNC_POLL_SECONDS:-5}"
+        local remaining
+        while true; do
+            if ! remaining=$(aws ssm list-resource-data-sync --sync-type SyncFromSource \
+                    --query "ResourceDataSyncItems[?SyncName=='${sync_name}'].SyncName" --output text); then
+                remaining="unknown"
+            fi
+            if [ -z "$remaining" ] || [ "$remaining" = "None" ]; then
+                break
+            fi
+            if [ "$waited" -ge "$limit" ]; then
+                print_error "$sync_name was still being deleted after ${limit}s. Re-run the deploy to create it."
+                exit 1
+            fi
+            sleep "$step"
+            waited=$((waited + (step > 0 ? step : 1)))
+        done
+        recreate=true
     fi
 
+    local sync_source
     if [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then
         echo -e "${BLUE}Creating Explorer Resource Data Sync (cross-account, regions: $regions_csv)...${NC}"
-        aws ssm create-resource-data-sync \
-            --sync-name "$sync_name" \
-            --sync-type SyncFromSource \
-            --sync-source "{
+        sync_source="{
                 \"SourceType\": \"AwsOrganizations\",
                 \"AwsOrganizationsSource\": {\"OrganizationSourceType\": \"EntireOrganization\"},
                 \"SourceRegions\": ${regions_json},
                 \"IncludeFutureRegions\": false,
                 \"EnableAllOpsDataSources\": true
-            }" 2>/dev/null && print_status "Explorer sync created: $sync_name" \
-            || {
-                echo ""
-                echo -e "${RED}════════════════════════════════════════════════════════════════════${NC}"
-                echo -e "${RED}  MULTI-ACCOUNT FLEET VISIBILITY UNAVAILABLE${NC}"
-                echo -e "${RED}════════════════════════════════════════════════════════════════════${NC}"
-                echo -e "  Explorer Resource Data Sync could not be created."
-                echo -e "  Without it, the agent ${RED}cannot discover instances across spoke accounts${NC}."
-                echo ""
-                echo -e "  ${GREEN}Fix (run from management account):${NC}"
-                echo -e "  aws ssm-quicksetup register-delegated-administrator \\"
-                echo -e "      --delegated-admin-account-id ${account_id:-\$ACCOUNT_ID}"
-                echo ""
-                echo -e "  Then re-run: ${BLUE}./deploy.sh${NC}"
-                echo -e "${RED}════════════════════════════════════════════════════════════════════${NC}"
-                echo ""
-            }
+            }"
     else
         echo -e "${BLUE}Creating Explorer Resource Data Sync (single account, regions: $regions_csv)...${NC}"
-        aws ssm create-resource-data-sync \
-            --sync-name "$sync_name" \
-            --sync-type SyncFromSource \
-            --sync-source "{
+        sync_source="{
                 \"SourceType\": \"SingleAccountMultiRegions\",
                 \"SourceRegions\": ${regions_json},
                 \"EnableAllOpsDataSources\": true
-            }" 2>/dev/null && print_status "Explorer sync created: $sync_name" \
-            || print_warning "Could not create Explorer sync"
+            }"
+    fi
+    if aws ssm create-resource-data-sync --sync-name "$sync_name" --sync-type SyncFromSource \
+            --sync-source "$sync_source"; then
+        print_status "Explorer sync created: $sync_name"
+        return 0
+    fi
+    if [ "$recreate" = "true" ]; then
+        # The old sync is already gone, so the fleet view would be empty.
+        print_error "$sync_name was deleted but could not be created again (regions: $regions_csv). The agent can't see the fleet until it exists."
+        echo "  Fix the error above, then re-run ./deploy.sh."
+        exit 1
+    fi
+    if [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then
+        echo ""
+        echo -e "${RED}════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${RED}  MULTI-ACCOUNT FLEET VISIBILITY UNAVAILABLE${NC}"
+        echo -e "${RED}════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "  Explorer Resource Data Sync could not be created."
+        echo -e "  Without it, the agent ${RED}cannot discover instances across spoke accounts${NC}."
+        echo ""
+        echo -e "  ${GREEN}Fix (run from management account):${NC}"
+        echo -e "  aws ssm-quicksetup register-delegated-administrator \\"
+        echo -e "      --delegated-admin-account-id $(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
+        echo ""
+        echo -e "  Then re-run: ${BLUE}./deploy.sh${NC}"
+        echo -e "${RED}════════════════════════════════════════════════════════════════════${NC}"
+        echo ""
+    else
+        print_warning "Could not create Explorer sync"
     fi
 }
 
@@ -1030,6 +1229,117 @@ deploy_infra() {
 
     # Ensure Explorer Resource Data Sync exists (idempotent)
     ensure_explorer_sync
+}
+
+# A public ALB with Cognito should present a certificate browsers trust; a
+# self-signed one trains users to click through warnings on the sign-in page.
+# setup-tls.sh's self-signed certificate is for demos: ALLOW_SELF_SIGNED_CERT=true.
+check_public_certificate() {
+    [ "${COGNITO_ENABLED:-true}" = "false" ] && return 0
+    [ -z "${ACM_CERTIFICATE_ARN:-}" ] && return 0
+    local details cert_type issuer subject
+    details=$(aws acm describe-certificate --certificate-arn "$ACM_CERTIFICATE_ARN" \
+        --query '[Certificate.Type,Certificate.Issuer,Certificate.Subject]' --output text 2>/dev/null || true)
+    IFS=$'\t' read -r cert_type issuer subject <<< "$details"
+    # ACM gives the issuer as a name (patchy.internal) and the subject as a DN
+    # (CN=patchy.internal): self-signed when the issuer is the subject's CN.
+    local subject_cn
+    subject_cn=$(printf '%s' "$subject" | sed -n 's/.*CN=\([^,]*\).*/\1/p')
+    if [ "$cert_type" = "IMPORTED" ] && [ -n "$issuer" ] \
+        && { [ "$issuer" = "$subject" ] || [ "$issuer" = "$subject_cn" ]; }; then
+        if [ "${ALLOW_SELF_SIGNED_CERT:-false}" != "true" ]; then
+            print_error "ACM certificate $ACM_CERTIFICATE_ARN is self-signed, and the ALB is public with Cognito sign-in."
+            echo "  Use a certificate from ACM or a public CA, or set ALLOW_SELF_SIGNED_CERT=true for a demo."
+            exit 1
+        fi
+        print_warning "Self-signed certificate on a public ALB (ALLOW_SELF_SIGNED_CERT=true): browsers will warn."
+    fi
+    return 0
+}
+
+# Without Cognito or API keys, DEFAULT_ROLE decides what everyone who can reach
+# the internal ALB may do.
+warn_open_access() {
+    if [ "${COGNITO_ENABLED:-true}" = "false" ] && [ "${DEFAULT_ROLE:-viewer}" = "operator" ] \
+        && [ -z "${API_KEY:-}${API_KEY_OPERATOR:-}${API_KEY_VIEWER:-}" ]; then
+        print_warning "DEFAULT_ROLE=operator with no API keys: anyone who reaches the internal ALB can approve changes."
+    fi
+    if [ "${COGNITO_ENABLED:-true}" != "false" ] && [ -n "${API_KEY:-}${API_KEY_OPERATOR:-}${API_KEY_VIEWER:-}" ]; then
+        print_warning "API_KEY* settings are ignored with Cognito sign-in; roles come from Cognito groups."
+    fi
+    return 0
+}
+
+# API keys (internal ALB only) reach the UI task from Secrets Manager, never the
+# task definition or the image. The secret is written only when the keys change,
+# and its version ID goes to the stack so the service restarts when they do.
+# The certificate ARN setup-tls.sh saved in .env: the last non-empty value, since a
+# reset leaves a blank line behind.
+_env_cert_arn() {
+    grep '^ACM_CERTIFICATE_ARN=' .env 2>/dev/null | cut -d= -f2- | grep -v '^$' | tail -1
+}
+
+UI_API_KEYS_SECRET="patchy/ui-api-keys"
+store_ui_api_keys() {
+    unset API_KEYS_SECRET_NAME API_KEYS_SECRET_VERSION
+    if [ "${COGNITO_ENABLED:-true}" != "false" ] || [ -z "${API_KEY:-}${API_KEY_OPERATOR:-}${API_KEY_VIEWER:-}" ]; then
+        if aws secretsmanager describe-secret --secret-id "$UI_API_KEYS_SECRET" >/dev/null 2>&1; then
+            print_warning "Secret $UI_API_KEYS_SECRET exists but no API keys are in use; delete it if it is no longer needed."
+        fi
+        return 0
+    fi
+    # The writes run in a subshell whose EXIT trap removes the keys file however
+    # it ends, including a failed AWS call under set -e; the parent's traps are
+    # untouched. --secret-string file:// keeps the keys off the command line.
+    (
+        keys_file=$(mktemp)
+        trap 'rm -f "$keys_file"' EXIT
+        chmod 600 "$keys_file"
+        python3 -c '
+import json, os
+print(json.dumps({k: os.environ.get(k, "") for k in ("API_KEY", "API_KEY_OPERATOR", "API_KEY_VIEWER")}))' > "$keys_file"
+        current=$(aws secretsmanager get-secret-value --secret-id "$UI_API_KEYS_SECRET" \
+            --query SecretString --output text 2>/dev/null || true)
+        if [ -z "$current" ] && ! aws secretsmanager describe-secret --secret-id "$UI_API_KEYS_SECRET" >/dev/null 2>&1; then
+            aws secretsmanager create-secret --name "$UI_API_KEYS_SECRET" \
+                --description "Patchy UI API keys (internal ALB mode)" \
+                --secret-string "file://$keys_file" >/dev/null
+            print_status "Stored the UI API keys in Secrets Manager ($UI_API_KEYS_SECRET)"
+        elif ! CURRENT="$current" python3 -c '
+import json, os, sys
+sys.exit(0 if json.loads(os.environ["CURRENT"] or "{}") == json.load(open(sys.argv[1])) else 1)' "$keys_file"; then
+            aws secretsmanager put-secret-value --secret-id "$UI_API_KEYS_SECRET" \
+                --secret-string "file://$keys_file" >/dev/null
+            print_status "Updated the UI API keys in Secrets Manager ($UI_API_KEYS_SECRET)"
+        fi
+    )
+    API_KEYS_SECRET_NAME="$UI_API_KEYS_SECRET"
+    API_KEYS_SECRET_VERSION=$(aws secretsmanager get-secret-value --secret-id "$UI_API_KEYS_SECRET" \
+        --query VersionId --output text)
+    export API_KEYS_SECRET_NAME API_KEYS_SECRET_VERSION
+}
+
+# The Patchy UI service's current task definition, or "none". The cluster and
+# service come from the Patchy-UI stack (its outputs, or its resources for a
+# stack deployed before the outputs existed), never the account's first cluster.
+_ui_task_definition() {
+    local cluster service
+    cluster=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+        --query 'Stacks[0].Outputs[?OutputKey==`UIClusterName`].OutputValue' --output text 2>/dev/null || true)
+    service=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+        --query 'Stacks[0].Outputs[?OutputKey==`UIServiceName`].OutputValue' --output text 2>/dev/null || true)
+    if [ -z "$cluster" ] || [ "$cluster" = "None" ] || [ -z "$service" ] || [ "$service" = "None" ]; then
+        cluster=$(aws cloudformation describe-stack-resources --stack-name Patchy-UI \
+            --query "StackResources[?ResourceType=='AWS::ECS::Cluster'].PhysicalResourceId" --output text 2>/dev/null || true)
+        service=$(aws cloudformation describe-stack-resources --stack-name Patchy-UI \
+            --query "StackResources[?ResourceType=='AWS::ECS::Service'].PhysicalResourceId" --output text 2>/dev/null || true)
+    fi
+    if [ -z "$cluster" ] || [ "$cluster" = "None" ] || [ -z "$service" ] || [ "$service" = "None" ]; then
+        echo "none"
+        return 0
+    fi
+    aws ecs describe-services --cluster "$cluster" --services "$service" \
+        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none"
 }
 
 deploy_ui() {
@@ -1083,12 +1393,19 @@ for m in mems.values():
         print_status "Cognito disabled — deploying with internal ALB + bastion host"
     fi
 
+    warn_open_access
     if [ "$use_cognito" = true ]; then
+        if [ -z "$ACM_CERTIFICATE_ARN" ] && [ "${ALLOW_SELF_SIGNED_CERT:-false}" != "true" ]; then
+            print_error "Cognito sign-in needs an ACM certificate (ACM_CERTIFICATE_ARN)."
+            echo "  Set ACM_CERTIFICATE_ARN to a certificate browsers trust, ALLOW_SELF_SIGNED_CERT=true to generate a"
+            echo "  self-signed one for a demo, or COGNITO_ENABLED=false for an internal ALB with a bastion."
+            exit 1
+        fi
         if [ -z "$ACM_CERTIFICATE_ARN" ]; then
-            echo -e "${BLUE}No ACM_CERTIFICATE_ARN set — generating self-signed certificate...${NC}"
+            echo -e "${BLUE}No ACM_CERTIFICATE_ARN set — generating self-signed certificate (ALLOW_SELF_SIGNED_CERT=true)...${NC}"
             ./setup-tls.sh
             # Pick up the new ACM_CERTIFICATE_ARN without re-sourcing entire .env
-            ACM_CERTIFICATE_ARN=$(grep '^ACM_CERTIFICATE_ARN=' .env 2>/dev/null | cut -d= -f2-)
+            ACM_CERTIFICATE_ARN=$(_env_cert_arn)
         fi
 
         if [ -z "$ACM_CERTIFICATE_ARN" ]; then
@@ -1102,16 +1419,22 @@ for m in mems.values():
         cert_account=$(echo "$ACM_CERTIFICATE_ARN" | cut -d: -f5)
         if [ -n "$cert_account" ] && [ "$cert_account" != "$current_account" ]; then
             print_warning "ACM_CERTIFICATE_ARN belongs to account $cert_account, not current account $current_account"
-            print_warning "Clearing stale cert — setup-tls.sh will generate a new one."
+            if [ "${ALLOW_SELF_SIGNED_CERT:-false}" != "true" ]; then
+                print_error "Set ACM_CERTIFICATE_ARN to a certificate in account $current_account, or"
+                echo "  ALLOW_SELF_SIGNED_CERT=true to generate a self-signed one for a demo."
+                exit 1
+            fi
+            print_warning "Clearing stale cert: setup-tls.sh will generate a new self-signed one."
             ACM_CERTIFICATE_ARN=""
             sed -i.bak 's|ACM_CERTIFICATE_ARN=.*|ACM_CERTIFICATE_ARN=|' .env 2>/dev/null; rm -f .env.bak
             ./setup-tls.sh
-            ACM_CERTIFICATE_ARN=$(grep '^ACM_CERTIFICATE_ARN=' .env 2>/dev/null | cut -d= -f2-)
+            ACM_CERTIFICATE_ARN=$(_env_cert_arn)
             if [ -z "$ACM_CERTIFICATE_ARN" ]; then
                 print_error "Failed to generate new TLS certificate."
                 exit 1
             fi
         fi
+        check_public_certificate
 
         export ACM_CERTIFICATE_ARN
         print_status "TLS certificate: $ACM_CERTIFICATE_ARN"
@@ -1144,6 +1467,7 @@ for m in mems.values():
     fi
 
     resolve_agentcore_role
+    resolve_agent_arn
 
     # Build frontend on host (avoids esbuild crash under Finch/x86 emulation on Apple Silicon)
     echo -e "${BLUE}Building frontend...${NC}"
@@ -1180,10 +1504,9 @@ for m in mems.values():
 
     # Capture current task definition revision for post-deploy verification
     local pre_deploy_taskdef
-    pre_deploy_taskdef=$(aws ecs describe-services \
-        --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
-        --services "$(aws ecs list-services --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" --query 'serviceArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
-        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
+    pre_deploy_taskdef=$(_ui_task_definition)
+
+    store_ui_api_keys
 
     # Ensure env vars are exported for CDK subprocess
     export ACM_CERTIFICATE_ARN COGNITO_DOMAIN_PREFIX COGNITO_ENABLED
@@ -1194,10 +1517,7 @@ for m in mems.values():
 
     # Verify deployment actually updated the task definition
     local post_deploy_taskdef
-    post_deploy_taskdef=$(aws ecs describe-services \
-        --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
-        --services "$(aws ecs list-services --cluster "$(aws ecs list-clusters --query 'clusterArns[0]' --output text 2>/dev/null | sed 's|.*/||')" --query 'serviceArns[0]' --output text 2>/dev/null | sed 's|.*/||')" \
-        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "none")
+    post_deploy_taskdef=$(_ui_task_definition)
 
     if [ "$pre_deploy_taskdef" = "$post_deploy_taskdef" ] && [ "$pre_deploy_taskdef" != "none" ]; then
         print_warning "Task definition unchanged ($post_deploy_taskdef) — CDK may have skipped the image rebuild."
@@ -1292,6 +1612,24 @@ for m in mems.values():
     cd ..
 }
 
+# The spoke read role trusts exactly the UI task role and the report Lambda
+# role, read from the Patchy-UI stack outputs. Before the UI exists (or before
+# it has these outputs) the read role falls back to the Patchy-UI-* name
+# pattern, and a full deploy redeploys the spoke once the UI is up.
+resolve_ui_reader_roles() {
+    UI_READER_ROLE_ARNS=""
+    local task fn
+    task=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+        --query 'Stacks[0].Outputs[?OutputKey==`TaskRoleArn`].OutputValue' --output text 2>/dev/null || true)
+    fn=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
+        --query 'Stacks[0].Outputs[?OutputKey==`ReportFnRoleArn`].OutputValue' --output text 2>/dev/null || true)
+    local arn_re='^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
+    if [[ "$task" =~ $arn_re ]] && [[ "$fn" =~ $arn_re ]]; then
+        UI_READER_ROLE_ARNS="$task,$fn"
+    fi
+    export UI_READER_ROLE_ARNS
+}
+
 deploy_spoke() {
     echo -e "${BLUE}Deploying spoke IAM role via StackSet...${NC}"
     # Hub is included in the target list. SSM Automation TargetLocations
@@ -1300,22 +1638,109 @@ deploy_spoke() {
     # for everything else (the agent's get_credentials short-circuits the
     # hub case via cross_account.py).
     #
-    # The spoke role trusts the exact AgentCore runtime role ARN when it is
-    # known, so resolve it first. Without an agent this falls back to the
-    # role name patterns (the stack warns at synth).
-    if [ -z "$AGENTCORE_ROLE_ARN" ]; then
-        AGENTCORE_ROLE_ARN=$( (resolve_agentcore_role >/dev/null 2>&1 && echo "$AGENTCORE_ROLE_ARN") || true )
-        export AGENTCORE_ROLE_ARN
-    fi
-    if [ -z "$AGENTCORE_ROLE_ARN" ]; then
-        print_warning "AgentCore role not found: PatchySpokeRole will trust AgentCore-* role names. Re-run ./deploy.sh spoke after deploying the agent."
+    # The spoke role trusts the exact AgentCore runtime role ARN, so resolve
+    # it first. Without it the role would trust any hub role named
+    # AgentCore-*, so a failed lookup stops the deploy instead.
+    resolve_agentcore_role
+    export AGENTCORE_ROLE_ARN
+    resolve_ui_reader_roles
+    if [ -z "$UI_READER_ROLE_ARNS" ]; then
+        SPOKE_READ_TRUST_FALLBACK=true
+        print_warning "UI roles not found: PatchySpokeReadRole will trust Patchy-UI-* role names until the spoke is redeployed after the UI."
+    else
+        SPOKE_READ_TRUST_FALLBACK=false
     fi
     _deploy_stackset \
         --stack-set "Patchy-SpokeIam" \
         --cdk-stack "Patchy-SpokeIam" \
         --regions "$AWS_REGION" \
-        --filter-hub false \
         --description "Patchy spoke IAM role for cross-account patch operations"
+}
+
+deploy_hub_local() {
+    # Single-account mode: every scan, patch and rollback still runs SSM
+    # Automation with TargetLocations into this account, so the hub needs
+    # PatchySpokeRole and the Patchy documents in each target Region. They are
+    # deployed as plain stacks here (StackSets are only used for spokes).
+    # With "iam-only", redeploy just the role stack (after the UI exists, to trust its roles exactly).
+    local only="${1:-}"
+    echo -e "${BLUE}Deploying Patchy role and SSM documents into this account...${NC}"
+    local account_id regions
+    account_id=$(aws sts get-caller-identity --query Account --output text)
+    regions="${SPOKE_REGIONS:-$AWS_REGION}"
+    # The exact runtime role, or stop: see deploy_spoke.
+    resolve_agentcore_role
+    export AGENTCORE_ROLE_ARN
+    cd "$PATCHY_ROOT/infra"
+    if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
+        npm ci --silent
+    fi
+    resolve_ui_reader_roles
+    if [ -z "$UI_READER_ROLE_ARNS" ]; then
+        SPOKE_READ_TRUST_FALLBACK=true
+    else
+        SPOKE_READ_TRUST_FALLBACK=false
+    fi
+    npx cdk deploy Patchy-SpokeIam --exclusively --require-approval never \
+        -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}" -c hubAccountId="$account_id" \
+        -c uiReaderRoleArns="${UI_READER_ROLE_ARNS:-}"
+    if [ "$only" = "iam-only" ]; then
+        cd "$PATCHY_ROOT"
+        print_status "Patchy role redeployed"
+        return
+    fi
+    # The hub-only stacks (VPC lookup, UI) are left out of other Regions' synths.
+    local r hub_region="$AWS_REGION"
+    for r in $(echo "$regions" | tr ',' ' '); do
+        ensure_cdk_bootstrap "$r"
+        CDK_DEFAULT_REGION="$r" AWS_REGION="$r" npx cdk deploy Patchy-SsmDocs --exclusively \
+            --require-approval never -c hubAccountId="$account_id" -c hubRegion="$hub_region"
+    done
+    cd "$PATCHY_ROOT"
+    print_status "Patchy role and SSM documents deployed (regions: $regions)"
+}
+
+# Patchy reads Inspector findings once per Region with the hub's credentials,
+# which returns the whole organisation only when the hub is Inspector's
+# delegated administrator. Without that, spoke findings are missing from the
+# dashboard, CVE plans and forecasts.
+check_inspector_admin() {
+    [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ] || return 0
+    if ! aws inspector2 describe-organization-configuration --region "$AWS_REGION" >/dev/null 2>&1; then
+        print_warning "This hub isn't the Amazon Inspector delegated administrator in $AWS_REGION."
+        echo "  Spoke findings won't appear in the dashboard, CVE plans or forecasts until it is:"
+        echo "  aws inspector2 enable-delegated-admin-account --delegated-admin-account-id <hub> (from the management account)"
+    fi
+}
+
+# In OU mode the StackSets reach only the accounts in SPOKE_OU_IDS, but every
+# run fans out into the hub too. A service-managed StackSet never deploys to
+# the management account, and a delegated-administrator hub outside those OUs
+# gets nothing, so the hub's role and documents are deployed as plain stacks.
+# A hub that already is a StackSet instance is left alone: a second
+# PatchySpokeRole there would collide.
+ensure_hub_patch_targets() {
+    if [ "${MULTI_ACCOUNT_ENABLED:-false}" != "true" ] || [ -z "${SPOKE_OU_IDS:-}" ]; then
+        return 0
+    fi
+    local hub mgmt instances
+    hub=$(aws sts get-caller-identity --query Account --output text)
+    mgmt=$(aws organizations describe-organization \
+        --query 'Organization.MasterAccountId' --output text 2>/dev/null || true)
+    if [ "$hub" != "$mgmt" ]; then
+        if ! instances=$(aws cloudformation list-stack-instances --stack-set-name Patchy-SpokeIam \
+                --stack-instance-account "$hub" --call-as DELEGATED_ADMIN \
+                --query 'Summaries[].Account' --output text); then
+            print_error "Could not check whether hub $hub is a Patchy-SpokeIam StackSet instance"
+            exit 1
+        fi
+        if [ -n "$instances" ] && [ "$instances" != "None" ]; then
+            print_status "Hub $hub is in the spoke OUs; the StackSets cover it"
+            return 0
+        fi
+    fi
+    print_status "Hub $hub isn't covered by the OU StackSets; deploying its role and documents as plain stacks"
+    deploy_hub_local
 }
 
 deploy_docs() {
@@ -1327,7 +1752,6 @@ deploy_docs() {
         --stack-set "Patchy-SsmDocs" \
         --cdk-stack "Patchy-SsmDocs" \
         --regions "$docs_regions" \
-        --filter-hub false \
         --description "Patchy SSM Automation documents for cross-account patching"
 }
 
@@ -1339,17 +1763,116 @@ deploy_docs() {
 #   --stack-set <name>      CloudFormation StackSet name
 #   --cdk-stack <id>        CDK stack ID to synthesise
 #   --regions <csv>         Comma-separated region list (single region = primary only)
-#   --filter-hub true|false Whether to drop the hub account from target list
 #   --description <text>    StackSet description
+# Create the stack instances an existing StackSet is missing: every target
+# account (or OU) in every Region. Adding a Region to SPOKE_REGIONS, or an OU
+# to SPOKE_OU_IDS, then reaches the targets that already had instances
+# elsewhere. Runs inside _deploy_stackset, which defines the helpers it uses.
+_reconcile_stack_instances() {
+    local stack_set_name="$1" target_mode="$2" targets_csv="$3" regions_csv="$4"
+    local -a call_as=()
+    [ -n "${5:-}" ] && call_as=(--call-as "$5")
+    local field="Account"
+    [ "$target_mode" = "ou" ] && field="OrganizationalUnitId"
+    local existing
+    if ! existing=$(aws cloudformation list-stack-instances --stack-set-name "$stack_set_name" "${call_as[@]}" \
+            --query "Summaries[].[${field},Region]" --output text); then
+        print_error "Could not list the stack instances of $stack_set_name"
+        return 1
+    fi
+    local r t missing op_id created=false
+    for r in $(echo "$regions_csv" | tr ',' ' '); do
+        missing=""
+        for t in $(echo "$targets_csv" | tr ',' ' '); do
+            if ! printf '%s\n' "$existing" | awk -v t="$t" -v r="$r" '$1 == t && $2 == r {found = 1} END {exit !found}'; then
+                missing="${missing:+${missing},}${t}"
+            fi
+        done
+        [ -z "$missing" ] && continue
+        created=true
+        _wait_stackset_idle "$stack_set_name"
+        if [ "$target_mode" = "ou" ]; then
+            op_id=$(aws cloudformation create-stack-instances --stack-set-name "$stack_set_name" "${call_as[@]}" \
+                --deployment-targets "OrganizationalUnitIds=[$(_accounts_to_json "$missing")]" \
+                --regions "[\"$r\"]" --operation-preferences "$_STACKSET_OP_PREFS" \
+                --query 'OperationId' --output text || true)
+        elif [ ${#call_as[@]} -gt 0 ]; then
+            op_id=$(aws cloudformation create-stack-instances --stack-set-name "$stack_set_name" "${call_as[@]}" \
+                --deployment-targets "OrganizationalUnitIds=[$(_accounts_to_json "$(_resolve_parent_ous "$missing")")],Accounts=[$(_accounts_to_json "$missing")],AccountFilterType=INTERSECTION" \
+                --regions "[\"$r\"]" --operation-preferences "$_STACKSET_OP_PREFS" \
+                --query 'OperationId' --output text || true)
+        else
+            op_id=$(aws cloudformation create-stack-instances --stack-set-name "$stack_set_name" \
+                --accounts "[$(_accounts_to_json "$missing")]" \
+                --regions "[\"$r\"]" --operation-preferences "$_STACKSET_OP_PREFS" \
+                --query 'OperationId' --output text || true)
+        fi
+        print_status "New stack instances for $missing in $r (op $op_id)"
+        _verify_stackset_operation "$stack_set_name" "$op_id" "new instances in $r" || return 1
+    done
+    $created || print_status "Every target has stack instances in every Region"
+}
+
+# ── Verify a StackSet operation reached a terminal SUCCEEDED state ──
+# Polls describe-stack-set-operation every 15 s (STACKSET_POLL_SECONDS). On
+# FAILED / STOPPED, dumps per-instance failure reasons and returns non-zero.
+# Set STACKSET_WAIT=false to skip the wait (dev iteration); default behaviour
+# is to verify. Uses the caller's call_as array (deploy and destroy set one).
+_verify_stackset_operation() {
+    local ss_name="$1" op_id="$2" label="${3:-operation}"
+    if [ -z "$op_id" ] || [ "$op_id" = "None" ]; then
+        print_error "$ss_name: $label did not start (no operation id; see the aws error above)"
+        return 1
+    fi
+    if [ "${STACKSET_WAIT:-true}" = "false" ]; then
+        print_warning "$ss_name: skipping verification of $label op $op_id (STACKSET_WAIT=false)"
+        return 0
+    fi
+    local max_wait=1800 waited=0   # 30 min cap for large fleets
+    echo -n "  Verifying $ss_name $label (op $op_id)"
+    while [ $waited -lt $max_wait ]; do
+        local status
+        status=$(aws cloudformation describe-stack-set-operation \
+            --stack-set-name "$ss_name" "${call_as[@]}" \
+            --operation-id "$op_id" \
+            --query 'StackSetOperation.Status' --output text 2>/dev/null || echo "UNKNOWN")
+        case "$status" in
+            SUCCEEDED)
+                echo ""
+                print_status "$ss_name $label SUCCEEDED"
+                return 0
+                ;;
+            FAILED|STOPPED)
+                echo ""
+                print_error "$ss_name $label $status (op $op_id)"
+                # Dump per-instance failure reasons (max 20 to keep output sane)
+                aws cloudformation list-stack-set-operation-results \
+                    --stack-set-name "$ss_name" "${call_as[@]}" \
+                    --operation-id "$op_id" --max-items 20 \
+                    --query 'Summaries[?Status!=`SUCCEEDED`].[Account,Region,Status,StatusReason]' \
+                    --output table 2>/dev/null || true
+                return 1
+                ;;
+            RUNNING|QUEUED|PENDING|STOPPING)
+                printf '.'
+                ;;
+        esac
+        sleep "${STACKSET_POLL_SECONDS:-15}"
+        waited=$((waited + (${STACKSET_POLL_SECONDS:-15} > 0 ? ${STACKSET_POLL_SECONDS:-15} : 1)))
+    done
+    echo ""
+    print_warning "$ss_name $label still running after ${max_wait}s — check console"
+    return 1
+}
+
 _deploy_stackset() {
     local stack_set_name="" cdk_stack_id="" regions_csv=""
-    local filter_hub="false" stackset_description=""
+    local stackset_description=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --stack-set)   stack_set_name="$2"; shift 2 ;;
             --cdk-stack)   cdk_stack_id="$2"; shift 2 ;;
             --regions)     regions_csv="$2"; shift 2 ;;
-            --filter-hub)  filter_hub="$2"; shift 2 ;;
             --description) stackset_description="$2"; shift 2 ;;
             *) print_error "_deploy_stackset: unknown flag: $1"; return 1 ;;
         esac
@@ -1363,7 +1886,8 @@ _deploy_stackset() {
     local spoke_role="${SPOKE_EXECUTION_ROLE:-PatchySpokeRole}"
     local account_id
     account_id=$(aws sts get-caller-identity --query Account --output text)
-    local synth_dir="/tmp/patchy-${cdk_stack_id}-cdk.out"
+    local synth_dir
+    synth_dir=$(mktemp -d "${TMPDIR:-/tmp}/patchy-${cdk_stack_id}.XXXXXX")
     local template_path="${synth_dir}/${cdk_stack_id}.template.json"
 
     local regions_json
@@ -1372,7 +1896,8 @@ _deploy_stackset() {
 
     # Verify caller is management account or delegated administrator.
     # DA for Quick Setup auto-grants DA for CloudFormation StackSets + Explorer.
-    local org_mgmt_id call_as=""
+    local org_mgmt_id
+    local -a call_as=()
     org_mgmt_id=$(aws organizations describe-organization \
         --query 'Organization.MasterAccountId' --output text 2>/dev/null || true)
     if [ -n "$org_mgmt_id" ] && [ "$account_id" != "$org_mgmt_id" ]; then
@@ -1385,7 +1910,7 @@ _deploy_stackset() {
             echo "  Register as DA: aws ssm-quicksetup register-delegated-administrator --delegated-admin-account-id $account_id"
             exit 1
         fi
-        call_as="--call-as DELEGATED_ADMIN"
+        call_as=(--call-as DELEGATED_ADMIN)
         print_status "Running as delegated administrator ($account_id)"
     fi
 
@@ -1406,7 +1931,7 @@ _deploy_stackset() {
         echo -e "${YELLOW}Choose deployment target:${NC}"
         echo "  1) Specific account IDs"
         echo "  2) Organization OU IDs (auto-deploys to new accounts joining the OU)"
-        echo "  3) All non-hub accounts in organization (auto-discover)"
+        echo "  3) All active accounts in the organization, the hub included (auto-discover)"
         echo ""
         read -p "Choice (1, 2, or 3): " target_choice
 
@@ -1432,7 +1957,7 @@ _deploy_stackset() {
             3)
                 echo "Discovering spoke accounts from AWS Organizations..."
                 target_accounts=$(aws organizations list-accounts --no-paginate \
-                    --query "Accounts[?Id!='${account_id}' && Status=='ACTIVE'].Id" \
+                    --query "Accounts[?Status=='ACTIVE'].Id" \
                     --output text 2>/dev/null | tr '\t' ',')
                 if [ -z "$target_accounts" ]; then
                     print_error "No spoke accounts found in organization."
@@ -1455,32 +1980,6 @@ _deploy_stackset() {
         esac
     fi
 
-    # ── Filter hub account out of target_accounts (when requested) ────
-    # The IAM StackSet (Patchy-SpokeIam) filters the hub because the hub uses
-    # its own AgentCore role, not PatchySpokeRole. The Docs StackSet
-    # (Patchy-SsmDocs) does NOT filter the hub — the hub needs the SSM docs
-    # locally to start the parent Automation execution.
-    if [ "$filter_hub" = "true" ] && [ "$target_mode" = "account" ] && [ -n "$target_accounts" ]; then
-        local filtered_accounts=""
-        local hub_in_targets=false
-        for acct in $(echo "$target_accounts" | tr ',' '\n'); do
-            [ -z "$acct" ] && continue
-            if [ "$acct" = "$account_id" ]; then
-                hub_in_targets=true
-                continue
-            fi
-            filtered_accounts="${filtered_accounts:+${filtered_accounts},}${acct}"
-        done
-        if [ "$hub_in_targets" = true ]; then
-            print_warning "Hub account ($account_id) was in SPOKE_ACCOUNT_IDS — skipping (the hub does not need PatchySpokeRole)."
-        fi
-        if [ -z "$filtered_accounts" ]; then
-            print_error "No spoke accounts left after filtering hub. Set SPOKE_ACCOUNT_IDS to non-hub accounts only."
-            exit 1
-        fi
-        target_accounts="$filtered_accounts"
-    fi
-
     cd infra
     if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
         npm ci --silent
@@ -1489,10 +1988,10 @@ _deploy_stackset() {
     echo "Synthesizing template for $cdk_stack_id (hub account: $account_id)..."
     export SPOKE_EXECUTION_ROLE="$spoke_role"
     export HUB_ACCOUNT_ID="$account_id"
-    rm -rf "$synth_dir"
     npx cdk synth "$cdk_stack_id" \
         -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}" \
         -c hubAccountId="$account_id" \
+        -c uiReaderRoleArns="${UI_READER_ROLE_ARNS:-}" \
         --quiet \
         -o "$synth_dir"
 
@@ -1509,7 +2008,7 @@ _deploy_stackset() {
         while [ $waited -lt $max_wait ]; do
             local running
             running=$(aws cloudformation list-stack-set-operations \
-                --stack-set-name "$ss_name" $call_as \
+                --stack-set-name "$ss_name" "${call_as[@]}" \
                 --query "Summaries[?Status=='RUNNING'].OperationId" \
                 --output text 2>/dev/null || true)
             [ -z "$running" ] && return 0
@@ -1520,56 +2019,6 @@ _deploy_stackset() {
         print_warning "StackSet operation still running after ${max_wait}s — proceeding anyway"
     }
 
-    # ── Verify a StackSet operation reached a terminal SUCCEEDED state ──
-    # Polls describe-stack-set-operation every 15 s. On FAILED / STOPPED, dumps
-    # per-instance failure reasons and returns non-zero. Set STACKSET_WAIT=false
-    # to skip the wait (dev iteration); default behaviour is to verify.
-    _verify_stackset_operation() {
-        local ss_name="$1" op_id="$2" label="${3:-operation}"
-        if [ -z "$op_id" ] || [ "$op_id" = "None" ]; then
-            print_warning "$ss_name: no operation id returned for $label — cannot verify"
-            return 0
-        fi
-        if [ "${STACKSET_WAIT:-true}" = "false" ]; then
-            print_warning "$ss_name: skipping verification of $label op $op_id (STACKSET_WAIT=false)"
-            return 0
-        fi
-        local max_wait=1800 waited=0   # 30 min cap for large fleets
-        echo -n "  Verifying $ss_name $label (op $op_id)"
-        while [ $waited -lt $max_wait ]; do
-            local status
-            status=$(aws cloudformation describe-stack-set-operation \
-                --stack-set-name "$ss_name" $call_as \
-                --operation-id "$op_id" \
-                --query 'StackSetOperation.Status' --output text 2>/dev/null || echo "UNKNOWN")
-            case "$status" in
-                SUCCEEDED)
-                    echo ""
-                    print_status "$ss_name $label SUCCEEDED"
-                    return 0
-                    ;;
-                FAILED|STOPPED)
-                    echo ""
-                    print_error "$ss_name $label $status (op $op_id)"
-                    # Dump per-instance failure reasons (max 20 to keep output sane)
-                    aws cloudformation list-stack-set-operation-results \
-                        --stack-set-name "$ss_name" $call_as \
-                        --operation-id "$op_id" --max-items 20 \
-                        --query 'Summaries[?Status!=`SUCCEEDED`].[Account,Region,Status,StatusReason]' \
-                        --output table 2>/dev/null || true
-                    return 1
-                    ;;
-                RUNNING|QUEUED|PENDING|STOPPING)
-                    printf '.'
-                    ;;
-            esac
-            sleep 15
-            waited=$((waited + 15))
-        done
-        echo ""
-        print_warning "$ss_name $label still running after ${max_wait}s — check console"
-        return 1
-    }
 
     # ── Helper: format account list as JSON array ──
     _accounts_to_json() {
@@ -1595,9 +2044,9 @@ _deploy_stackset() {
 
     # ── Deploy or update StackSet ──────────────────────────────────────
     local stackset_exists=false
-    if aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" $call_as &>/dev/null; then
+    if aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" "${call_as[@]}" &>/dev/null; then
         stackset_exists=true
-    elif [ -n "$call_as" ] && aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" &>/dev/null; then
+    elif [ ${#call_as[@]} -gt 0 ] && aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" &>/dev/null; then
         print_error "StackSet '$stack_set_name' exists as SELF_MANAGED (created outside DA)."
         echo "  DA cannot manage SELF_MANAGED StackSets. Delete it first:"
         echo "  aws cloudformation delete-stack-set --stack-set-name $stack_set_name"
@@ -1610,52 +2059,18 @@ _deploy_stackset() {
         _wait_stackset_idle "$stack_set_name"
         local update_op_id
         update_op_id=$(aws cloudformation update-stack-set \
-            --stack-set-name "$stack_set_name" $call_as \
+            --stack-set-name "$stack_set_name" "${call_as[@]}" \
             --template-body "file://${template_path}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --operation-preferences "$_STACKSET_OP_PREFS" \
-            --query 'OperationId' --output text 2>/dev/null || true)
+            --query 'OperationId' --output text || true)
         print_status "StackSet template update started: $stack_set_name (op $update_op_id)"
         _verify_stackset_operation "$stack_set_name" "$update_op_id" "template update" || { cd ..; exit 1; }
 
-        if [ "$target_mode" = "account" ]; then
-            local existing_accounts new_accounts=""
-            existing_accounts=$(aws cloudformation list-stack-instances \
-                --stack-set-name "$stack_set_name" $call_as --no-paginate \
-                --query 'Summaries[].Account' --output text 2>/dev/null | tr '\t' '\n' | sort -u)
-            for acct in $(echo "$target_accounts" | tr ',' '\n'); do
-                if ! echo "$existing_accounts" | grep -q "^${acct}$"; then
-                    new_accounts="${new_accounts:+${new_accounts},}${acct}"
-                fi
-            done
-            if [ -n "$new_accounts" ]; then
-                _wait_stackset_idle "$stack_set_name"
-                local add_op_id
-                if [ -n "$call_as" ]; then
-                    local new_parent_ous
-                    new_parent_ous=$(_resolve_parent_ous "$new_accounts")
-                    local new_parent_ou_json
-                    new_parent_ou_json=$(echo "$new_parent_ous" | tr ',' '\n' | awk '{printf "\"%s\",", $0}' | sed 's/,$//')
-                    add_op_id=$(aws cloudformation create-stack-instances \
-                        --stack-set-name "$stack_set_name" $call_as \
-                        --deployment-targets "OrganizationalUnitIds=[${new_parent_ou_json}],Accounts=[$(_accounts_to_json "$new_accounts")],AccountFilterType=INTERSECTION" \
-                        --regions "$regions_json" \
-                        --operation-preferences "$_STACKSET_OP_PREFS" \
-                        --query 'OperationId' --output text 2>/dev/null || true)
-                else
-                    add_op_id=$(aws cloudformation create-stack-instances \
-                        --stack-set-name "$stack_set_name" \
-                        --accounts "[$(_accounts_to_json "$new_accounts")]" \
-                        --regions "$regions_json" \
-                        --operation-preferences "$_STACKSET_OP_PREFS" \
-                        --query 'OperationId' --output text 2>/dev/null || true)
-                fi
-                print_status "New stack instances deploying to: $new_accounts (op $add_op_id)"
-                _verify_stackset_operation "$stack_set_name" "$add_op_id" "new instances" || { cd ..; exit 1; }
-            else
-                print_status "All target accounts already have stack instances"
-            fi
-        fi
+        local targets_csv="$target_accounts"
+        [ "$target_mode" = "ou" ] && targets_csv="$target_ous"
+        _reconcile_stack_instances "$stack_set_name" "$target_mode" "$targets_csv" "$regions_csv" \
+            "$([ ${#call_as[@]} -gt 0 ] && echo DELEGATED_ADMIN)" || { cd ..; exit 1; }
     else
         echo "Creating StackSet: $stack_set_name"
         if [ "$target_mode" = "ou" ]; then
@@ -1663,7 +2078,7 @@ _deploy_stackset() {
             ou_json=$(echo "$target_ous" | tr ',' '\n' | awk '{printf "\"%s\",", $0}' | sed 's/,$//')
 
             aws cloudformation create-stack-set \
-                --stack-set-name "$stack_set_name" $call_as \
+                --stack-set-name "$stack_set_name" "${call_as[@]}" \
                 --template-body "file://${template_path}" \
                 --capabilities CAPABILITY_NAMED_IAM \
                 --permission-model SERVICE_MANAGED \
@@ -1673,15 +2088,15 @@ _deploy_stackset() {
 
             local create_op_id
             create_op_id=$(aws cloudformation create-stack-instances \
-                --stack-set-name "$stack_set_name" $call_as \
+                --stack-set-name "$stack_set_name" "${call_as[@]}" \
                 --deployment-targets "OrganizationalUnitIds=[${ou_json}]" \
                 --regions "$regions_json" \
                 --operation-preferences "$_STACKSET_OP_PREFS" \
-                --query 'OperationId' --output text 2>/dev/null || true)
+                --query 'OperationId' --output text || true)
             print_status "Stack instances deploying to OUs: $target_ous (op $create_op_id)"
             _verify_stackset_operation "$stack_set_name" "$create_op_id" "initial deploy" || { cd ..; exit 1; }
         else
-            if [ -n "$call_as" ]; then
+            if [ ${#call_as[@]} -gt 0 ]; then
                 # DA must use SERVICE_MANAGED — target accounts via OU+Account intersection
                 local parent_ous
                 parent_ous=$(_resolve_parent_ous "$target_accounts")
@@ -1695,7 +2110,7 @@ _deploy_stackset() {
                 parent_ou_json=$(echo "$parent_ous" | tr ',' '\n' | awk '{printf "\"%s\",", $0}' | sed 's/,$//')
 
                 aws cloudformation create-stack-set \
-                    --stack-set-name "$stack_set_name" $call_as \
+                    --stack-set-name "$stack_set_name" "${call_as[@]}" \
                     --template-body "file://${template_path}" \
                     --capabilities CAPABILITY_NAMED_IAM \
                     --permission-model SERVICE_MANAGED \
@@ -1705,11 +2120,11 @@ _deploy_stackset() {
 
                 local create_op_id
                 create_op_id=$(aws cloudformation create-stack-instances \
-                    --stack-set-name "$stack_set_name" $call_as \
+                    --stack-set-name "$stack_set_name" "${call_as[@]}" \
                     --deployment-targets "OrganizationalUnitIds=[${parent_ou_json}],Accounts=[$(_accounts_to_json "$target_accounts")],AccountFilterType=INTERSECTION" \
                     --regions "$regions_json" \
                     --operation-preferences "$_STACKSET_OP_PREFS" \
-                    --query 'OperationId' --output text 2>/dev/null || true)
+                    --query 'OperationId' --output text || true)
                 print_status "Stack instances deploying (op $create_op_id)"
                 _verify_stackset_operation "$stack_set_name" "$create_op_id" "initial deploy" || { cd ..; exit 1; }
             else
@@ -1727,7 +2142,7 @@ _deploy_stackset() {
                     --accounts "[$(_accounts_to_json "$target_accounts")]" \
                     --regions "$regions_json" \
                     --operation-preferences "$_STACKSET_OP_PREFS" \
-                    --query 'OperationId' --output text 2>/dev/null || true)
+                    --query 'OperationId' --output text || true)
                 print_status "Stack instances deploying to: $target_accounts (op $create_op_id)"
                 _verify_stackset_operation "$stack_set_name" "$create_op_id" "initial deploy" || { cd ..; exit 1; }
             fi
@@ -1759,8 +2174,10 @@ _deploy_stackset() {
 destroy_spoke() {
     # Tear down the Patchy-SpokeIam StackSet plus the legacy Patchy-SpokeRole
     # StackSet (from before the IAM/docs split, if it still exists).
-    _destroy_stackset "Patchy-SpokeIam"
-    _destroy_stackset "Patchy-SpokeRole"
+    local rc=0
+    _destroy_stackset "Patchy-SpokeIam" || rc=1
+    _destroy_stackset "Patchy-SpokeRole" || rc=1
+    return $rc
 }
 
 destroy_docs() {
@@ -1783,20 +2200,21 @@ _destroy_stackset() {
     account_id=$(aws sts get-caller-identity --query Account --output text)
 
     # Detect DA vs management-account context
-    local org_mgmt_id call_as=""
+    local org_mgmt_id
+    local -a call_as=()
     org_mgmt_id=$(aws organizations describe-organization \
         --query 'Organization.MasterAccountId' --output text 2>/dev/null || true)
     if [ -n "$org_mgmt_id" ] && [ "$account_id" != "$org_mgmt_id" ]; then
-        call_as="--call-as DELEGATED_ADMIN"
+        call_as=(--call-as DELEGATED_ADMIN)
     fi
 
     # Probe — does the StackSet exist?
     local stackset_exists=false
-    if aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" $call_as &>/dev/null; then
+    if aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" "${call_as[@]}" &>/dev/null; then
         stackset_exists=true
-    elif [ -n "$call_as" ] && aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" &>/dev/null; then
+    elif [ ${#call_as[@]} -gt 0 ] && aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" &>/dev/null; then
         # Created as SELF_MANAGED before — try without DA flag
-        call_as=""
+        call_as=()
         stackset_exists=true
     fi
 
@@ -1809,27 +2227,28 @@ _destroy_stackset() {
 
     # Wait until any in-flight operation finishes
     _wait_stackset_idle_for_destroy() {
-        local ss_name=$1 max_wait=300 waited=0
+        local ss_name=$1 max_wait="${STACKSET_IDLE_TIMEOUT:-1800}" waited=0
         while [ $waited -lt $max_wait ]; do
             local running
             running=$(aws cloudformation list-stack-set-operations \
-                --stack-set-name "$ss_name" $call_as \
+                --stack-set-name "$ss_name" "${call_as[@]}" \
                 --query "Summaries[?Status=='RUNNING'].OperationId" \
                 --output text 2>/dev/null || true)
             [ -z "$running" ] && return 0
             echo "  Waiting for in-progress StackSet operation ($running)..."
-            sleep 15
-            waited=$((waited + 15))
+            sleep "${STACKSET_POLL_SECONDS:-15}"
+            waited=$((waited + (${STACKSET_POLL_SECONDS:-15} > 0 ? ${STACKSET_POLL_SECONDS:-15} : 1)))
         done
-        print_warning "StackSet operation still running after ${max_wait}s — proceeding anyway"
+        print_error "$ss_name: an operation was still running after ${max_wait}s, so nothing was deleted. Re-run when it finishes."
+        return 1
     }
-    _wait_stackset_idle_for_destroy "$stack_set_name"
+    _wait_stackset_idle_for_destroy "$stack_set_name" || return 1
 
     # Enumerate stack instances grouped by (account, region) and (deployment_target, region)
     # SERVICE_MANAGED instances live in OUs and require DeploymentTargets to delete.
     local instance_rows
     instance_rows=$(aws cloudformation list-stack-instances \
-        --stack-set-name "$stack_set_name" $call_as --no-paginate \
+        --stack-set-name "$stack_set_name" "${call_as[@]}" --no-paginate \
         --query 'Summaries[].[Account,Region,OrganizationalUnitId]' --output text 2>/dev/null || true)
 
     if [ -z "$instance_rows" ]; then
@@ -1841,11 +2260,11 @@ _destroy_stackset() {
 
         # Permission model determines the delete payload
         local perm_model
-        perm_model=$(aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" $call_as \
+        perm_model=$(aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" "${call_as[@]}" \
             --query 'StackSet.PermissionModel' --output text 2>/dev/null || echo "")
 
         # Group by region for one delete-stack-instances call per region
-        local regions
+        local regions op_id
         regions=$(echo "$instance_rows" | awk '{print $2}' | sort -u)
         for rgn in $regions; do
             local accounts_in_region ous_in_region
@@ -1859,30 +2278,34 @@ _destroy_stackset() {
                     ous_json=$(echo "$ous_in_region" | tr ',' '\n' | awk 'NF{printf "\"%s\",", $0}' | sed 's/,$//')
                     accounts_json=$(echo "$accounts_in_region" | tr ',' '\n' | awk 'NF{printf "\"%s\",", $0}' | sed 's/,$//')
                     echo "  Deleting instances in $rgn (OUs: $ous_in_region; accounts: $accounts_in_region)"
-                    aws cloudformation delete-stack-instances \
-                        --stack-set-name "$stack_set_name" $call_as \
+                    op_id=$(aws cloudformation delete-stack-instances \
+                        --stack-set-name "$stack_set_name" "${call_as[@]}" \
                         --deployment-targets "OrganizationalUnitIds=[${ous_json}],Accounts=[${accounts_json}],AccountFilterType=INTERSECTION" \
                         --regions "[\"$rgn\"]" \
                         --no-retain-stacks \
                         --operation-preferences "$_STACKSET_OP_PREFS" \
-                        > /dev/null
+                        --query 'OperationId' --output text) || op_id=""
+                else
+                    print_error "$stack_set_name: instances in $rgn have no OU, so they can't be deleted through the organisation"
+                    return 1
                 fi
             else
                 # Self-managed: delete by account list
                 local accounts_json
                 accounts_json=$(echo "$accounts_in_region" | tr ',' '\n' | awk 'NF{printf "\"%s\",", $0}' | sed 's/,$//')
                 echo "  Deleting instances in $rgn (accounts: $accounts_in_region)"
-                aws cloudformation delete-stack-instances \
+                op_id=$(aws cloudformation delete-stack-instances \
                     --stack-set-name "$stack_set_name" \
                     --accounts "[${accounts_json}]" \
                     --regions "[\"$rgn\"]" \
                     --no-retain-stacks \
                     --operation-preferences "$_STACKSET_OP_PREFS" \
-                    > /dev/null
+                    --query 'OperationId' --output text) || op_id=""
             fi
 
-            # Wait for this delete to complete before queuing the next (StackSet allows 1 op at a time)
-            _wait_stackset_idle_for_destroy "$stack_set_name"
+            # Wait for this delete to finish, and check it, before queuing the
+            # next (a StackSet runs one operation at a time).
+            STACKSET_WAIT=true _verify_stackset_operation "$stack_set_name" "$op_id" "instance delete in $rgn" || return 1
         done
 
         print_status "Stack instances deleted"
@@ -1890,15 +2313,41 @@ _destroy_stackset() {
 
     # Now delete the empty StackSet
     echo "  Deleting empty StackSet..."
-    aws cloudformation delete-stack-set --stack-set-name "$stack_set_name" $call_as 2>&1 | grep -v "^$" || true
+    if ! aws cloudformation delete-stack-set --stack-set-name "$stack_set_name" "${call_as[@]}"; then
+        print_error "Could not delete StackSet $stack_set_name (see the aws error above)"
+        return 1
+    fi
 
     # Verify it's gone
-    if aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" $call_as &>/dev/null; then
-        print_warning "StackSet still exists — may have residual instances. Inspect: aws cloudformation describe-stack-set --stack-set-name $stack_set_name $call_as"
+    if aws cloudformation describe-stack-set --stack-set-name "$stack_set_name" "${call_as[@]}" &>/dev/null; then
+        print_warning "StackSet still exists — may have residual instances. Inspect: aws cloudformation describe-stack-set --stack-set-name $stack_set_name ${call_as[*]}"
         return 1
     fi
     print_status "StackSet $stack_set_name destroyed"
     return 0
+}
+
+# The hub's plain Patchy-SpokeIam and Patchy-SsmDocs stacks (deploy_hub_local):
+# always there in single-account mode, and in OU mode when the StackSets don't
+# reach the hub. A StackSet instance is named StackSet-..., so a stack named
+# Patchy-SpokeIam is always the plain one. $1 = all | iam | docs.
+destroy_hub_local() {
+    local what="${1:-all}" r hub_region="$AWS_REGION"
+    (
+        cd "$PATCHY_ROOT/infra"
+        if [ ! -d "node_modules" ]; then npm ci --silent; fi
+        if [ "$what" != "docs" ] && aws cloudformation describe-stacks --stack-name Patchy-SpokeIam >/dev/null 2>&1; then
+            npx cdk destroy Patchy-SpokeIam --exclusively --force -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}" || exit 1
+        fi
+        if [ "$what" != "iam" ]; then
+            for r in $(echo "${SPOKE_REGIONS:-$AWS_REGION}" | tr ',' ' '); do
+                if aws cloudformation describe-stacks --stack-name Patchy-SsmDocs --region "$r" >/dev/null 2>&1; then
+                    CDK_DEFAULT_REGION="$r" AWS_REGION="$r" npx cdk destroy Patchy-SsmDocs --exclusively --force \
+                        -c hubRegion="$hub_region" || exit 1
+                fi
+            done
+        fi
+    )
 }
 
 destroy() {
@@ -1912,6 +2361,9 @@ destroy() {
             exit 0
         fi
         destroy_spoke
+        if [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then
+            destroy_hub_local iam
+        fi
         return 0
     fi
 
@@ -1923,6 +2375,9 @@ destroy() {
             exit 0
         fi
         destroy_docs
+        if [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then
+            destroy_hub_local docs
+        fi
         return 0
     fi
 
@@ -1943,7 +2398,7 @@ destroy() {
 
     echo -e "${RED}Destroying ALL infrastructure...${NC}"
     echo -e "${RED}This includes:${NC}"
-        echo "  - All CDK stacks (Network, Core, UI, AgentCore-patchy-default)"
+        echo "  - All CDK stacks (UI, Core, AgentCore-patchy-default, Network)"
         echo "  - AgentCore runtime, memory, ECR repo"
         echo "  - S3 compliance bucket and ALL reports"
         echo "  - Cognito user pool and ALL users"
@@ -1953,6 +2408,7 @@ destroy() {
             echo "  - Patchy-SpokeIam StackSet and instances in spoke accounts"
             echo "  - Patchy-SsmDocs StackSet and instances in (hub + spoke) accounts/regions"
             echo "  - Legacy Patchy-SpokeRole StackSet (if present from older deploys)"
+            echo "  - The hub's own Patchy-SpokeIam and Patchy-SsmDocs stacks, if the deploy added them"
         else
             echo -e "  ${YELLOW}- Patchy-SpokeIam + Patchy-SsmDocs StackSets will be PRESERVED${NC} (org-wide blast radius)"
             echo "    To remove: DESTROY_SPOKE_STACKSET=true ./deploy.sh destroy"
@@ -1977,7 +2433,18 @@ destroy() {
             exit 0
         fi
 
-        # Step 1: Destroy AgentCore runtime (agent, memory, IAM roles)
+        # Step 1: Destroy the UI and Patchy-Core first. Patchy-Core's managed
+        # policy is attached to the AgentCore runtime role, and IAM won't
+        # delete a role that still has a policy attached.
+        local s
+        for s in "Patchy-UI" "Patchy-Core"; do
+            if aws cloudformation describe-stacks --stack-name "$s" >/dev/null 2>&1; then
+                npx cdk destroy "$s" --exclusively --force \
+                    -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
+            fi
+        done
+
+        # Step 1a: Destroy AgentCore runtime (agent, memory, IAM roles)
         # Per AWS docs (https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-cli.html#stop-session-or-clean-up):
         #   1. `agentcore remove all` resets local schemas only
         #   2. `agentcore deploy` synthesizes the now-empty CDK app and tears down AWS resources
@@ -1992,7 +2459,9 @@ destroy() {
             # Back up agentcore.json before `remove all` empties it — needed for
             # the next deploy. The file ships with the solution and contains the
             # runtime/memory/env-var config that deploy_agent relies on.
+            _recover_agent_config
             cp agentcore/agentcore.json agentcore/agentcore.json.bak
+            trap _restore_agent_config_bak EXIT
 
             echo "Resetting AgentCore local config (step 1/2)..."
             if "$_ac_cli" remove all -y; then
@@ -2010,7 +2479,8 @@ destroy() {
             # Restore agentcore.json so the next `./deploy.sh` works without manual steps.
             # `remove all` empties the file (runtimes=[], memories=[]), which would cause
             # deploy_agent to skip runtime creation (file exists but has no config).
-            mv agentcore/agentcore.json.bak agentcore/agentcore.json
+            _restore_agent_config_bak
+            trap - EXIT
             print_status "Restored agentcore.json (ready for next deploy)"
         fi
         cd ../infra
@@ -2034,17 +2504,23 @@ destroy() {
         # Listing stacks explicitly avoids `--all` sweeping up Patchy-SampleEnv,
         # which is managed by ./sample-env.sh and intentionally outlives the
         # solution lifecycle.
-        local solution_stacks=("Patchy-UI" "Patchy-Core" "Patchy-Network" "Patchy-VpcLookup")
+        local solution_stacks=("Patchy-Network" "Patchy-VpcLookup")
         for s in "${solution_stacks[@]}"; do
             if aws cloudformation describe-stacks --stack-name "$s" >/dev/null 2>&1; then
                 npx cdk destroy "$s" --exclusively --force \
                     -c agentCoreRoleArn="${AGENTCORE_ROLE_ARN:-placeholder}"
             fi
         done
+        # Single-account mode deploys the role and documents as plain stacks
+        # in this account; they belong to the solution and go with it.
+        if [ "${MULTI_ACCOUNT_ENABLED:-false}" != "true" ]; then
+            destroy_hub_local all
+        fi
         print_status "CDK stacks destroyed"
         cd ..
 
         # Step 3: Destroy spoke + docs StackSets (not CDK resources — managed directly)
+        local stackset_failed=false
         # Default: PRESERVE. Set DESTROY_SPOKE_STACKSET=true to opt in.
         if [ "${DESTROY_SPOKE_STACKSET}" != "true" ]; then
             print_warning "Skipping Patchy-SpokeIam + Patchy-SsmDocs StackSets (DESTROY_SPOKE_STACKSET=false)"
@@ -2052,8 +2528,11 @@ destroy() {
             print_warning "    ./deploy.sh destroy --spoke-only   (IAM)"
             print_warning "    ./deploy.sh destroy --docs-only    (SSM docs)"
         elif [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then
-            destroy_spoke || print_warning "Spoke IAM StackSet destroy had issues — inspect manually"
-            destroy_docs  || print_warning "SSM docs StackSet destroy had issues — inspect manually"
+            destroy_spoke || { stackset_failed=true; print_error "Spoke IAM StackSet destroy failed; see above"; }
+            destroy_docs  || { stackset_failed=true; print_error "SSM docs StackSet destroy failed; see above"; }
+            # In OU mode the deploy may have added the hub's own plain stacks
+            # (ensure_hub_patch_targets); they go with the StackSets.
+            destroy_hub_local all || { stackset_failed=true; print_error "The hub's Patchy-SpokeIam or Patchy-SsmDocs stack wasn't destroyed; see above"; }
         else
             print_status "Multi-account disabled — skipping spoke + docs StackSet destroy"
         fi
@@ -2073,6 +2552,10 @@ destroy() {
             fi
         fi
 
+        if [ "$stackset_failed" = "true" ]; then
+            print_error "The hub stacks are destroyed, but a StackSet or the hub's own role and document stacks weren't. Fix the error above, then run ./deploy.sh destroy --spoke-only or --docs-only."
+            exit 1
+        fi
         print_status "All infrastructure destroyed"
         return 0
     cd ..
@@ -2257,7 +2740,7 @@ print(c.get('name','(unknown)'))
         echo "  Memory ID:          ${memory_id:-not deployed}"
         [ -n "$memory_arn" ] && echo "  Memory ARN:         ${memory_arn}"
         if [ -n "$agent_arn" ]; then
-            echo "  Bedrock model:      ${BEDROCK_MODEL_ID:-us.anthropic.claude-sonnet-4-6 (default)}"
+            echo "  Bedrock model:      ${BEDROCK_MODEL_ID:-us.anthropic.claude-sonnet-5 (default)}"
         fi
     fi
 
@@ -2489,15 +2972,39 @@ case "$COMMAND" in
             if [ -n "${SPOKE_ACCOUNT_IDS:-}" ] || [ -n "${SPOKE_OU_IDS:-}" ]; then
                 deploy_spoke
                 deploy_docs
+                ensure_hub_patch_targets
+                check_inspector_admin
             else
                 print_warning "MULTI_ACCOUNT_ENABLED=true but no SPOKE_ACCOUNT_IDS or SPOKE_OU_IDS set"
                 echo "  Skipping spoke + docs deployment. Set targets in .env or run:"
                 echo "    ./deploy.sh spoke   (cross-account IAM role)"
                 echo "    ./deploy.sh docs    (SSM Automation documents)"
             fi
+            # Automation fans out into the hub too, so it must be a target.
+            if [ -n "${SPOKE_ACCOUNT_IDS:-}" ] && [ -z "${SPOKE_OU_IDS:-}" ]; then
+                hub_id=""
+                hub_id=$(aws sts get-caller-identity --query Account --output text)
+                if ! echo ",${SPOKE_ACCOUNT_IDS// /}," | grep -q ",${hub_id},"; then
+                    print_warning "SPOKE_ACCOUNT_IDS doesn't include this hub account ($hub_id)."
+                    echo "  Instances in the hub can't be patched until it does. Add it and run ./deploy.sh spoke && ./deploy.sh docs"
+                fi
+            fi
+        else
+            deploy_hub_local
         fi
 
         deploy_ui
+
+        # The spoke read role could only trust the UI roles once they existed.
+        if [ "${SPOKE_READ_TRUST_FALLBACK:-false}" = "true" ]; then
+            echo -e "${BLUE}Redeploying the spoke role so the read role trusts the UI roles only...${NC}"
+            if [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then
+                deploy_spoke
+                ensure_hub_patch_targets
+            else
+                deploy_hub_local iam-only
+            fi
+        fi
 
         echo ""
         echo -e "${GREEN}Deployment complete.${NC}"
@@ -2514,8 +3021,8 @@ case "$COMMAND" in
         check_prereqs true true true
         echo -e "${BLUE}Intelligent Patch Automation — Redeploy Agent${NC}"
         echo "=================================================="
-        run_eval_gate
         setup_environment
+        run_eval_gate
         ensure_cdk_bootstrap
         ensure_observability
         deploy_agent
@@ -2534,14 +3041,14 @@ case "$COMMAND" in
         check_prereqs false true
         echo -e "${BLUE}Intelligent Patch Automation — Deploy Spoke IAM Role${NC}"
         echo "=================================================="
-        deploy_spoke
+        if [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then deploy_spoke; ensure_hub_patch_targets; else deploy_hub_local; fi
         ;;
 
     "docs")
         check_prereqs false true
         echo -e "${BLUE}Intelligent Patch Automation — Deploy SSM Documents${NC}"
         echo "=================================================="
-        deploy_docs
+        if [ "${MULTI_ACCOUNT_ENABLED:-false}" = "true" ]; then deploy_docs; ensure_hub_patch_targets; else deploy_hub_local; fi
         ;;
 
     "destroy")
@@ -2554,8 +3061,11 @@ case "$COMMAND" in
             destroy spoke
         elif [ "$FLAG" = "--docs-only" ]; then
             destroy docs
-        else
+        elif [ -z "$FLAG" ]; then
             destroy all
+        else
+            print_error "Unknown destroy option: $FLAG (use --spoke-only or --docs-only, or no option)"
+            exit 1
         fi
         ;;
 
@@ -2585,7 +3095,7 @@ case "$COMMAND" in
             exit 1
         fi
 
-        read -sp "Temporary password (min 8 chars, uppercase, lowercase, number): " USER_PASSWORD
+        read -sp "Temporary password (min 12 chars, uppercase, lowercase, number): " USER_PASSWORD
         echo ""
         if [ -z "$USER_PASSWORD" ]; then
             print_error "Password is required"
@@ -2599,33 +3109,42 @@ case "$COMMAND" in
             exit 1
         fi
         GROUP_NAME="${USER_ROLE}s"
+        read -p "Also an auditor, who sees every operator's plans read-only? (y/N): " USER_AUDITOR
 
         echo -e "${BLUE}Creating user: $USER_EMAIL (role: $USER_ROLE)${NC}"
 
-        set +e  # Disable exit-on-error for user creation (user may already exist)
-        aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" \
-            --username "$USER_EMAIL" \
-            --user-attributes Name=email,Value="$USER_EMAIL" Name=email_verified,Value=true \
-            --temporary-password "$USER_PASSWORD" --message-action SUPPRESS \
-            --profile "$AWS_PROFILE" --region "$AWS_REGION" > /dev/null 2>&1
-        create_exit=$?
-        
-        aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" \
-            --username "$USER_EMAIL" --group-name "$GROUP_NAME" \
-            --profile "$AWS_PROFILE" --region "$AWS_REGION" > /dev/null 2>&1
-        group_exit=$?
-        set -e
-
-        if [ $group_exit -ne 0 ]; then
-            print_error "Failed to add user to group '$GROUP_NAME'"
+        # An existing user is left alone: adding them to a group here could
+        # quietly make a viewer an operator. Change groups in the Cognito console.
+        if aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username "$USER_EMAIL" \
+            --profile "$AWS_PROFILE" --region "$AWS_REGION" > /dev/null 2>&1; then
+            print_error "User $USER_EMAIL already exists. Change their group in the Cognito console."
             exit 1
         fi
 
-        if [ $create_exit -ne 0 ]; then
-            print_warning "User may already exist — added to group '$GROUP_NAME'"
-        else
-            print_status "User created: $USER_EMAIL (group: $GROUP_NAME)"
+        # The temporary password goes in a private file, not on the command line,
+        # where any user on this machine could see it in the process list.
+        user_input=$(mktemp)
+        chmod 600 "$user_input"
+        trap 'rm -f "$user_input"' EXIT
+        USER_EMAIL="$USER_EMAIL" USER_PASSWORD="$USER_PASSWORD" POOL_ID="$POOL_ID" python3 -c '
+import json, os
+print(json.dumps({"UserPoolId": os.environ["POOL_ID"], "Username": os.environ["USER_EMAIL"],
+                  "TemporaryPassword": os.environ["USER_PASSWORD"], "MessageAction": "SUPPRESS",
+                  "UserAttributes": [{"Name": "email", "Value": os.environ["USER_EMAIL"]},
+                                     {"Name": "email_verified", "Value": "true"}]}))' > "$user_input"
+        aws cognito-idp admin-create-user --cli-input-json "file://$user_input" \
+            --profile "$AWS_PROFILE" --region "$AWS_REGION" > /dev/null
+        rm -f "$user_input"
+        aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" \
+            --username "$USER_EMAIL" --group-name "$GROUP_NAME" \
+            --profile "$AWS_PROFILE" --region "$AWS_REGION" > /dev/null
+        if [[ "$USER_AUDITOR" =~ ^[Yy] ]]; then
+            aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" \
+                --username "$USER_EMAIL" --group-name auditors \
+                --profile "$AWS_PROFILE" --region "$AWS_REGION" > /dev/null
+            GROUP_NAME="$GROUP_NAME, auditors"
         fi
+        print_status "User created: $USER_EMAIL (group: $GROUP_NAME)"
         echo ""
         echo "Login with this email and temporary password. Cognito will prompt to set a new password on first login."
         ;;

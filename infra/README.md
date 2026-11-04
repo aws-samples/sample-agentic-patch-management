@@ -1,53 +1,22 @@
 # Infrastructure (CDK)
 
-AWS CDK stacks for Patchy — Intelligent Patch Automation.
+The CDK app for Patchy. Deploy it with `./deploy.sh` from the repository root rather than with `cdk deploy`, because the deploy script supplies what the stacks need: the runtime role and ARN, the spoke trust ARNs, the API-key secret, and the baseline override files. [`docs/deploying.md`](../docs/deploying.md) covers the commands and settings.
 
-## Stacks
+| Stack | Holds |
+|---|---|
+| `Patchy-Network` | VPC across three Availability Zones with public, private and isolated subnets, two NAT gateways and flow logs. Replaced by `Patchy-VpcLookup` when `EXISTING_VPC_ID` is set. |
+| `Patchy-Core` | The compliance bucket and its policy; `PatchyAgentCorePolicy`, attached to the AgentCore runtime role |
+| `Patchy-UI` | Fargate service (0.25 vCPU, 512 MB, read-only root filesystem), load balancer (internet-facing with Cognito, internal with a bastion without), Cognito user pool, report Lambda with its two EventBridge rules, optional SNS topic and KMS key |
+| `Patchy-SpokeIam` | `PatchySpokeRole` and `PatchySpokeReadRole`; a StackSet in multi-account mode, a plain stack in the hub otherwise |
+| `Patchy-SsmDocs` | The five Patchy SSM documents, per Region; a StackSet in multi-account mode |
+| `Patchy-SampleEnv` | Optional sample fleet: five instances (two dev, one staging, two prod), three maintenance windows, three patch baselines, CloudWatch alarms. Deploy with `./sample-env.sh deploy`. |
 
-### Solution (always deployed)
+The AgentCore runtime and memory are deployed by the AgentCore CLI from `agent/agentcore/`, not by this app.
 
-| Stack | Resources |
-|-------|-----------|
-| `Patchy-Network` | VPC (10.0.0.0/16), 3 AZs, public/private/isolated subnets, 2 NAT gateways, VPC flow logs. Skipped when `EXISTING_VPC_ID` is set. |
-| `Patchy-Core` | S3 compliance reports bucket, AgentCore IAM policy |
-| `Patchy-UI` | ECS Fargate service (256 CPU/512 MB), internal ALB (300s idle timeout for SSE), CloudWatch log group |
+Stacks are defined in `lib/` and wired together in `bin/app.ts`. Context the deploy script passes: `agentCoreRoleArn`, `hubAccountId`, `uiReaderRoleArns` and `synthForStackSet`.
 
-### Sample Environment (optional)
-
-| Stack | Resources |
-|-------|-----------|
-| `Patchy-SampleEnv` | 15 t3.micro instances (5 dev/5 staging/5 prod), instance SG + IAM role, 3 ALBs, 3 maintenance windows, 3 patch baselines, CloudWatch alarms |
-
-## Deploy
+To check the app compiles and synthesises after a change:
 
 ```bash
-# From project root (recommended)
-./deploy.sh               # Full solution
-./sample-env.sh deploy    # Sample EC2 environment (separate)
-./deploy.sh ui            # UI stack only (after agent is deployed)
-
-# Or directly with CDK
-cd infra && npm ci
-npx cdk deploy Patchy-Network Patchy-Core -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
-npx cdk deploy Patchy-UI -c agentCoreRoleArn="$AGENTCORE_ROLE_ARN"
+cd infra && npm ci && npx tsc --noEmit && npx cdk synth Patchy-Core -c agentCoreRoleArn=arn:aws:iam::111111111111:role/example
 ```
-
-## Destroy
-
-```bash
-./deploy.sh destroy        # Solution only (sample env preserved)
-./sample-env.sh destroy    # Sample environment only
-```
-
-## Context Parameters
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `agentCoreRoleArn` | Yes | ARN of the AgentCore runtime IAM role (auto-detected by deploy.sh) |
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `EXISTING_VPC_ID` | Use an existing VPC instead of creating one. Skips Patchy-Network. |
-| `ACM_CERTIFICATE_ARN` | Enables HTTPS on the UI ALB. |

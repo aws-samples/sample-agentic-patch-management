@@ -1,240 +1,300 @@
-# Architecture — Intelligent Patch Automation
+# Architecture
 
-![Architecture diagram](images/architecture.jpg)
+How Patchy turns a request into a run, and the controls on the way. For permissions and the audit trail in detail, see [Security](security.md).
 
----
+- [Components](#components)
+- [From request to report](#from-request-to-report)
+- [The agent](#the-agent)
+- [Plans and approval](#plans-and-approval)
+- [Running a change](#running-a-change)
+- [What installs](#what-installs)
+- [After a run](#after-a-run)
+- [Fleet discovery](#fleet-discovery)
+- [Conversation memory](#conversation-memory)
+- [Stacks](#stacks)
 
-## System components
+![Patchy architecture: the hub account with the UI, AgentCore runtime, compliance bucket, SSM Automation and report Lambda; spoke accounts with the Patchy roles, documents and instances](images/architecture.svg)
 
-| Component | Service / Framework | Role |
+## Components
+
+| Component | Built on | Does |
 |---|---|---|
-| Application Load Balancer | AWS ALB | The front door. Authenticates users through Amazon Cognito (OIDC) and routes traffic to Fargate. |
-| Web UI | ECS Fargate (React + FastAPI) | Serves the dashboard and chat panel. Streams agent responses to the browser over SSE. |
-| AgentCore Runtime | Amazon Bedrock AgentCore | Runs the Strands agent app. Handles runtime hosting, session memory (STM), and OpenTelemetry log/trace export. |
-| AgentCore Memory | Amazon Bedrock AgentCore | Persists conversation turns per session, scoped per operator via `actor_id`. |
-| Strands Framework | [Strands Agents SDK](https://github.com/strands-agents/sdk-python) | Drives the agentic loop (LLM ↔ tool execution) and the steering handlers that enforce workflow safety. |
-| LLM | Amazon Bedrock (Claude Sonnet 5, with adaptive thinking) | Reasoning, planning, and tool selection. Called via `BedrockModel` in `agent/helper/agent_factory.py`. |
-| AWS services | Inspector, Systems Manager, S3, EC2, CloudWatch, Organizations | Where the tools do their work via boto3: Inspector for CVEs, SSM for patching and automation, S3 for reports, EC2 for instance metadata. |
+| Load balancer | Application Load Balancer, Amazon Cognito | Signs users in, with a 12-hour session, when a certificate is set. With `COGNITO_ENABLED=false` it's internal and reached through a bastion. |
+| UI | ECS Fargate: FastAPI and React | Serves the chat and the detail views, relays the agent's replies, and owns approve, cancel and Stop. Runs with a read-only root filesystem. |
+| Agent | Strands Agents SDK on the AgentCore Runtime | Answers with read tools and turns change requests into stored plans (`agent/supervisor.py`). |
+| Model | Amazon Bedrock, Claude Sonnet 5 | Reasoning and tool choice, with adaptive thinking at medium effort. An optional Bedrock guardrail screens each message. |
+| Memory | AgentCore Memory | Conversation turns, per session and per operator. |
+| Compliance bucket | Amazon S3, `patch-compliance-reports-<hub account>` | Every plan, decision, run record, install list and report. Versioned, SSE-S3, TLS only. Records and reports expire after 365 days and old versions after 30; the baseline and install override files are kept. |
+| SSM Automation | AWS Systems Manager | Runs Patchy's runbooks in each target account and Region, as `PatchySpokeRole`. |
+| Report Lambda | AWS Lambda, Amazon EventBridge | Writes each run's compliance report when it ends, and optionally notifies an SNS topic. |
 
----
+The tools read Amazon Inspector (findings), Systems Manager (patch state, windows, runs), EC2 (instances and tags), CloudWatch (alarms) and Organizations (OUs).
 
-## Agent design
+## From request to report
 
-One agent handles the whole workflow — vulnerability analysis, patching, rollback, and compliance reporting. On every turn it chooses directly from all 24 tools.
+1. The browser sends a chat message. The UI API checks the sign-in token the load balancer signed, the user's Cognito group, that the request is JSON from the UI's own origin, and a limit of 20 requests a minute per user.
+2. The UI invokes the AgentCore runtime with the message, the operator and the conversation's session ID, and relays the reply as it streams.
+3. The agent picks tools. Read tools call AWS in the hub with the runtime role, and in spokes by assuming `PatchySpokeRole`. Results meant to be read as data come back as cards, which the UI shows and the model never sees in full.
+4. A write tool runs its checks and stores a plan instead of changing anything. The plan's change record opens in the UI.
+5. An operator clicks Approve and run. The UI API writes the plan's one decision record and sends the runtime a `run_plan` action.
+6. The runtime claims the plan once and starts SSM Automation with the stored parameters, recording each run the moment it starts. No model choice is involved.
+7. The run view follows the run by account and Region. Stop sends a `stop_run` action the same way.
+8. When the run ends, EventBridge invokes the report Lambda, which writes the compliance report. A sweep every 5 minutes catches any run whose event arrived early, and a stopped run once the commands it had already sent finish.
+9. Before the next environment, `verify_and_proceed` checks the run and the instances, and records the environment as verified.
 
-| Property | Value |
+## The agent
+
+One agent handles every request. On each turn it can choose any of its 24 tools.
+
+| Setting | Value |
 |---|---|
-| Entrypoint | `agent/supervisor.py` (`agent_invocation`) |
-| Created by | `create_agent(name="patch-automation-unified", ...)` in `agent/helper/agent_factory.py` |
-| Tools | 24, spanning vulnerability, patch, fleet, maintenance, and compliance domains |
-| Model | Claude Sonnet 5 (`us.anthropic.claude-sonnet-5`), adaptive thinking enabled |
-| Max tokens | 16000 |
-| Memory | Read + Write (STM) via `AgentCoreMemorySessionManager` |
-| Steering | `PatchWorkflowSteering`, `ComplianceOutputSteering`, `ConfirmationGoalHandler` |
+| Entrypoint | `agent_invocation` in `agent/supervisor.py` |
+| Model | `us.anthropic.claude-sonnet-5`, adaptive thinking, effort `medium` (`BEDROCK_MODEL_ID`, `THINKING_EFFORT`) |
+| Output cap | 8,000 tokens |
+| Memory | Short-term, through `AgentCoreMemorySessionManager` |
+| Steering | `PatchWorkflowSteering`, `ComplianceOutputSteering` (`agent/helper/steering.py`) |
+| Hook | `CardCollector`, which takes result cards out of the model's context (`agent/helper/cards.py`) |
 
-The model ID is configurable through the `BEDROCK_MODEL_ID` environment variable. Sonnet 5+ models run with `thinking: adaptive`, which lets the model reason before it picks a tool and tends to produce better plans. Other models fall back to a fixed low temperature.
-
-There's no prompt-level routing layer. Tool selection stays correct because of structural cues — `next_action` hints, `Decision:` docstrings, and steering handlers. See [Tools and routing](#tools-and-routing).
-
----
-
-## Tools and routing
+The entrypoint handles three kinds of request. A chat turn runs the model. A `run_plan` action claims and starts an approved plan, then lets the model describe what started. A `stop_run` action stops a run without calling the model.
 
 ### Tools
 
-Tools are Python functions decorated with `@tool` (from the Strands SDK) that the LLM can call during the agentic loop. Each one wraps one or more boto3 API calls and hands back a structured dict the LLM uses to decide what comes next.
+| Tool | Does |
+|---|---|
+| `get_vulnerability_findings` | Inspector findings across the fleet |
+| `assess_fleet_impact` | Where one CVE is, by environment, with SLA deadlines and the next windows |
+| `get_patch_compliance` | Current patch compliance for an environment or instances |
+| `get_fleet_overview` | In-scope instances by environment and account, with patch state |
+| `resolve_execution_scope` | The accounts and instance counts an environment-wide change would reach |
+| `get_maintenance_windows` | Maintenance windows for an environment |
+| `get_patch_policy` | Quick Setup patch policies covering instances |
+| `patch_dry_run` | Scan named instances (starts a scan, installs nothing) |
+| `multi_account_dry_run` | Scan an environment across accounts |
+| `get_automation_status` | A run's status, per account and Region |
+| `get_command_status` | A Run Command's status |
+| `execute_patch_operation` | Plan a patch of named instances |
+| `multi_account_execute` | Plan a patch of an environment across accounts |
+| `rollback_patches` | Plan a rollback of named instances' last Patchy run |
+| `multi_account_rollback` | Plan a rollback of an environment's last Patchy run |
+| `create_maintenance_window` | Plan a maintenance window with a patch task |
+| `verify_rollback` | Check a rollback finished and reverted the packages |
+| `capture_patch_state` | Snapshot installed patches, before or after |
+| `verify_cve_remediation` | Whether Inspector closed a CVE on each instance, and why not |
+| `query_compliance_reports` | Past runs and SLA outcomes |
+| `forecast_sla_misses` | Findings that scheduled patching will fix too late |
+| `check_instance_health` | SSM Agent health |
+| `check_cloudwatch_alarms` | Alarm state for instances |
+| `verify_and_proceed` | Check a run and its instances before promotion, and record the promotion |
 
-There are 24 tools in total, organised into domain modules under `agent/helper/tools/`:
+The five tools that start with "plan" in the table never change anything; they store a plan. The agent has no tool that approves, runs or stops a change.
 
-| Module | Tools | Domain |
-|--------|-------|--------|
-| `fleet_tools.py` | `get_fleet_overview`, `resolve_execution_scope` | Fleet discovery, cross-account scope planning |
-| `patch_tools.py` | `get_patch_compliance`, `patch_dry_run`, `execute_patch_operation`, `multi_account_dry_run`, `multi_account_execute`, `get_command_status`, `get_automation_status`, `emergency_stop`, `rollback_patches`, `verify_rollback`, `multi_account_rollback` | Patch lifecycle (scan, execute, rollback, monitor) |
-| `maintenance_tools.py` | `get_maintenance_windows`, `get_patch_policy`, `create_maintenance_window`, `check_instance_health`, `check_cloudwatch_alarms`, `verify_and_proceed` | Scheduling, health checks, maintenance windows |
-| `vulnerability_tools.py` | `get_vulnerability_findings`, `assess_fleet_impact` | CVE analysis via Amazon Inspector |
-| `compliance_tools.py` | `query_compliance_reports`, `capture_patch_state`, `verify_cve_remediation` | S3 compliance reports, before/after snapshots |
+### How the agent picks the right tool
 
-All 24 are on the table every turn. Instead of restricting tools by role, the solution nudges the model toward the right pick with `next_action` hints and `Decision:` docstrings (below), backed by the `PatchWorkflowSteering` handler, which blocks the wrong choices outright.
+There is no routing layer. Three things keep the choice right:
 
-The agent also gets `get_response_template` — a tool that loads structured response templates by name (they live in `agent/config/response_templates.yaml`). That keeps formatting guidance out of the system prompt and lets the agent grab the right template only when it needs it.
+- Tool descriptions. Each docstring says what the tool does, when to use it and which tool to use instead where two overlap. The model reads it on every call, so editing one can change routing; the [eval](../agent/eval/README.md) checks that.
+- `next_action` hints. Key tools return a `next_action` field that says what comes next. For example, `resolve_execution_scope` tells the model to call the write tool next rather than stop to confirm.
+- Steering. `PatchWorkflowSteering` is deterministic code that runs before each tool call. It can cancel the call and tell the model what to do instead, and the model corrects itself in the same turn. It enforces:
+  - named instance IDs go to the instance tools, and environment scope to the environment tools;
+  - `resolve_execution_scope` runs before an environment-wide patch or scan;
+  - a dry run and the install that follows use the same severity;
+  - a CVE the operator named is passed to the write tool;
+  - after an unresolved failure, the next environment waits.
 
-### `next_action` hints
+  After the model replies, it also catches a reply that describes a change in words instead of calling the write tool. `ComplianceOutputSteering` stops a claim of "100% compliant" when no reports came back.
 
-The important tools return a `next_action` field in their result dict that spells out what to do next. The LLM sees the whole dict as a tool result, and `next_action` removes the guesswork — no ambiguity, and no prompt-level rule to remember.
+Rules that matter for safety are enforced in code: the tools' checks, the plan and approval records, and IAM. The prompt covers tone and format only.
 
-Here's `resolve_execution_scope` (`agent/helper/tools/fleet_tools.py`):
+## Plans and approval
 
-```python
-return {
-    'environment': env_value,
-    'accounts': accounts,              # list of {account_id, region, instance_count, ...}
-    'total_accounts': len(accounts),
-    'total_instances': total_instances,
-    'total_unmanaged': total_unmanaged,
-    'total_missing': total_missing,
-    'regions': scope['regions'],
-    'multi_account': scope['multi_account'],
-    'execution_defaults': EXECUTION_DEFAULTS,
-    'confirmation_required': scope['multi_account'],
-    'next_action': "Present the account plan to the operator. Then call "
-                   "multi_account_dry_run or multi_account_execute with these account_ids.",
-}
-```
+The agent can propose a change but can't make one, and IAM keeps it that way.
 
-### `Decision:` docstrings
+A write tool runs its checks in this order:
 
-Nine tools carry a `Decision:` line in their docstring that shows up in the tool schema. It helps the LLM pick the right tool without a prompt-level routing rule:
+1. For an environment-wide plan, the fleet view is complete.
+2. The Change Calendar is open.
+3. For a patch, the earlier environment was verified.
+4. For a rollback, a recorded run exists.
+5. For a CVE patch, the CVE's packages can be found.
+6. The targets are in scope, no maintenance window already meets the SLA, and the plan is within the location limit.
 
-```python
-def execute_patch_operation(...):
-    """Execute patching via SSM Automation (MAMR).
+If a check fails, the tool returns a reason and plans nothing ([Troubleshooting](troubleshooting.md#plan-refusals) lists every refusal). If all pass, it stores the plan as `plans/<id>.json`, create-only, with:
 
-    Decision: Use when operator names specific instance IDs (i-xxx).
-    For fleet-scope patching by environment/severity/CVE, use multi_account_execute instead.
-    """
-```
+- the exact parameters the executor will run, including the environment's rollout limits and the stop alarm;
+- a SHA-256 hash of those parameters, the session and the creation time;
+- a 15-minute expiry;
+- the change record the UI shows (`agent/helper/plan_view.py`), stored outside the hash: the summary, the checks, every target with its name, account and Region, and the reach by location. Building it reads each stop alarm in every target account and Region, so a missing or firing alarm shows before approval.
 
----
+Approval happens in the UI API, not the agent. When an operator clicks Approve and run, the API checks:
 
-## Patch execution flow
+- the caller is an operator;
+- the plan belongs to the caller's conversation;
+- the hash the browser sends matches the stored plan, and the stored plan still matches its own hash;
+- the plan hasn't expired;
+- with `REQUIRE_SEPARATE_APPROVER=true`, the approver isn't the requester.
 
-The agent has two execution paths, and which one it uses depends on how the operator describes the target. The `PatchWorkflowSteering` handler enforces the choice — the model can't mix the two.
+It then writes `plan-decisions/<id>.json`. That decision is create-only, so the first approval or cancellation wins.
 
-### Execution paths
+Before claiming the plan, the runtime rechecks the Change Calendar and, for a CVE plan, that the install list still matches the approved one. A refusal at this point leaves the approval unused. It then writes `plan-runs/<id>.json`, create-only, but only if the decision is an approval of this hash and session by an operator, made before expiry, less than 10 minutes old, and the plan itself hasn't expired. The create-only write means an approval can't be replayed. The approver becomes the operator of record for the run.
 
-| Path | When used | SSM Automation document | Targeting |
-|------|-----------|------------------------|-----------|
-| Path A — instance-ID | Operator names specific instance IDs (e.g., `Patch i-0abc123 and i-0def456`) | `Patchy-RunPatchBaselineById` (patch) / `Patchy-RunRollbackById` (rollback) | `InstanceId` parameter — hits exactly the named instances |
-| Path B — tag-based | Operator describes a fleet scope by environment, severity, or CVE (e.g., `Patch all critical in prod`) | `Patchy-RunPatchBaseline` (patch) / `Patchy-RunRollback` (rollback) | Tag filters: `tag:Environment` + `tag:PatchAutomation=enabled` — hits every matching instance |
+The agent's role is denied `plan-decisions/`, and the UI's role is denied the plan and run records, so neither can produce the other's half. A prompt injection that gets the model to "approve" something has nothing to write, and a typed "yes" is just text. [Security](security.md#the-approval-chain) covers the remaining trust assumptions.
 
-Both paths run SSM Automation with `TargetLocations` for cross-account fan-out. The Automation service assumes `PatchySpokeRole` in each target (account, region) and runs the document locally. The four documents are deployed by the `Patchy-SsmDocs` StackSet into every (account, region) the agent fans out into.
+With `RUNTIME_AUTH=jwt`, the runtime also checks the signed-in user's Cognito token itself. Only operators may chat, run or stop, and each conversation is bound to the first user who used it. See [Security: runtime authorisation](security.md#runtime-authorisation).
 
-### Execution sequence
+## Running a change
 
-Here's the end-to-end when an operator says: "Handle CVE-2025-38477 in dev"
+### Two ways to target
 
-| Step | What the agent does | Tool called | What happens in AWS |
-|------|-------------------|-------------|-------------------|
-| 1 | Looks up the CVE across all accounts/regions | `get_vulnerability_findings` | `inspector2:ListFindings` fan-out via `PatchySpokeRole` per target |
-| 2 | Maps which instances are affected | `assess_fleet_impact` | Correlates Inspector findings to EC2 instance IDs |
-| 3 | Checks maintenance windows in dev | `get_maintenance_windows` | `ssm:DescribeMaintenanceWindows` fan-out across targets |
-| 4 | Checks for existing patch policies on those instances | `get_patch_policy` | `ssm:ListAssociations` + `ssm:DescribeAssociation` fan-out |
-| 5 | Reads the SLA tag (`SLA-HIGH=72`) and compares to the next window (6 hours out). 6h < 72h, so SCHEDULED is possible — but no Install policy covers the instances, so it decides EMERGENCY | Internal logic | — |
-| 6 | Resolves execution scope (which accounts, regions, instance count) | `resolve_execution_scope` | `ssm:GetOpsSummary` for fleet data |
-| 7 | Runs a dry-run scan to show what patches will be installed | `multi_account_dry_run` | `ssm:StartAutomationExecution` with `Patchy-RunPatchBaseline` + `Operation: Scan` via `TargetLocations` |
-| 8 | Presents the plan: "5 instances, 12 patches including your CVE. Approve?" | — (text response) | — |
-| 9 | Operator says "yes" | — | — |
-| 10 | `ConfirmationGoalHandler` fires, so the agent retries with `confirm_execute=True` | `multi_account_execute` | `ssm:StartAutomationExecution` with `Patchy-RunPatchBaseline` + `Operation: Install` via `TargetLocations` |
-| 11 | Polls for completion | `get_automation_status` | `ssm:DescribeAutomationExecutions` |
-| 12 | Verifies instance health after the patch | `check_instance_health`, `check_cloudwatch_alarms` | `ssm:DescribeInstanceInformation`, `cloudwatch:DescribeAlarms` |
-| 13 | Reports success. The compliance report is written asynchronously by the UI backend on the next dashboard load. | — (text response) | `s3:PutObject` (compliance report JSON) |
+| Request | Runbooks | Targets |
+|---|---|---|
+| Names instance IDs | `Patchy-RunPatchBaselineById`, `Patchy-RunRollbackById` | Exactly those instances. One Automation per account and Region, started in turn, stopping at the first that fails to start. |
+| Describes an environment, severity or CVE | `Patchy-RunPatchBaseline`, `Patchy-RunRollback` | Every instance with the scope tag and that `Environment` value, resolved when the run starts. One Automation covering every target account and Region. |
 
-This runs as Path B (tag-based) because the operator said "in dev" without naming specific instance IDs. Had they said "Patch i-0abc123", the agent would take Path A (instance-ID) with `Patchy-RunPatchBaselineById` instead.
+Both run SSM Automation with target locations: SSM assumes `PatchySpokeRole` in each account and Region and runs the runbook there. The environment's limits apply across locations and across instances within each.
 
-### SLA decision matrix
+SSM can't hold limits across separate per-location Automations. So outside dev, a plan by instance ID that spans more than one account and Region is refused (`LocationLimit`), and the refusal points to the environment tools. The limits for each environment are in [Operations](operations.md#environment).
 
-| Condition | Decision |
-|-----------|----------|
-| Next window within SLA and an Install policy already covers the instances | DEFER — the existing policy handles it |
-| Next window within SLA but no Install policy | SCHEDULED — register a task with the maintenance window |
-| Next window exceeds SLA (or no window exists) | EMERGENCY — patch immediately |
+The environment comes from each instance's `Environment` tag, never from the model. An untagged instance counts as prod.
 
-SLA thresholds come from EC2 instance tags (`SLA-CRITICAL`, `SLA-HIGH`, and so on). Defaults are 24/72/168/720 hours, defined in `agent/helper/tools/_shared.py` (`_DEFAULT_SLA`).
+### What the runtime does when it starts a run
 
----
+- One patch or rollback plan starts at a time. Before its run-in-progress check, the runtime takes a single lock record, `run-locks/start.json`: created with `If-None-Match`, or taken over with `If-Match` on its ETag once the holder has released it or 5 minutes have passed. It marks the lock released once its runs and their pending reports are written, or the start fails. Without it, two overlapping plans approved seconds apart in different conversations would both pass the check, because a run's pending report is written after it starts. A plan that finds the lock held is refused before its approval is claimed, so it can be started again a minute later, when the check sees the first run.
+- It uses the rollout limits and stop alarm stored in the plan, not the current settings.
+- Each start carries a `ClientToken` derived from the plan and the location, so a retried start can't start a second run.
+- It records `run-executions/<execution id>.json` (plan, conversation, approver) the moment each start returns, and `pending-reports/<execution id>.json` with the context the report needs, including the targets' `REPORT_TAGS` values. When every location has started, it records `plan-executions/<plan id>.json`, which lists them all.
+- If one location fails to start, the run view says which and why. The approval is spent, so the operator makes a new plan for the rest.
 
-## Safety mechanisms
+### Stopping
 
-### Steering handlers — what they are and how they work
+Stop sends `stop_run` to the runtime. The runtime checks that the run was started by this conversation and is a Patchy runbook. It then cancels every execution listed for the plan that this conversation started, and reports any location that had already finished. Cancelling stops instances that haven't started; an instance already being patched finishes. The model has no stop tool.
 
-Steering handlers are deterministic Python classes (from `strands.vended_plugins.steering.SteeringHandler`) that hook into the agentic loop at two points — before a tool call runs, and after the model returns a response. They inspect what the model is about to do, check it against the domain rules, and then either:
+With `ABORT_ALARMS` set, every target location carries the alarm (`TargetLocationAlarmConfiguration`), so each location polls it in its own account and Region. SSM takes one alarm per run, so `ABORT_ALARMS` names one, which can be a composite alarm; planning refuses a list (`AbortAlarmsInvalid`). The alarm cancels the instances not yet started there; a location without the alarm, or whose alarm is already firing, doesn't start.
 
-- `Proceed()` — let the tool call run as-is.
-- `Guide(instructions)` — inject corrective instructions back to the model without an extra LLM round-trip. The model gets the Guide as context and self-corrects on the same turn.
+### SSM documents
 
-This is not the same as putting rules in the system prompt. Prompt rules depend on the model remembering them across a long conversation. Steering handlers fire from code, deterministically — they can't be forgotten, talked out of via prompt manipulation, or dropped when the context window fills up. This is the code-enforced safety layer.
+`Patchy-SsmDocs` puts these in every target account and Region:
 
-The agent wires three handlers through the `plugins` list in `agent/helper/agent_factory.py`:
+| Document | Type | Runs |
+|---|---|---|
+| `Patchy-RunPatchBaseline` | Automation | `AWS-RunPatchBaseline` on instances matching the environment and scope tags |
+| `Patchy-RunPatchBaselineById` | Automation | `AWS-RunPatchBaseline` on named instances |
+| `Patchy-RunRollback` | Automation | `Patchy-YumUndo` on instances matching the tags |
+| `Patchy-RunRollbackById` | Automation | `Patchy-YumUndo` on named instances |
+| `Patchy-YumUndo` | Command | `yum history undo` for the transactions that began between `Since` and `Until` |
 
-```python
-plugins = [PatchWorkflowSteering(), ComplianceOutputSteering()]
-plugins.append(ConfirmationGoalHandler())
-```
+Every parameter except `AutomationAssumeRole` has an allowed pattern or a fixed list of values. The override parameters accept only a file under `baseline-overrides/` or `install-overrides/` in this hub's bucket. The spoke role may start only `Patchy-*` Automation and send only `AWS-RunPatchBaseline` and `Patchy-*` commands, to instances with the scope tag, so no Patchy role can run an arbitrary shell command.
 
-`PatchWorkflowSteering` and `ComplianceOutputSteering` run before tool calls to enforce workflow ordering and guard compliance output. `ConfirmationGoalHandler` (from `agent/helper/goals.py`) runs after model responses — not tool calls — to catch the case where the model forgets to retry with `confirm_execute=True` once the operator approves.
+### Maintenance windows
 
-`PatchWorkflowSteering` and `ComplianceOutputSteering` live in `agent/helper/steering.py`; `ConfirmationGoalHandler` is in `agent/helper/goals.py`.
+`create_maintenance_window` plans a window in the hub account and Region. Once approved, the runtime creates the window tagged `ManagedBy=IntelligentPatchAutomation`. It registers a target on the environment and scope tags, and an `AWS-RunPatchBaseline` install task with the environment's limits and reboot policy. If the task can't be registered, it deletes the window. The runtime can change only windows carrying that tag.
 
-### Code-enforced mechanisms (can't be bypassed by prompt manipulation)
+## What installs
 
-| Mechanism | File | What it does |
-|-----------|------|-------------|
-| PatchWorkflowSteering | `agent/helper/steering.py` | Enforces Path A (instance-ID) vs Path B (tag-based) routing. Requires `resolve_execution_scope` before `multi_account_execute`. Checks that the severity filter matches between dry-run and install. |
-| ConfirmationGoalHandler | `agent/helper/goals.py` | When a tool returns `confirmation_required`, makes sure the LLM retries with `confirm_execute=True` after approval, rather than answering with text. |
-| ComplianceOutputSteering | `agent/helper/steering.py` | Stops the model from claiming "100% compliance" when no data came back. |
-| Dry-run gate | `agent/helper/tools/patch_tools.py` | `execute_patch_operation` and `multi_account_execute` refuse to Install without a Scan on the target instances in the last 2 hours. |
-| Scope tag gate | IAM policy + tool code | `SendCommand` on instances requires `ssm:resourceTag/PatchAutomation=enabled`. Instances without that tag can't be patched no matter what the model tries. |
+### CVE scope
 
-### Prompt-enforced (relies on the model following instructions)
+A patch request with a CVE and no severity installs only that CVE's OS packages (`agent/helper/cve_scope.py`):
 
-- Operator confirmation before patching (the system prompt makes the agent present dry-run results and wait).
-- Staged environment rollout order (dev → staging → prod).
-- Response formatting via the template tool.
+1. The write tool reads the CVE's Inspector findings on the targets.
+2. It takes each vulnerable OS package as `name.arch`, with no version.
+3. It writes the list to `install-overrides/<sha256>.yaml`, which the runbook passes to `AWS-RunPatchBaseline` as `InstallOverrideList`.
 
----
+Patch Manager then upgrades exactly those packages, where installed, to the newest available build. On Amazon Linux 2023 it also updates `system-release` first, so it can reach the current repositories.
+
+A plan by instance ID keeps only the instances Inspector lists for the CVE. A plan by environment can't be narrowed per instance, since one runbook covers each location, so the packages install on every in-scope instance there that has them. The change record says how many of those Inspector lists as affected.
+
+The tool refuses, and suggests a severity patch instead, when:
+
+- there are no targets;
+- a target runs Windows, because there the list applies only to patches the baseline already approves;
+- Inspector lists no OS package fix;
+- the CVE has more findings than Patchy reads at once (5,000).
+
+Language packages (pip, npm) are listed in the record but not patched.
+
+### Severity scope
+
+A severity request installs every approved patch at that level and above, through a `BaselineOverride` file under `baseline-overrides/`. `agent/setup_baseline_overrides.py` uploads these from the deploy machine during a deploy. No Patchy role may write that prefix, because an override can set package repositories on every patched instance. Ubuntu and Debian rank patches by priority, not severity, so they have no override file, and a severity run against them fails rather than install everything.
+
+### Reboots
+
+An install reboots only when the environment's `REBOOT_POLICY` allows it, or when the operator asks. A maintenance window always takes the policy. The model passes the request as an argument; if it doesn't, the tool reads the operator's own words in that turn ("and reboot it", "don't reboot"). The choice is fixed before the plan is stored, so the approval covers it, and the change record shows where it came from.
+
+## After a run
+
+### Reports and notifications
+
+The report Lambda (`ui/api/report_handler.py`) runs when SSM reports a `Patchy-*` run in a final state, and every 5 minutes. It reads each pending context and the run's outcome per account and Region, and writes the report to `YYYY/MM/DD/<execution id>.json`, create-only. It then removes the pending context. With `NOTIFY_TOPIC=true`, it publishes the outcome of each approved run's execution to the SNS topic; scans and runs started outside Patchy don't notify. The sweep sends no notifications.
+
+### Verifying and promoting
+
+`verify_and_proceed` recommends PROCEED only when:
+
+- every execution the plan started has succeeded;
+- every instance is online in SSM;
+- the instances' CloudWatch alarms are quiet.
+
+A location still running, or alarms still settling after the run, gives WAIT. A failed run, or instances SSM reports unhealthy, give ROLLBACK. A partly failed run, another location that failed, firing alarms, or health that can't be confirmed give HOLD. An error reading the run gives INVESTIGATE. A healthy result for an approved patch run writes a record under `promotions/`. Its environment and scope come from the stored plan, not from the request. A staging plan looks for a dev record, and a prod plan for a staging one, for the same CVE, severity or "all patches" whose run finished in the last 14 days. The record stores when the plan's last location finished (`run_ended_at`) and ages from that; a record written before that field existed ages from `verified_at`.
+
+### Checking a fix
+
+`verify_cve_remediation` asks Inspector for the CVE's finding on each instance (`agent/helper/verification.py`). A closed finding counts as fixed. An instance with no finding isn't counted as fixed, since Inspector may not have scanned it. An open finding gets a cause from the instance's patch records:
+
+| Cause | Means |
+|---|---|
+| `pending_reboot` | The fix is installed but the instance hasn't rebooted |
+| `awaiting_rescan` | The fix was installed after Inspector last looked |
+| `fix_not_installed` | The installed version is older than the fixed one |
+| `no_fix_available` | No fix is available |
+
+Versions are compared as RPM versions.
+
+### Forecasting SLA misses
+
+`forecast_sla_misses` (`agent/helper/forecast.py`) gives each finding on each instance a deadline: Inspector's first observation plus the instance's SLA hours. It then sorts the finding into one of these states:
+
+| State | When |
+|---|---|
+| `fixed` | The fixed version is installed (a reboot or rescan may still be pending) |
+| `overdue` | The deadline has passed |
+| `on_track` | The baseline approves the patch, and a maintenance window with an install task, or a patch policy, applies it before the deadline |
+| `will_miss` | The baseline doesn't approve the fix yet, or the next scheduled install is after the deadline, or nothing schedules it |
+| `unknown` | The instance has no patch scan, or the severity has no SLA |
+
+### Rolling back
+
+A rollback undoes what a recorded Patchy patch run changed (`agent/helper/rollback_window.py`). The tool finds the last finished patch run covering the targets in the last 30 days, from the reports, including a run that failed or was stopped. It stores that run's window, from a minute before it started to five minutes after it ended (or to one hour after it started, when the run's duration wasn't recorded). `Patchy-YumUndo` then undoes each yum transaction that began inside the window. An environment rollback is limited to the accounts and Regions that run patched. Because the window is based on time, a yum change another tool made on those instances during the run is undone too; the change record says so.
 
 ## Fleet discovery
 
-The solution finds instances through two independent paths that behave quite differently on timing:
+Patchy finds instances in two ways:
 
-| Path | Mechanism | Used by | Propagation |
-|------|-----------|---------|-------------|
-| SSM Explorer | `GetOpsSummary` API with the `patchy-fleet-sync` Resource Data Sync | Dashboard Environments tab; `get_fleet_overview` tool | Minutes to hours, depending on AWS Config + SSM Inventory collection. First-time Config activation can take up to 6 hours. |
-| Direct API fan-out | Agent assumes `PatchySpokeRole` per (account, region) and calls EC2/SSM/Inspector directly | `get_patch_compliance`, `get_vulnerability_findings`, `get_maintenance_windows`, `get_patch_policy` | Immediate |
+| Source | Used by | Freshness |
+|---|---|---|
+| SSM Explorer, through the `patchy-fleet-sync` Resource Data Sync | The Overview; the agent's fleet view (`get_fleet_overview`, `resolve_execution_scope`, environment-wide plans, and the first pass of the scope check) | Minutes to hours behind; up to six hours after AWS Config is first turned on. The agent refreshes its copy every five minutes. |
+| Direct calls in each account and Region | SLA and `Environment` tags, the scope check for instances not in the fleet view, patch compliance, maintenance windows, patch policies | Immediate |
 
-The chat agent uses both, depending on the question. Fleet overview leans on Explorer. Patch compliance, vulnerability, and maintenance-window queries fan out directly. The upshot: the agent can find and patch instances before the dashboard shows them, and the dashboard catches up once Explorer ingests the data.
+Inspector findings are read once per Region with the hub's credentials, which is why the hub must be Inspector's delegated administrator in multi-account mode.
 
-`deploy.sh` creates the `patchy-fleet-sync` Resource Data Sync for you during deployment. If instances go missing, [`docs/troubleshooting.md`](troubleshooting.md#fleet-discovery-issues) walks through the diagnosis.
+Every instance found is checked against the configured accounts and Regions, and the check fails closed. `MAX_FLEET_SIZE` (5,000 by default) caps how many instances one refresh reads. An environment-wide plan is refused when the fleet is bigger, because the plan's checks couldn't see every instance the run would reach.
 
----
+## Conversation memory
 
-## Memory model
+AgentCore Memory keeps each conversation's turns, and the agent reads the session's history on every turn. That's how "now patch staging" still knows what happened in dev. Cards are removed before turns reach memory. Long-term memory is off, so stale execution IDs from old conversations can't resurface. Memories are scoped per operator: in IAM mode the operator is the Cognito email the UI passes (or a name derived from the session ID without Cognito), and in JWT mode the token's user. Events expire after 30 days.
 
-The agent uses [Amazon Bedrock AgentCore Memory](https://docs.aws.amazon.com/bedrock/latest/userguide/agents-core.html) to hold onto conversation context. Memory is configured in `agent/helper/agent_factory.py`.
+The browser keeps the session ID and the signed-in user in local storage. After a reload, the UI restores the conversation's text from memory. Signing out, or signing in as someone else, starts a new conversation.
 
-### How the agent uses memory
+## Stacks
 
-The agent has read + write access to short-term memory (STM) through `AgentCoreMemorySessionManager`. Each user message and agent response is stored as a turn, and the agent reads the full conversation history on every invocation. That's how it keeps its place across a multi-step workflow — when you say "now patch staging," it still remembers the dev results from earlier in the session.
-
-Long-term memory (LTM) retrieval is off on purpose. Cross-session recall kept surfacing stale command and execution IDs into fresh sessions, so only the current session's turns inform the agent.
-
-### Session lifecycle
-
-- Session start — when a user opens the chat, the frontend generates a `session_id` and stashes it in `localStorage` next to the Cognito email.
-- During the conversation — the session manager persists each turn to AgentCore Memory as it happens. The visible chat and the agent's internal context are always the same source of truth.
-- Page refresh — the chat panel calls `GET /api/session/{session_id}/messages`, which reads from Memory via `MemoryClient.get_last_k_turns` and rehydrates the UI. Nothing is cached client-side.
-- Sign-out or different user — clears the `localStorage` keys. Signing in as a different user is caught by comparing the stored email to the current Cognito JWT, which kicks off a fresh session.
-
-### Operator isolation
-
-Memories are scoped per operator via `actor_id`, derived from the Cognito email in `_build_actor_id()`. Operator A's history is invisible to Operator B, even on a shared deployment. The namespace pattern is:
-
-```
-/actor/{actorId}/strategy/{memoryStrategyId}/{sessionId}
-```
-
----
-
-## Infrastructure stacks
-
-| Stack / StackSet | Deployed via | Scope | Resources |
+| Stack | Deployed by | Where | Holds |
 |---|---|---|---|
-| `Patchy-Network` | `cdk deploy` | Hub account, hub region | VPC (10.0.0.0/16), 3 AZs, public/private/isolated subnets, 2 NAT gateways, VPC flow logs |
-| `Patchy-Core` | `cdk deploy` | Hub account, hub region | S3 compliance bucket (versioned, encrypted, 365-day lifecycle), `PatchyAgentCorePolicy` IAM managed policy |
-| `Patchy-UI` | `cdk deploy` | Hub account, hub region | ECS Fargate service, ALB, Cognito User Pool + groups, CloudWatch log group, bastion instance (internal mode) |
-| `Patchy-SpokeIam` | StackSet (`./deploy.sh spoke`) | (Hub + spokes) × primary region | `PatchySpokeRole` IAM role |
-| `Patchy-SsmDocs` | StackSet (`./deploy.sh docs`) | (Hub + spokes) × all `SPOKE_REGIONS` | 4 SSM Automation documents: `Patchy-RunPatchBaseline`, `Patchy-RunPatchBaselineById`, `Patchy-RunRollback`, `Patchy-RunRollbackById` |
-| `Patchy-SampleEnv` | `./sample-env.sh deploy` | Hub (+ spoke via StackSet) | 5 EC2 instances (dev×2, staging×1, prod×2), security group, IAM role, 3 maintenance windows, 3 patch baselines, CloudWatch alarms |
-| AgentCore Runtime | `agentcore deploy` (npm CLI) | Hub account, hub region | Agent runtime, memory resource, IAM execution role |
+| `Patchy-Network` | `./deploy.sh` | Hub | VPC across three Availability Zones, two NAT gateways, flow logs kept for 30 days. Replaced by `Patchy-VpcLookup` when `EXISTING_VPC_ID` is set. |
+| `Patchy-Core` | `./deploy.sh` | Hub | Compliance bucket and policy; the runtime's IAM policy |
+| `Patchy-UI` | `./deploy.sh`, `./deploy.sh ui` | Hub | Fargate service, load balancer, Cognito user pool with `operators`, `viewers` and `auditors` (or a bastion), report Lambda and its two EventBridge rules, four CloudWatch alarms, optional SNS topic and KMS key |
+| AgentCore runtime | `./deploy.sh`, `./deploy.sh agent` | Hub | Runtime, memory and runtime role, through the AgentCore CLI |
+| `Patchy-SpokeIam` | `./deploy.sh`, `./deploy.sh spoke` | Every target account, in `AWS_REGION` | `PatchySpokeRole`, `PatchySpokeReadRole` |
+| `Patchy-SsmDocs` | `./deploy.sh`, `./deploy.sh docs` | Every target account, in each of `SPOKE_REGIONS` | The five documents |
+| `Patchy-SampleEnv` | `./sample-env.sh deploy` | Hub, or the sample accounts | Five instances, three maintenance windows, three patch baselines, CloudWatch alarms |
 
-Cross-account resources are split across two StackSets — `Patchy-SpokeIam` (one region per account) and `Patchy-SsmDocs` (every region per account). Each deploys and destroys independently through `./deploy.sh spoke` and `./deploy.sh docs`.
+The two spoke stacks go out as StackSets in multi-account mode and as plain stacks in the hub otherwise.
+
+The IAM split in brief: the runtime role can create plans and run records but not decisions, and can start only `Patchy-*` runbooks. The UI role can create decisions but not plans or run records, and can't start or stop Automation. The report Lambda can write reports and nothing that approves or runs. None of the three can delete a plan, a decision or a run record. [Security](security.md#iam-by-principal) has the detail.
