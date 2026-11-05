@@ -123,8 +123,9 @@ async def agent_invocation(payload: dict, context: RequestContext) -> AsyncItera
     # In JWT mode the validated token says who is calling, not the payload, and
     # a conversation belongs to the first user who used it.
     if caller.jwt_mode():
-        operator_identity = caller.username(context) or "unknown"
-        if not caller.claim_session(context.session_id, operator_identity):
+        # The session is bound to the username; records show the email from the user pool.
+        operator_identity = caller.display_name(context) or "unknown"
+        if not caller.claim_session(context.session_id, caller.username(context) or "unknown"):
             yield {"event": {"contentBlockDelta": {"delta": {
                 "text": "This conversation belongs to another user. Start a new conversation."}}}}
             return

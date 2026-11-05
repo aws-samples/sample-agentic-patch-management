@@ -41,6 +41,14 @@ AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-}"
 export AWS_PROFILE AWS_REGION AGENTCORE_ROLE_ARN
 # Keep aws CLI output out of a pager so unattended runs never block.
 export AWS_PAGER=""
+# The runtime checks each caller's Cognito token itself unless Cognito is off or
+# RUNTIME_AUTH=iam is set: in IAM mode anything in the hub allowed to invoke the
+# runtime is trusted like the UI (security review, Nov 2026).
+if [ -z "${RUNTIME_AUTH:-}" ]; then
+    if [ "${COGNITO_ENABLED:-true}" = "false" ]; then RUNTIME_AUTH=iam; else RUNTIME_AUTH=jwt; fi
+fi
+RUNTIME_AUTH=$(echo "$RUNTIME_AUTH" | tr '[:upper:]' '[:lower:]')
+export RUNTIME_AUTH
 # CDK uses these to determine target account/region for synthesis.
 # Must use --profile explicitly since export may not propagate to subshell in time.
 CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --profile "$AWS_PROFILE" --query Account --output text 2>/dev/null)
@@ -682,6 +690,20 @@ resolve_agent_arn() {
     print_status "Agent ARN: $AGENTCORE_AGENT_ARN"
 }
 
+# The UI forwards Cognito tokens only when the runtime has the JWT authoriser;
+# otherwise every chat would fail. A UI-only deploy against a runtime still in
+# IAM mode keeps the UI in IAM mode and says how to switch.
+match_ui_to_runtime_auth() {
+    [ "${RUNTIME_AUTH:-iam}" = "jwt" ] || return 0
+    local runtime_id="${AGENTCORE_AGENT_ARN##*/}" authorizer
+    authorizer=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$runtime_id" \
+        --query 'authorizerConfiguration.customJWTAuthorizer.discoveryUrl' --output text 2>/dev/null || true)
+    if [ -z "$authorizer" ] || [ "$authorizer" = "None" ]; then
+        print_warning "The runtime doesn't check Cognito tokens yet; deploying the UI in IAM mode. Run ./deploy.sh agent to switch both."
+        export RUNTIME_AUTH=iam
+    fi
+}
+
 
 
 
@@ -801,7 +823,10 @@ print(len(t[0].get('envVars',[])))
 # RUNTIME_AUTH=jwt points the runtime's inbound authorizer at the UI's Cognito
 # pool and app client, so the UI stack (and its pool) must already exist.
 resolve_runtime_auth() {
-    [ "${RUNTIME_AUTH:-iam}" = "jwt" ] || return 0
+    if [ "${RUNTIME_AUTH:-iam}" != "jwt" ]; then
+        print_warning "RUNTIME_AUTH=iam: anything in this account allowed to invoke the runtime can act as an operator."
+        return 0
+    fi
     if [ "${COGNITO_ENABLED:-true}" = "false" ]; then
         print_error "RUNTIME_AUTH=jwt needs Cognito (COGNITO_ENABLED is false)"
         exit 1
@@ -811,8 +836,11 @@ resolve_runtime_auth() {
         pool_id=$(aws cloudformation describe-stacks --stack-name Patchy-UI \
             --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text 2>/dev/null || true)
         if [ -z "$pool_id" ] || [ "$pool_id" = "None" ]; then
-            print_error "RUNTIME_AUTH=jwt needs the Patchy-UI Cognito pool. Deploy once without it, then set RUNTIME_AUTH=jwt and redeploy."
-            exit 1
+            # First deploy: the pool comes with the UI stack. Deploy the runtime in IAM
+            # mode now; finish_runtime_auth switches it once the UI stack exists.
+            print_status "Cognito pool not created yet: the runtime starts in IAM mode and switches to Cognito tokens after the UI deploys"
+            export RUNTIME_AUTH=iam RUNTIME_AUTH_PENDING=true
+            return 0
         fi
         client_id=$(aws cognito-idp list-user-pool-clients --user-pool-id "$pool_id" \
             --query 'UserPoolClients[0].ClientId' --output text 2>/dev/null || true)
@@ -824,6 +852,16 @@ resolve_runtime_auth() {
         export RUNTIME_AUTH_CLIENT_ID="$client_id"
     fi
     print_status "Runtime accepts Cognito tokens from client ${RUNTIME_AUTH_CLIENT_ID} (RUNTIME_AUTH=jwt)"
+}
+
+# Second pass of a first deploy: the UI stack (and its Cognito pool) now exists,
+# so redeploy the runtime with the JWT authoriser and the UI to forward tokens.
+finish_runtime_auth() {
+    [ "${RUNTIME_AUTH_PENDING:-false}" = "true" ] || return 0
+    echo -e "${BLUE}Switching the runtime to Cognito tokens (RUNTIME_AUTH=jwt)...${NC}"
+    export RUNTIME_AUTH=jwt RUNTIME_AUTH_PENDING=false
+    deploy_agent
+    deploy_ui
 }
 
 deploy_agent() {
@@ -1468,6 +1506,7 @@ for m in mems.values():
 
     resolve_agentcore_role
     resolve_agent_arn
+    match_ui_to_runtime_auth
 
     # Build frontend on host (avoids esbuild crash under Finch/x86 emulation on Apple Silicon)
     echo -e "${BLUE}Building frontend...${NC}"
@@ -2994,6 +3033,7 @@ case "$COMMAND" in
         fi
 
         deploy_ui
+        finish_runtime_auth
 
         # The spoke read role could only trust the UI roles once they existed.
         if [ "${SPOKE_READ_TRUST_FALLBACK:-false}" = "true" ]; then
@@ -3028,6 +3068,7 @@ case "$COMMAND" in
         deploy_agent
         ensure_runtime_observability
         deploy_ui
+        finish_runtime_auth
         ;;
 
     "ui")

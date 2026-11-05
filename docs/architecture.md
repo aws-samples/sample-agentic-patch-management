@@ -139,7 +139,7 @@ Before claiming the plan, the runtime rechecks the Change Calendar and, for a CV
 
 The agent's role is denied `plan-decisions/`, and the UI's role is denied the plan and run records, so neither can produce the other's half. A prompt injection that gets the model to "approve" something has nothing to write, and a typed "yes" is just text. [Security](security.md#the-approval-chain) covers the remaining trust assumptions.
 
-With `RUNTIME_AUTH=jwt`, the runtime also checks the signed-in user's Cognito token itself. Only operators may chat, run or stop, and each conversation is bound to the first user who used it. See [Security: runtime authorisation](security.md#runtime-authorisation).
+The runtime also checks the signed-in user's Cognito token itself (`RUNTIME_AUTH=jwt`, the default with Cognito). Only operators may chat, run or stop, and each conversation is bound to the first user who used it. See [Security: runtime authorisation](security.md#runtime-authorisation).
 
 ## Running a change
 

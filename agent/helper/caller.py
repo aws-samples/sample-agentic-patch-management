@@ -11,6 +11,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,35 @@ def groups(context=None) -> Optional[List[str]]:
 def username(context=None) -> Optional[str]:
     claims = _claims(context) or {}
     return claims.get("username") or claims.get("sub")
+
+
+# Cognito access tokens carry the username (a UUID when users sign in by email), not the
+# email. Records show people by email, so it's read from the token's own user pool.
+_ISSUER = re.compile(r"^https://cognito-idp\.([a-z0-9-]+)\.amazonaws\.com/([a-z0-9-]+_[A-Za-z0-9]+)$")
+_emails: dict = {}
+
+
+def display_name(context=None) -> Optional[str]:
+    """The caller's email from their user pool, else their username; None without a token."""
+    claims = _claims(context) or {}
+    user = claims.get("username") or claims.get("sub")
+    if not user:
+        return None
+    if user in _emails:
+        return _emails[user]
+    match = _ISSUER.match(str(claims.get("iss") or ""))
+    if not match:
+        return user
+    try:
+        import boto3
+        resp = boto3.client("cognito-idp", region_name=match.group(1)).admin_get_user(
+            UserPoolId=match.group(2), Username=user)
+        email = next((a.get("Value") for a in resp.get("UserAttributes") or [] if a.get("Name") == "email"), None)
+    except Exception as e:  # the username still identifies them
+        logger.warning(f"[AUTH] couldn't read the email for {user}: {e}")
+        return user
+    _emails[user] = email or user
+    return _emails[user]
 
 
 def may_change(context=None) -> bool:

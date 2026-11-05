@@ -286,6 +286,14 @@ export class CoreStack extends cdk.Stack {
           actions: ['ssm-quicksetup:ListConfigurationManagers', 'ssm-quicksetup:GetConfigurationManager'],
           resources: ['*'],
         }),
+        // With RUNTIME_AUTH=jwt the runtime reads the caller's email from their user
+        // pool, since Cognito access tokens carry only the username. Read-only.
+        new iam.PolicyStatement({
+          sid: 'CognitoCallerEmail',
+          effect: iam.Effect.ALLOW,
+          actions: ['cognito-idp:AdminGetUser'],
+          resources: [`arn:aws:cognito-idp:${this.region}:${this.account}:userpool/*`],
+        }),
         // Starting an Automation is limited to Patchy's own runbooks, so the
         // runtime can't start AWS-owned or other documents with another role.
         new iam.PolicyStatement({
