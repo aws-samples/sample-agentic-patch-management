@@ -21,10 +21,10 @@ Patchy changes production instances, so the design assumes any one component can
 | The model, steered by a prompt injection in a finding, tag or tool result | Approve its own plan, run arbitrary commands, point an install at a hostile repository, stop someone else's run, leak data through the browser | Write tools only store plans. The runtime role is denied `plan-decisions/` and `baseline-overrides/` and can't delete anything. It starts only `Patchy-*` runbooks, whose parameters are pattern-checked, and there is no shell document. The model has no stop tool. Chat markdown renders no images and the CSP allows no remote origin. |
 | An operator | Change a plan after review, run it twice, act on another conversation's plan, patch out of scope | The approval carries the plan hash shown in the change record. The claim is create-only, within 10 minutes of approval and before the plan's expiry. Plans, decisions and runs are bound to the conversation. Scope checks refuse out-of-scope targets, and the spoke role sends commands only to instances with the scope tag. Rollout limits come from the environment policy. |
 | An approver | Approve their own request | `REQUIRE_SEPARATE_APPROVER=true` refuses it. That needs Cognito, since API keys and `DEFAULT_ROLE` give everyone one identity. |
-| A viewer | Chat, approve, cancel or stop | The UI API returns 403. With `RUNTIME_AUTH=jwt` the runtime refuses too, from the user's own token. |
+| A viewer | Chat, approve, cancel or stop | The UI API returns 403, and by default (`RUNTIME_AUTH=jwt`) the runtime refuses too, from the user's own token. |
 | A compromised UI container | Invent a plan, change what installs, fake a verified stage, rewrite a report | Its role is denied every plan, run, install-list, promotion and baseline record, and may only create a report, not replace one. It can't start or stop Automation, and assumes only the read-only spoke role. It can still approve or cancel a live plan in a conversation it knows, under any approver name, because writing decisions is its job. It can also delete pending report contexts, which suppresses those reports. `RUNTIME_AUTH=jwt` limits runs to requests carrying a signed-in operator's token. |
 | A compromised runtime | Start a runbook without approval | IAM doesn't prevent this. The runtime role holds `ssm:StartAutomationExecution` on `Patchy-*` runbooks, so code running as the runtime can start one without a decision record. The runbooks' parameter patterns and the spoke role's scope tag condition still apply. Enforcing two-party approval in IAM would need a separate executor, which this sample doesn't have. |
-| Another principal in the hub account | Invoke the runtime directly and ask it to run an approved plan | In IAM mode, anything allowed to invoke the runtime is trusted like the UI. `RUNTIME_AUTH=jwt` makes AgentCore reject any call without a valid Cognito token from the UI's app client. |
+| Another principal in the hub account | Invoke the runtime directly to chat, make plans or run an approved plan | By default (`RUNTIME_AUTH=jwt`) AgentCore rejects any call without a valid Cognito token from the UI's app client, SigV4 included, and the runtime takes the user and group from that token. With `RUNTIME_AUTH=iam`, or without Cognito, anything allowed to invoke the runtime is trusted like the UI. |
 | A compromised spoke account | Read hub data, assume hub roles, mislead the agent | Spokes can read only the two override prefixes, and only from inside the organisation. No hub role trusts a spoke. The hub's role assumptions require the target role to be in `AWS_ORG_ID`. Spoke data is untrusted input to the model, and any change it prompts still lists its target accounts in the change record for an operator to read. |
 | A cross-site page | Make a signed-in browser chat, approve or stop, or frame the UI | Every POST must be JSON from the UI's own origin. Responses forbid framing. |
 
@@ -88,15 +88,15 @@ For production, use an [ACM public certificate](https://docs.aws.amazon.com/acm/
 
 ### Runtime authorisation
 
-By default (`RUNTIME_AUTH=iam`) the UI calls the runtime with its task role, and the runtime trusts the UI's role check. A request that carries a bearer token in IAM mode is refused for changes, because it means an authoriser is configured that Patchy doesn't know about.
-
-With `RUNTIME_AUTH=jwt`, the deploy gives the runtime a JWT authoriser whose issuer is the UI's user pool and whose only allowed client is the UI's app client. AgentCore then rejects every call without a valid token from that client, SigV4 included. The UI forwards the signed-in user's access token, and the runtime takes the user and their groups from it, never from the request body (`agent/helper/caller.py`):
+By default the deploy gives the runtime a JWT authoriser whose issuer is the UI's user pool and whose only allowed client is the UI's app client. AgentCore then rejects every call without a valid token from that client, SigV4 included. The UI forwards the signed-in user's access token, and the runtime takes the user and their groups from it, never from the request body (`agent/helper/caller.py`):
 
 - Chat turns, `run_plan`, `stop_run` and promotion records need membership of `operators`.
-- Plans record the token's user as the requester.
+- Plans record the token's user as the requester, by the email the runtime reads from the user pool (`cognito-idp:AdminGetUser`, read-only), or by username if it can't.
 - A conversation belongs to its first user: the runtime creates `session-owners/<session id>.json` once and refuses anyone else on that session.
 
-The deploy reads the pool from `Patchy-UI`, so deploy once in IAM mode, then set `RUNTIME_AUTH=jwt` and redeploy. In JWT mode, scripts that invoke the runtime with AWS credentials are refused.
+The pool comes with the `Patchy-UI` stack, so on a first deploy the runtime starts in IAM mode and the deploy switches it to Cognito tokens once the UI stack exists. A UI-only deploy against a runtime still in IAM mode keeps the UI in IAM mode and says to run `./deploy.sh agent`. Scripts that invoke the runtime with AWS credentials are refused.
+
+With `RUNTIME_AUTH=iam`, which is also the mode when `COGNITO_ENABLED=false`, the UI calls the runtime with its task role and the runtime trusts the UI's role check. Anything else in the hub allowed to invoke the runtime (`bedrock-agentcore:InvokeAgentRuntime`) can then act as an operator: chat, make plans and run a plan an operator has approved. It can't approve a plan, because its role isn't the UI's. A request that carries a bearer token in IAM mode is refused for changes, because it means an authoriser is configured that Patchy doesn't know about. The deploy warns when it runs in IAM mode.
 
 ## The approval chain
 
@@ -340,7 +340,7 @@ The UI logs the first 80 characters of each message, escaped onto one line, and 
 This is a sample. Before relying on it:
 
 - Keep Cognito on, with MFA (`COGNITO_MFA=required` on a new pool), federated to your identity provider.
-- Set `RUNTIME_AUTH=jwt`, so the runtime checks each caller itself, and `REQUIRE_SEPARATE_APPROVER=true` where two-person control is required.
+- Keep `RUNTIME_AUTH=jwt` (the default), so the runtime checks each caller itself, and set `REQUIRE_SEPARATE_APPROVER=true` where two-person control is required.
 - Use a trusted certificate on your own domain, and consider AWS WAF in front of the load balancer.
 - Run a full `./deploy.sh` and confirm there are no trust fallback warnings.
 - Set a retention policy on the runtime log group, and decide whether reports must outlive the stack (removal policy) and 365 days (lifecycle).

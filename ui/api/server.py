@@ -886,8 +886,8 @@ class ApproveRequest(PlanActionRequest):
 
 
 def _approver_identities(request: Request) -> set:
-    """Every name this caller is known by: the email the UI shows, and in JWT mode the
-    Cognito username the runtime records as requested_by."""
+    """Every name this caller is known by: the email the UI shows, and the Cognito username,
+    which the runtime records as requested_by when it can't read the email."""
     return {v for v in (getattr(request.state, "cognito_email", None),
                         getattr(request.state, "cognito_username", None)) if v}
 

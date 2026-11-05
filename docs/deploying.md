@@ -186,7 +186,7 @@ The runtime never reads `.env`. It gets only the settings `deploy.sh` writes int
 | `THINKING_EFFORT` | `medium` | agent | `low`, `medium` or `high`, for Claude Sonnet 5 and 6. Other models ignore it. |
 | `GUARDRAIL_ID`, `GUARDRAIL_VERSION` | unset | agent | Bedrock guardrail applied to each message. Both are needed. See [Operations: Bedrock Guardrails](operations.md#bedrock-guardrails). |
 | `MAX_FLEET_SIZE` | `5000` | agent | Most instances the agent reads per fleet refresh. An environment-wide plan is refused (`FleetViewTruncated`) when the fleet is bigger. |
-| `RUNTIME_AUTH` | `iam` | agent | `jwt` makes the runtime accept only the signed-in user's Cognito token and check their group itself. Needs Cognito and an existing `Patchy-UI` stack. See [Security](security.md#runtime-authorisation). |
+| `RUNTIME_AUTH` | `jwt` with Cognito, else `iam` | agent | `jwt`: the runtime accepts only the signed-in user's Cognito token and checks their group itself. On a first deploy the runtime starts in IAM mode and switches once the UI stack and its Cognito pool exist. `iam`: anything in the hub allowed to invoke the runtime is trusted like the UI. See [Security](security.md#runtime-authorisation). |
 | `PATCHY_DEBUG_LOGS` | `false` | agent | `true` logs full prompts, tool inputs and outputs at DEBUG. For diagnosis only: conversation content goes to CloudWatch. |
 
 ### Scope and change controls
@@ -262,7 +262,8 @@ These steps move a deployment of the public release (12 October 2026) to this ve
    - With Cognito on, a self-signed certificate now needs `ALLOW_SELF_SIGNED_CERT=true`. A missing certificate stops the deploy instead of generating one.
    - Remove VITE_API_KEY and `BYPASS_TOOL_CONSENT` if present. The browser now asks for an API key instead of having it built into the page.
    - In multi-account mode, an empty account and OU list now means nothing is in scope, where it used to mean every account. Include the hub in `SPOKE_ACCOUNT_IDS`.
-   - New settings that change nothing unless you set them: `CHANGE_CALENDAR`, `ABORT_ALARMS`, `REQUIRE_STAGED_ROLLOUT`, `REBOOT_POLICY`, `REQUIRE_SEPARATE_APPROVER`, `RUNTIME_AUTH` (default `iam`), `COGNITO_MFA`, `NOTIFY_TOPIC`, `NOTIFY_EMAIL`, `NOTIFY_KMS`, `PUBLIC_URL`. `THINKING_EFFORT` sets the model's thinking effort, `medium` by default.
+   - With Cognito on, the runtime now checks each caller's Cognito token itself (`RUNTIME_AUTH=jwt`). Scripts that invoke the runtime with AWS credentials stop working; set `RUNTIME_AUTH=iam` only if you rely on them and accept that anything allowed to invoke the runtime acts as an operator.
+   - New settings that change nothing unless you set them: `CHANGE_CALENDAR`, `ABORT_ALARMS`, `REQUIRE_STAGED_ROLLOUT`, `REBOOT_POLICY`, `REQUIRE_SEPARATE_APPROVER`, `COGNITO_MFA`, `NOTIFY_TOPIC`, `NOTIFY_EMAIL`, `NOTIFY_KMS`, `PUBLIC_URL`. `THINKING_EFFORT` sets the model's thinking effort, `medium` by default.
 3. Run the full deploy, `./deploy.sh`, not `./deploy.sh agent`. In a single account, this adds the hub's Patchy roles and SSM documents, without which the public release couldn't patch in one account.
 4. In multi-account mode, check that the spoke read role trusts exact role ARNs:
 

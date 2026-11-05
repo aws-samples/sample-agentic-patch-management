@@ -165,7 +165,8 @@ aws iam get-role --role-name PatchySpokeReadRole --profile <spoke-profile> \
 |---|---|
 | "Cognito sign-in needs an ACM certificate (ACM_CERTIFICATE_ARN)." | Set `ACM_CERTIFICATE_ARN`, set `ALLOW_SELF_SIGNED_CERT=true` for a demo, or set `COGNITO_ENABLED=false` |
 | "ACM certificate ARN is self-signed, and the ALB is public with Cognito sign-in." | Use a trusted certificate, or `ALLOW_SELF_SIGNED_CERT=true` for a demo |
-| "RUNTIME_AUTH=jwt needs the Patchy-UI Cognito pool." | Deploy once without `RUNTIME_AUTH`, then set it and run `./deploy.sh agent` |
+| "The runtime doesn't check Cognito tokens yet; deploying the UI in IAM mode." | A UI-only deploy ran before the runtime had the JWT authoriser. Run `./deploy.sh agent`, which switches both |
+| "RUNTIME_AUTH=iam: anything in this account allowed to invoke the runtime can act as an operator." | Expected when `RUNTIME_AUTH=iam` or `COGNITO_ENABLED=false`. Remove `RUNTIME_AUTH=iam` to have the runtime check Cognito tokens |
 | "Found N AgentCore role ARNs ..." / "Could not find the Patchy AgentCore runtime role" | Set `AGENTCORE_ROLE_ARN`, or deploy the agent first |
 | "AgentCore CLI X is installed; this release needs 0.20.1" | Run `npm install -g @aws/agentcore@0.20.1`. To deploy with your version anyway, set `AGENTCORE_CLI_VERSION` to it |
 | "This AWS CDK Toolkit is not compatible with the AWS CDK library" / "Cloud assembly schema version mismatch" | The AgentCore CLI and the agent's CDK library don't match. Install AgentCore CLI 0.20.1, and don't change `agent/agentcore/cdk/package-lock.json`: the deploy installs from it with `npm ci` |
