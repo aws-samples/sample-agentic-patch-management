@@ -84,7 +84,7 @@ The UI serves its own fonts and scripts, so it loads nothing from another origin
 | Session | 12 hours at the load balancer. The browser also signs out after 60 minutes without activity. |
 | TLS | Port 443 with `ELBSecurityPolicy-TLS13-1-2-Res-2021-06`; port 80 redirects. A self-signed certificate is refused on the public load balancer unless `ALLOW_SELF_SIGNED_CERT=true`. |
 
-For production, use an [ACM public certificate](https://docs.aws.amazon.com/acm/latest/userguide/acm-public-certificates.html) for your own domain and set `PUBLIC_URL`. To use an existing identity provider, [federate the user pool](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-identity-federation.html) and map its groups to `operators`, `viewers` and `auditors`.
+For production, use an [ACM public certificate](https://docs.aws.amazon.com/acm/latest/userguide/acm-public-certificates.html) for your own domain, set `PUBLIC_URL`, and point a DNS record for the domain at the load balancer. To use an existing identity provider, [federate the user pool](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-identity-federation.html) and map its groups to `operators`, `viewers` and `auditors`.
 
 ### Runtime authorisation
 
@@ -342,6 +342,7 @@ This is a sample. Before relying on it:
 - Keep Cognito on, with MFA (`COGNITO_MFA=required` on a new pool), federated to your identity provider.
 - Keep `RUNTIME_AUTH=jwt` (the default), so the runtime checks each caller itself, and set `REQUIRE_SEPARATE_APPROVER=true` where two-person control is required.
 - Use a trusted certificate on your own domain, and consider AWS WAF in front of the load balancer.
+- Restrict who can create, change or remove the scope tag (`PatchAutomation` unless you set `SSM_SCOPE_TAG_KEY`) and the `Environment` tag on instances. The scope tag decides what Patchy can patch: the spoke role's `SendCommand` permission reaches any instance that carries it. `Environment` decides the rollout limits and reboot policy. Anyone who can tag an instance can bring it into scope, or retag a prod instance as dev to get dev's limits. A [service control policy](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps_examples.html) that denies `ec2:CreateTags` and `ec2:DeleteTags` on those keys, except for your provisioning roles, closes this.
 - Run a full `./deploy.sh` and confirm there are no trust fallback warnings.
 - Set a retention policy on the runtime log group, and decide whether reports must outlive the stack (removal policy) and 365 days (lifecycle).
 - For records nobody in the hub can alter, replicate the bucket to a separate audit account. Or turn on S3 Object Lock, and check that its retention fits the bucket's 365-day lifecycle and removal policy.

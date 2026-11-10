@@ -20,9 +20,11 @@ On the machine you deploy from:
 - Docker or [Finch](https://github.com/runfinch/finch), to build the UI image
 - AWS CLI v2, and the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) if you use the internal load balancer
 
+An AWS CLI profile for the hub (`AWS_PROFILE`) that can deploy everything Patchy creates. The deploy bootstraps the AWS CDK in each Region it deploys to, and creates IAM roles and policies, CloudFormation stacks and StackSets, a VPC, ECS on Fargate, an Application Load Balancer, Cognito, S3, KMS, Lambda, EventBridge, SNS, CloudWatch alarms and log groups, Systems Manager documents and a Resource Data Sync, and the AgentCore runtime and memory, with the UI image in ECR. In a test account or organisation, administrator access is simplest. A deploy with a role that is missing a permission fails part-way and leaves stacks behind, so run `./deploy.sh destroy` before you retry.
+
 In the hub account and Region:
 
-1. [Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access-modify.html) to Claude Sonnet 5. The agent uses the `us.anthropic.claude-sonnet-5` inference profile unless you set `BEDROCK_MODEL_ID`.
+1. [Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access-modify.html) to Claude Sonnet 5, in a Region where Amazon Bedrock AgentCore Runtime and Memory are available. The agent uses the `us.anthropic.claude-sonnet-5` [cross-Region inference profile](https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html) unless you set `BEDROCK_MODEL_ID`. A `us.` profile can only be called from a US Region, and it sends inference to several US Regions. Outside the US, or if inference must stay in one geography, set `BEDROCK_MODEL_ID` to the inference profile for your geography.
 2. Systems Manager Quick Setup: [Default Host Management Configuration](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-default-host-management-configuration.html), [Host Management](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-host-management.html) and [Config recording](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-config.html), so every instance runs the SSM Agent and reports its inventory.
 3. [SSM Explorer](https://docs.aws.amazon.com/systems-manager/latest/userguide/Explorer-setup.html). The dashboard and the agent list the fleet from it. After AWS Config is first turned on, instances can take up to six hours to appear.
 4. [Amazon Inspector](https://docs.aws.amazon.com/inspector/latest/user/getting_started_tutorial.html) scanning for EC2.
@@ -182,7 +184,7 @@ The runtime never reads `.env`. It gets only the settings `deploy.sh` writes int
 
 | Setting | Default | Applied by | What it does |
 |---|---|---|---|
-| `BEDROCK_MODEL_ID` | `us.anthropic.claude-sonnet-5` | agent | Model or inference profile. |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-sonnet-5` | agent | Model or inference profile. The default US profile works only from a hub in a US Region; see [Prerequisites](#prerequisites). |
 | `THINKING_EFFORT` | `medium` | agent | `low`, `medium` or `high`, for Claude Sonnet 5 and 6. Other models ignore it. |
 | `GUARDRAIL_ID`, `GUARDRAIL_VERSION` | unset | agent | Bedrock guardrail applied to each message. Both are needed. See [Operations: Bedrock Guardrails](operations.md#bedrock-guardrails). |
 | `MAX_FLEET_SIZE` | `5000` | agent | Most instances the agent reads per fleet refresh. An environment-wide plan is refused (`FleetViewTruncated`) when the fleet is bigger. |
@@ -210,7 +212,7 @@ The runtime never reads `.env`. It gets only the settings `deploy.sh` writes int
 | `COGNITO_ENABLED` | `true` | ui | `false` gives an internal load balancer reached through a bastion. Switching an existing deployment to `false` deletes the user pool and every user. |
 | `COGNITO_DOMAIN_PREFIX` | `patchy-<account-id>` | ui | Prefix for the hosted sign-in domain. It must be globally unique, and the deploy saves it to `.env`. |
 | `COGNITO_MFA` | `off` | ui | `optional` lets users add an authenticator app. `required` makes it mandatory and works only on a new user pool. |
-| `PUBLIC_URL` | the load balancer's address | ui | The address users browse to, for a custom domain. It becomes the sign-out target and, when it starts with `https://`, a Cognito callback URL. |
+| `PUBLIC_URL` | the load balancer's address | ui | The address users browse to, for a custom domain. It becomes the sign-out target and, when it starts with `https://`, a Cognito callback URL. Point a DNS record for the domain at the load balancer; `./deploy.sh status` shows its address. Without `PUBLIC_URL`, sign-in works only on the load balancer's own DNS name. |
 | `REQUIRE_SEPARATE_APPROVER` | `false` | ui | The operator who asked for a plan can't approve it. Needs Cognito; without it every approval returns 503. |
 | `DEFAULT_ROLE` | `viewer` | ui | Role for every request when there's neither Cognito nor an API key. `operator` gives everyone who reaches the UI full control; use it only for a trusted pilot on the internal load balancer. |
 | `API_KEY_OPERATOR`, `API_KEY_VIEWER`, `API_KEY` | unset | ui | API keys for `COGNITO_ENABLED=false`. `API_KEY` is an operator key. The deploy stores the keys in the Secrets Manager secret `patchy/ui-api-keys` and passes its name and version to the stack (`API_KEYS_SECRET_NAME`, `API_KEYS_SECRET_VERSION`); the browser asks for a key once per tab. Ignored when Cognito is on. |
